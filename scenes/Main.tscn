@@ -1,13 +1,9 @@
 [gd_scene load_steps=3 format=3 uid="uid://cxpq7fcavesmain"]
 
-[ext_resource type="Script" path="res://scripts/Main.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/CameraRig.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/VoxelWorld.gd" id="2"]
 
 [node name="Main" type="Node3D"]
-script = ExtResource("1")
-
-[node name="Camera3D" type="Camera3D" parent="."]
-current = true
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75, 0.433013, 0, 20, 0)
@@ -15,3 +11,10 @@ shadow_enabled = true
 
 [node name="VoxelWorld" type="Node3D" parent="."]
 script = ExtResource("2")
+
+[node name="CameraRig" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 9, 10)
+script = ExtResource("1")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+current = true

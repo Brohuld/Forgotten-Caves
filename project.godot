@@ -1,0 +1,15 @@
+; Engine configuration file.
+; Fichier genere pour le projet Forgotten Caves.
+
+config_version=5
+
+[application]
+
+config/name="Forgotten Caves"
+run/main_scene="res://scenes/Main.tscn"
+config/features=PackedStringArray("4.3", "Forward Plus")
+config/icon="res://icon.svg"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"

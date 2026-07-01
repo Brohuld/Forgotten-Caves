@@ -71,10 +71,12 @@ func build_mesh() -> void:
 	var mat_dirt := StandardMaterial3D.new()
 	mat_dirt.albedo_color = Color(0.55, 0.38, 0.22)
 	mat_dirt.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat_dirt.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 
 	var mat_stone := StandardMaterial3D.new()
 	mat_stone.albedo_color = Color(0.5, 0.5, 0.5)
 	mat_stone.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat_stone.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 
 	mesh.surface_set_material(0, mat_dirt)
 	mesh.surface_set_material(1, mat_stone)

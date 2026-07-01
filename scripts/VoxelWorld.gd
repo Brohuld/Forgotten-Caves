@@ -50,40 +50,51 @@ func get_block(pos: Vector3i) -> int:
 ## C'est le culling des faces cachees : on evite de dessiner les faces
 ## entre deux blocs pleins, invisibles de toute facon.
 func build_mesh() -> void:
-	var st_dirt := SurfaceTool.new()
-	var st_stone := SurfaceTool.new()
-	st_dirt.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st_stone.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# 4 buckets : 0=terre claire, 1=terre foncee, 2=pierre claire, 3=pierre foncee
+	# L'alternance clair/fonce (damier selon x+z) permet de voir clairement
+	# la grille de blocs plutot qu'une surface plate uniforme.
+	var surface_tools: Array = []
+	for i in range(4):
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		surface_tools.append(st)
 
 	for pos in grid.keys():
 		var type: int = grid[pos]
 		if type == BlockType.EMPTY:
 			continue
-		var st := st_dirt if type == BlockType.DIRT else st_stone
+		var parity: int = (pos.x + pos.z) % 2
+		var idx: int
+		if type == BlockType.DIRT:
+			idx = 0 if parity == 0 else 1
+		else:
+			idx = 2 if parity == 0 else 3
+		var st: SurfaceTool = surface_tools[idx]
 		for dir in DIRECTIONS:
 			if get_block(pos + dir) == BlockType.EMPTY:
 				_add_face(st, pos, dir)
 
 	var mesh := ArrayMesh.new()
-	st_dirt.commit(mesh)
-	st_stone.commit(mesh)
+	for st in surface_tools:
+		st.commit(mesh)
 
-	var mat_dirt := StandardMaterial3D.new()
-	mat_dirt.albedo_color = Color(0.55, 0.38, 0.22)
-	mat_dirt.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat_dirt.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	var mat_stone := StandardMaterial3D.new()
-	mat_stone.albedo_color = Color(0.5, 0.5, 0.5)
-	mat_stone.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat_stone.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-
-	mesh.surface_set_material(0, mat_dirt)
-	mesh.surface_set_material(1, mat_stone)
+	mesh.surface_set_material(0, _make_material(Color(0.60, 0.42, 0.24)))
+	mesh.surface_set_material(1, _make_material(Color(0.45, 0.30, 0.15)))
+	mesh.surface_set_material(2, _make_material(Color(0.58, 0.58, 0.58)))
+	mesh.surface_set_material(3, _make_material(Color(0.42, 0.42, 0.42)))
 
 	var mesh_instance := MeshInstance3D.new()
 	mesh_instance.mesh = mesh
 	add_child(mesh_instance)
+
+
+## Cree un materiau simple, non eclaire, dans la couleur donnee
+func _make_material(color: Color) -> StandardMaterial3D:
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return mat
 
 
 ## Ajoute un quad (2 triangles) sur la face "dir" du bloc a la position "pos"

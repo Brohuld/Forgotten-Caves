@@ -35,4 +35,4 @@ Le planning de sprints est dans `Forgotten_Caves_Sprints.xlsx` (dossier parent).
 - [x] Choix du moteur (Godot)
 - [x] Structure de projet initiale
 - [x] Premier rendu de bloc 3D (cube de test dans Main.tscn)
-- [ ] Repo Git initialise et pousse sur GitHub
+- [x] Repo Git initialise et pousse sur GitHub

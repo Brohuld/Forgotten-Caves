@@ -4,19 +4,26 @@ extends Node3D
 ## - Rotation : touches A et E (Q est deja pris par le deplacement, donc pas de Q/E)
 ## - Zoom : touches + et -
 ## - Changement de niveau de profondeur : molette de la souris
+## - Angle de vue (pitch + rotation) : maintenir le clic molette (bouton du
+##   milieu) et glisser la souris (horizontal = rotation, vertical = pitch)
 
 @export var move_speed: float = 12.0
 @export var rotate_step_deg: float = 45.0
 @export var zoom_speed: float = 3.0
 @export var min_distance: float = 8.0
 @export var max_distance: float = 60.0
+@export var pitch_sensitivity: float = 0.2   # degres par pixel de glissement (vertical)
+@export var yaw_sensitivity: float = 0.3     # degres par pixel de glissement (horizontal)
+@export var min_pitch_deg: float = 10.0
+@export var max_pitch_deg: float = 85.0
 
 # Doivent correspondre aux constantes de VoxelWorld.gd
 @export var grid_height: int = 10
 
 var current_level: int = 9
-var camera_distance: float = 30.0
+var camera_distance: float = 16.0
 var pitch_deg: float = 35.0
+var is_middle_dragging: bool = false
 
 @onready var camera: Camera3D = $Camera3D
 var level_label: Label
@@ -71,15 +78,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			camera_distance = clamp(camera_distance + zoom_speed, min_distance, max_distance)
 			_update_camera_offset()
 
-	if event is InputEventMouseButton and event.pressed:
-		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+	if event is InputEventMouseButton:
+		if event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			current_level = clampi(current_level + 1, 0, grid_height - 1)
 			global_position.y = float(current_level)
 			_update_label()
-		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			current_level = clampi(current_level - 1, 0, grid_height - 1)
 			global_position.y = float(current_level)
 			_update_label()
+		elif event.button_index == MOUSE_BUTTON_MIDDLE:
+			is_middle_dragging = event.pressed
+
+	if event is InputEventMouseMotion and is_middle_dragging:
+		pitch_deg = clamp(pitch_deg + event.relative.y * pitch_sensitivity, min_pitch_deg, max_pitch_deg)
+		rotate_y(deg_to_rad(-event.relative.x * yaw_sensitivity))
+		_update_camera_offset()
 
 
 func _update_camera_offset() -> void:
@@ -89,6 +103,16 @@ func _update_camera_offset() -> void:
 	camera.look_at(global_position, Vector3.UP)
 
 
+## current_level est stocke en interne comme la coordonnee Y reelle de la
+## grille (0 = fond de pierre, grid_height-1 = surface). Pour l'affichage,
+## on le convertit pour que 0 = surface et les niveaux en dessous (sous-sol,
+## a miner) s'affichent en negatif, ce qui correspond a l'intuition du joueur.
 func _update_label() -> void:
 	if level_label:
-		level_label.text = "Niveau : %d / %d" % [current_level, grid_height - 1]
+		var displayed_level := current_level - (grid_height - 1)
+		var suffix := ""
+		if displayed_level == 0:
+			suffix = " (surface)"
+		elif displayed_level < 0:
+			suffix = " (sous-sol)"
+		level_label.text = "Niveau : %d%s" % [displayed_level, suffix]

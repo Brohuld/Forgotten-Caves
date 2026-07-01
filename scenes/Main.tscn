@@ -1,7 +1,21 @@
-[gd_scene load_steps=3 format=3 uid="uid://cxpq7fcavesmain"]
+[gd_scene load_steps=10 format=3 uid="uid://cxpq7fcavesmain"]
 
 [ext_resource type="Script" path="res://scripts/CameraRig.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/VoxelWorld.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/Dwarf.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/TaskQueue.gd" id="4"]
+[ext_resource type="Script" path="res://scripts/Forest.gd" id="5"]
+[ext_resource type="Script" path="res://scripts/ActionController.gd" id="6"]
+[ext_resource type="Script" path="res://scripts/Inventory.gd" id="7"]
+[ext_resource type="Script" path="res://scripts/BerryBushes.gd" id="8"]
+[ext_resource type="Script" path="res://scripts/CharacterSheetUI.gd" id="9"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_1"]
+radius = 0.35
+height = 1.7
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dwarf"]
+albedo_color = Color(0.8, 0.6, 0.4, 1)
 
 [node name="Main" type="Node3D"]
 
@@ -10,11 +24,154 @@ transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75
 shadow_enabled = true
 
 [node name="VoxelWorld" type="Node3D" parent="."]
+unique_name_in_owner = true
 script = ExtResource("2")
+
+[node name="Forest" type="Node3D" parent="."]
+script = ExtResource("5")
+
+[node name="BerryBushes" type="Node3D" parent="."]
+script = ExtResource("8")
+
+[node name="TaskQueue" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("4")
+
+[node name="Inventory" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("7")
 
 [node name="CameraRig" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 9, 10)
 script = ExtResource("1")
 
 [node name="Camera3D" type="Camera3D" parent="CameraRig"]
+unique_name_in_owner = true
 current = true
+
+[node name="Dwarf" type="Node3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("3")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Dwarf"]
+mesh = SubResource("CapsuleMesh_1")
+surface_material_override/0 = SubResource("StandardMaterial3D_dwarf")
+
+[node name="ActionUI" type="CanvasLayer" parent="."]
+script = ExtResource("6")
+
+[node name="StatsLabel" type="Label" parent="ActionUI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -140.0
+offset_right = 620.0
+offset_bottom = -110.0
+grow_vertical = 0
+theme_override_font_sizes/font_size = 18
+text = "Bois : 0    Pierre : 0    Terre : 0    Taches en attente : 0"
+
+[node name="MaterialBox" type="HBoxContainer" parent="ActionUI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -105.0
+offset_right = 400.0
+offset_bottom = -70.0
+grow_vertical = 0
+theme_override_constants/separation = 12
+
+[node name="BoisButton" type="Button" parent="ActionUI/MaterialBox"]
+custom_minimum_size = Vector2(90, 32)
+toggle_mode = true
+text = "Bois"
+
+[node name="PierreButton" type="Button" parent="ActionUI/MaterialBox"]
+custom_minimum_size = Vector2(90, 32)
+toggle_mode = true
+text = "Pierre"
+
+[node name="TerreButton" type="Button" parent="ActionUI/MaterialBox"]
+custom_minimum_size = Vector2(90, 32)
+toggle_mode = true
+text = "Terre"
+
+[node name="HBox" type="HBoxContainer" parent="ActionUI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -65.0
+offset_right = 560.0
+offset_bottom = -25.0
+grow_vertical = 0
+theme_override_constants/separation = 12
+
+[node name="MinerButton" type="Button" parent="ActionUI/HBox"]
+custom_minimum_size = Vector2(100, 36)
+toggle_mode = true
+text = "Miner"
+
+[node name="CouperButton" type="Button" parent="ActionUI/HBox"]
+custom_minimum_size = Vector2(100, 36)
+toggle_mode = true
+text = "Couper"
+
+[node name="ConstruireButton" type="Button" parent="ActionUI/HBox"]
+custom_minimum_size = Vector2(110, 36)
+toggle_mode = true
+text = "Construire"
+
+[node name="CharacterSheetUI" type="CanvasLayer" parent="."]
+script = ExtResource("9")
+
+[node name="DwarfIcon" type="Button" parent="CharacterSheetUI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -60.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = 60.0
+grow_horizontal = 0
+
+[node name="SheetPanel" type="Panel" parent="CharacterSheetUI"]
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -300.0
+offset_top = 64.0
+offset_right = -16.0
+offset_bottom = 230.0
+grow_horizontal = 0
+
+[node name="VBox" type="VBoxContainer" parent="CharacterSheetUI/SheetPanel"]
+offset_left = 12.0
+offset_top = 12.0
+offset_right = 270.0
+offset_bottom = 155.0
+theme_override_constants/separation = 6
+
+[node name="TitleLabel" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
+theme_override_font_sizes/font_size = 18
+text = "Nain"
+
+[node name="PVLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
+text = "PV"
+
+[node name="PVBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
+custom_minimum_size = Vector2(240, 16)
+value = 100.0
+
+[node name="HungerLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
+text = "Faim"
+
+[node name="HungerBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
+custom_minimum_size = Vector2(240, 16)
+
+[node name="EnergyLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
+text = "Energie"
+
+[node name="EnergyBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
+custom_minimum_size = Vector2(240, 16)
+
+[node name="TaskLabel" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
+autowrap_mode = 2
+text = "Tache en cours : -"

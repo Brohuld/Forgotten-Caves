@@ -1,0 +1,73 @@
+extends Node
+## Sprint 4 : file d'attente des taches designees par l'utilisateur
+## (miner un bloc / couper un arbre). Les nains y piochent leur prochaine
+## action au lieu d'errer au hasard.
+## Sprint 6 : le nain pioche la tache la plus proche de lui, pas juste
+## la premiere ajoutee (priorite par distance).
+## Sprint 9bis : chaque tache de construction a un id unique, pour pouvoir
+## retirer son mur "fantome" une fois la construction terminee.
+
+var tasks: Array = []
+var next_task_id: int = 0
+
+
+## Ajoute une tache de minage. walk_pos = ou le nain doit se placer,
+## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld.
+func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> void:
+	tasks.append({
+		"type": "miner",
+		"position": walk_pos,
+		"bx": bx, "by": by, "bz": bz,
+		"tree": null,
+	})
+
+
+## Ajoute une tache d'abattage sur un arbre (Node3D du groupe "trees")
+func add_chop_task(tree: Node3D) -> void:
+	tasks.append({
+		"type": "couper",
+		"position": tree.global_position,
+		"tree": tree,
+	})
+
+
+## Ajoute une tache de construction (mur bois/pierre/terre) a la colonne
+## (bx,bz). Renvoie l'id unique de la tache (utilise pour gerer le mur
+## fantome affiche pendant l'attente).
+func add_build_task(walk_pos: Vector3, bx: int, bz: int, material: String) -> int:
+	var id := next_task_id
+	next_task_id += 1
+	tasks.append({
+		"type": "construire",
+		"id": id,
+		"position": walk_pos,
+		"bx": bx, "bz": bz,
+		"material": material,
+	})
+	return id
+
+
+func has_tasks() -> bool:
+	return tasks.size() > 0
+
+
+func task_count() -> int:
+	return tasks.size()
+
+
+## Retire et renvoie la tache la plus proche de "from_position" (priorite
+## par distance, plutot que la simple ordre d'ajout)
+func pop_nearest_task(from_position: Vector3) -> Dictionary:
+	var best_index := 0
+	var best_dist := INF
+	for i in range(tasks.size()):
+		var d: float = (tasks[i]["position"] - from_position).length()
+		if d < best_dist:
+			best_dist = d
+			best_index = i
+	return tasks.pop_at(best_index)
+
+
+## Sprint 8 : remet une tache interrompue (faim/energie critique) dans la file
+func requeue_task(task: Dictionary) -> void:
+	tasks.push_front(task)

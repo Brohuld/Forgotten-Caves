@@ -1,23 +1,37 @@
-[gd_scene load_steps=10 format=3 uid="uid://cxpq7fcavesmain"]
+[gd_scene load_steps=13 format=3 uid="uid://cxpq7fcavesmain"]
 
-[ext_resource type="Script" path="res://scripts/CameraRig.gd" id="1"]
-[ext_resource type="Script" path="res://scripts/VoxelWorld.gd" id="2"]
-[ext_resource type="Script" path="res://scripts/Dwarf.gd" id="3"]
-[ext_resource type="Script" path="res://scripts/TaskQueue.gd" id="4"]
-[ext_resource type="Script" path="res://scripts/Forest.gd" id="5"]
-[ext_resource type="Script" path="res://scripts/ActionController.gd" id="6"]
-[ext_resource type="Script" path="res://scripts/Inventory.gd" id="7"]
-[ext_resource type="Script" path="res://scripts/BerryBushes.gd" id="8"]
-[ext_resource type="Script" path="res://scripts/CharacterSheetUI.gd" id="9"]
+[ext_resource type="Script" path="res://scripts/systemes/CameraRig.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/monde/VoxelWorld.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/entites/Dwarf.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/systemes/TaskQueue.gd" id="4"]
+[ext_resource type="Script" path="res://scripts/entites/Forest.gd" id="5"]
+[ext_resource type="Script" path="res://scripts/systemes/ActionController.gd" id="6"]
+[ext_resource type="Script" path="res://scripts/systemes/Inventory.gd" id="7"]
+[ext_resource type="Script" path="res://scripts/entites/BerryBushes.gd" id="8"]
+[ext_resource type="Script" path="res://scripts/ui/CharacterSheetUI.gd" id="9"]
+[ext_resource type="Script" path="res://scripts/monde/GroundDecoration.gd" id="11"]
 
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_1"]
-radius = 0.35
-height = 1.7
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
+sky_top_color = Color(0.32, 0.52, 0.85, 1)
+sky_horizon_color = Color(0.75, 0.82, 0.9, 1)
+ground_bottom_color = Color(0.28, 0.22, 0.18, 1)
+ground_horizon_color = Color(0.55, 0.48, 0.4, 1)
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dwarf"]
-albedo_color = Color(0.8, 0.6, 0.4, 1)
+[sub_resource type="Sky" id="Sky_1"]
+sky_material = SubResource("ProceduralSkyMaterial_1")
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 2
+sky = SubResource("Sky_1")
+ambient_light_source = 3
+fog_enabled = true
+fog_light_color = Color(0.65, 0.68, 0.72, 1)
+fog_density = 0.008
 
 [node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75, 0.433013, 0, 20, 0)
@@ -32,6 +46,9 @@ script = ExtResource("5")
 
 [node name="BerryBushes" type="Node3D" parent="."]
 script = ExtResource("8")
+
+[node name="GroundDecoration" type="Node3D" parent="."]
+script = ExtResource("11")
 
 [node name="TaskQueue" type="Node" parent="."]
 unique_name_in_owner = true
@@ -49,13 +66,37 @@ script = ExtResource("1")
 unique_name_in_owner = true
 current = true
 
-[node name="Dwarf" type="Node3D" parent="."]
-unique_name_in_owner = true
-script = ExtResource("3")
+[node name="Colony" type="Node3D" parent="."]
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="Dwarf"]
-mesh = SubResource("CapsuleMesh_1")
-surface_material_override/0 = SubResource("StandardMaterial3D_dwarf")
+[node name="Dwarf1" type="Node3D" parent="Colony"]
+script = ExtResource("3")
+dwarf_name = "Nain 1"
+hair_color = Color(0.55, 0.25, 0.15, 1)
+beard_color = Color(0.75, 0.68, 0.5, 1)
+clothing_color = Color(0.68, 0.51, 0.41, 1)
+armor_color = Color(0.55, 0.55, 0.58, 1)
+
+[node name="Body" type="Node3D" parent="Colony/Dwarf1"]
+
+[node name="Dwarf2" type="Node3D" parent="Colony"]
+script = ExtResource("3")
+dwarf_name = "Nain 2"
+hair_color = Color(0.85, 0.72, 0.35, 1)
+beard_color = Color(0.88, 0.78, 0.5, 1)
+clothing_color = Color(0.25, 0.35, 0.55, 1)
+armor_color = Color(0.45, 0.47, 0.5, 1)
+
+[node name="Body" type="Node3D" parent="Colony/Dwarf2"]
+
+[node name="Dwarf3" type="Node3D" parent="Colony"]
+script = ExtResource("3")
+dwarf_name = "Nain 3"
+hair_color = Color(0.15, 0.12, 0.1, 1)
+beard_color = Color(0.2, 0.18, 0.15, 1)
+clothing_color = Color(0.25, 0.42, 0.22, 1)
+armor_color = Color(0.3, 0.32, 0.35, 1)
+
+[node name="Body" type="Node3D" parent="Colony/Dwarf3"]
 
 [node name="ActionUI" type="CanvasLayer" parent="."]
 script = ExtResource("6")
@@ -101,7 +142,7 @@ anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 16.0
 offset_top = -65.0
-offset_right = 560.0
+offset_right = 680.0
 offset_bottom = -25.0
 grow_vertical = 0
 theme_override_constants/separation = 12
@@ -116,62 +157,32 @@ custom_minimum_size = Vector2(100, 36)
 toggle_mode = true
 text = "Couper"
 
+[node name="CueillirButton" type="Button" parent="ActionUI/HBox"]
+custom_minimum_size = Vector2(100, 36)
+toggle_mode = true
+text = "Cueillir"
+
 [node name="ConstruireButton" type="Button" parent="ActionUI/HBox"]
 custom_minimum_size = Vector2(110, 36)
 toggle_mode = true
 text = "Construire"
 
+[node name="InfoPanel" type="PanelContainer" parent="ActionUI"]
+visible = false
+offset_right = 220.0
+offset_bottom = 70.0
+
+[node name="VBox" type="VBoxContainer" parent="ActionUI/InfoPanel"]
+theme_override_constants/separation = 4
+
+[node name="InfoLabel" type="Label" parent="ActionUI/InfoPanel/VBox"]
+theme_override_font_sizes/font_size = 16
+text = "..."
+autowrap_mode = 2
+
+[node name="CloseButton" type="Button" parent="ActionUI/InfoPanel/VBox"]
+custom_minimum_size = Vector2(0, 24)
+text = "Fermer"
+
 [node name="CharacterSheetUI" type="CanvasLayer" parent="."]
 script = ExtResource("9")
-
-[node name="DwarfIcon" type="Button" parent="CharacterSheetUI"]
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -60.0
-offset_top = 16.0
-offset_right = -16.0
-offset_bottom = 60.0
-grow_horizontal = 0
-
-[node name="SheetPanel" type="Panel" parent="CharacterSheetUI"]
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -300.0
-offset_top = 64.0
-offset_right = -16.0
-offset_bottom = 230.0
-grow_horizontal = 0
-
-[node name="VBox" type="VBoxContainer" parent="CharacterSheetUI/SheetPanel"]
-offset_left = 12.0
-offset_top = 12.0
-offset_right = 270.0
-offset_bottom = 155.0
-theme_override_constants/separation = 6
-
-[node name="TitleLabel" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
-theme_override_font_sizes/font_size = 18
-text = "Nain"
-
-[node name="PVLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
-text = "PV"
-
-[node name="PVBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
-custom_minimum_size = Vector2(240, 16)
-value = 100.0
-
-[node name="HungerLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
-text = "Faim"
-
-[node name="HungerBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
-custom_minimum_size = Vector2(240, 16)
-
-[node name="EnergyLabelText" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
-text = "Energie"
-
-[node name="EnergyBar" type="ProgressBar" parent="CharacterSheetUI/SheetPanel/VBox"]
-custom_minimum_size = Vector2(240, 16)
-
-[node name="TaskLabel" type="Label" parent="CharacterSheetUI/SheetPanel/VBox"]
-autowrap_mode = 2
-text = "Tache en cours : -"

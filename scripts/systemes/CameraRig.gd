@@ -6,6 +6,11 @@ extends Node3D
 ## - Changement de niveau de profondeur : molette de la souris
 ## - Angle de vue (pitch + rotation) : maintenir le clic molette (bouton du
 ##   milieu) et glisser la souris (horizontal = rotation, vertical = pitch)
+## Sprint 23bis : le changement de niveau ne faisait jusqu'ici que deplacer la
+## camera en Y, sans rien cacher du terrain - inutile pour "voir" un niveau
+## souterrain puisque tout est plein autour. Chaque changement de niveau
+## demande maintenant a VoxelWorld de reveler une coupe horizontale complete
+## du niveau vise (voir VoxelWorld.set_view_level).
 
 @export var move_speed: float = 12.0
 @export var rotate_step_deg: float = 45.0
@@ -18,14 +23,15 @@ extends Node3D
 @export var max_pitch_deg: float = 85.0
 
 # Doivent correspondre aux constantes de VoxelWorld.gd
-@export var grid_height: int = 10
+@export var grid_height: int = 30  # Sprint 23 : 10 -> 30 (profondeur agrandie)
 
-var current_level: int = 9
+var current_level: int = 29  # sommet de la carte (grid_height - 1)
 var camera_distance: float = 16.0
 var pitch_deg: float = 35.0
 var is_middle_dragging: bool = false
 
 @onready var camera: Camera3D = $Camera3D
+@onready var voxel_world: Node3D = %VoxelWorld
 var level_label: Label
 
 
@@ -34,6 +40,7 @@ func _ready() -> void:
 	_update_camera_offset()
 	_create_ui()
 	_update_label()
+	_update_view_level()
 
 
 func _create_ui() -> void:
@@ -83,10 +90,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			current_level = clampi(current_level + 1, 0, grid_height - 1)
 			global_position.y = float(current_level)
 			_update_label()
+			_update_view_level()
 		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			current_level = clampi(current_level - 1, 0, grid_height - 1)
 			global_position.y = float(current_level)
 			_update_label()
+			_update_view_level()
 		elif event.button_index == MOUSE_BUTTON_MIDDLE:
 			is_middle_dragging = event.pressed
 
@@ -101,6 +110,15 @@ func _update_camera_offset() -> void:
 	var horizontal := camera_distance * cos(pitch)
 	camera.position = Vector3(0, camera_distance * sin(pitch), horizontal)
 	camera.look_at(global_position, Vector3.UP)
+
+
+## Sprint 23bis : repercute le niveau courant sur VoxelWorld pour que le
+## terrain au-dessus soit reellement cache (voir VoxelWorld.set_view_level).
+## Sans filet particulier si voxel_world est introuvable (%VoxelWorld) : ca ne
+## devrait pas arriver dans la scene actuelle, mais on evite un crash au cas ou.
+func _update_view_level() -> void:
+	if voxel_world != null and voxel_world.has_method("set_view_level"):
+		voxel_world.set_view_level(current_level)
 
 
 ## current_level est stocke en interne comme la coordonnee Y reelle de la

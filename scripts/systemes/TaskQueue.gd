@@ -5,30 +5,63 @@ extends Node
 ## Sprint 6 : le nain pioche la tache la plus proche de lui, pas juste
 ## la premiere ajoutee (priorite par distance).
 ## Sprint 9bis : chaque tache de construction a un id unique, pour pouvoir
-## retirer son mur "fantome" une fois la construction terminee.
+## retirer son mur "fantome" une fois la construction terminee (Sprint 26 :
+## toutes les taches ont maintenant un id, voir plus bas).
+## Sprint 24ter : ajoute la tache "cueillir" (recolte de fruits/baies sans
+## abattre l'arbre/buisson, voir add_gather_task).
+## Sprint 26 : toutes les taches (pas seulement "construire") ont maintenant
+## un id unique, pour que ActionController puisse afficher une icone
+## temporaire sur l'objet designe et la retirer une fois la tache terminee
+## (voir Dwarf.gd/task_finished et ActionController.gd/_on_task_finished).
 
 var tasks: Array = []
 var next_task_id: int = 0
 
 
 ## Ajoute une tache de minage. walk_pos = ou le nain doit se placer,
-## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld.
-func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> void:
+## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld. Renvoie l'id
+## unique de la tache (icone temporaire, voir ActionController.gd).
+func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> int:
+	var id := next_task_id
+	next_task_id += 1
 	tasks.append({
 		"type": "miner",
+		"id": id,
 		"position": walk_pos,
 		"bx": bx, "by": by, "bz": bz,
 		"tree": null,
 	})
+	return id
 
 
-## Ajoute une tache d'abattage sur un arbre (Node3D du groupe "trees")
-func add_chop_task(tree: Node3D) -> void:
+## Ajoute une tache d'abattage sur un arbre (Node3D du groupe "trees").
+## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
+func add_chop_task(tree: Node3D) -> int:
+	var id := next_task_id
+	next_task_id += 1
 	tasks.append({
 		"type": "couper",
+		"id": id,
 		"position": tree.global_position,
 		"tree": tree,
 	})
+	return id
+
+
+## Sprint 24ter : ajoute une tache de cueillette sur un arbre fruitier ou un
+## buisson (Node3D du groupe "cueillette", voir Forest.gd/BerryBushes.gd) -
+## ne detruit pas la cible, contrairement a "couper" (voir Dwarf.gd/_complete_task).
+## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
+func add_gather_task(target: Node3D) -> int:
+	var id := next_task_id
+	next_task_id += 1
+	tasks.append({
+		"type": "cueillir",
+		"id": id,
+		"position": target.global_position,
+		"tree": target,
+	})
+	return id
 
 
 ## Ajoute une tache de construction (mur bois/pierre/terre) a la colonne

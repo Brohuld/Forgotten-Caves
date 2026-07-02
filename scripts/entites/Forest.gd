@@ -35,6 +35,7 @@ const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecie
 @export var ground_level: float = 30.0  # sommet de la carte (HEIGHT, Sprint 23 : 10 -> 30)
 @export var tree_count: int = 12
 @export var fruit_tree_count: int = 6  # Sprint 24ter : 2 de chaque espece environ
+@export var size_multiplier: float = 1.3  # 2026-07-02 : arbres agrandis de 30% (jauges nains/arbres/buissons rejustees)
 
 
 func _ready() -> void:
@@ -50,8 +51,10 @@ func _spawn_tree(species: Dictionary) -> void:
 	var z := randf_range(2.0, float(grid_depth - 2))
 
 	# Petites variations aleatoires par instance (echelle + teinte), pour que
-	# deux arbres de la meme espece ne soient jamais des clones parfaits
-	var scale_jitter: float = randf_range(0.85, 1.15)
+	# deux arbres de la meme espece ne soient jamais des clones parfaits.
+	# size_multiplier applique en plus une taille de base plus grande a TOUS
+	# les arbres (2026-07-02, demande explicite : arbres agrandis de 30%).
+	var scale_jitter: float = randf_range(0.85, 1.15) * size_multiplier
 	var tint_jitter: float = randf_range(0.9, 1.1)
 
 	var tree := Node3D.new()

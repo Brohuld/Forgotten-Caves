@@ -469,10 +469,6 @@ func rebuild_mesh() -> void:
 					face_color = _vein_color_for(pos)
 				_add_face(surface_tools[idx], pos, dir, face_color)
 
-	var mesh := ArrayMesh.new()
-	for st in surface_tools:
-		st.commit(mesh)
-
 	# Sprint 13 : palette plus vive/saturee (direction "BD"), sur le meme
 	# principe qu'avant (damier clair/fonce + parois assombries)
 	var dirt_dark := Color(0.58, 0.34, 0.10)  # garde pour bucket 6 (paroi terre)
@@ -480,17 +476,40 @@ func rebuild_mesh() -> void:
 	var wood_wall := Color(0.70, 0.46, 0.16)
 	var stone_wall := Color(0.74, 0.76, 0.82)
 
-	mesh.surface_set_material(0, _make_vertex_color_material())
-	mesh.surface_set_material(1, _make_material(dirt_dark))  # inutilise (voir plus haut)
-	mesh.surface_set_material(2, _make_vertex_color_material())
-	mesh.surface_set_material(3, _make_material(stone_dark))  # inutilise (voir plus haut)
-	mesh.surface_set_material(4, _make_material(wood_wall))
-	mesh.surface_set_material(5, _make_material(stone_wall))
-	mesh.surface_set_material(6, _make_material(_darken(dirt_dark)))
-	mesh.surface_set_material(7, _make_material(_darken(stone_dark)))
-	mesh.surface_set_material(8, _make_material(_darken(wood_wall)))
-	mesh.surface_set_material(9, _make_material(_darken(stone_wall)))
-	mesh.surface_set_material(10, _make_vertex_color_material())
+	# Sprint 24octies : materiau associe a chaque bucket (index dans
+	# surface_tools). Un SurfaceTool sans aucune face ajoutee ne produit PAS
+	# de surface lors du commit() (Godot ignore silencieusement les buckets
+	# vides), donc l'indice de surface reellement obtenu dans le mesh final
+	# peut etre INFERIEUR a l'indice du bucket d'origine des qu'un bucket
+	# precedent est vide (ex : aucun mur en bois sur la carte -> bucket 4
+	# vide -> tout ce qui suit se decale). Assigner les materiaux a des
+	# indices fixes 0-10 provoquait donc "Index p_idx out of bounds" des
+	# qu'un type de bloc etait absent de la carte (cas frequent sur une
+	# carte fraiche/petite). On mappe maintenant chaque bucket a son
+	# materiau via un dictionnaire, et on n'appelle surface_set_material
+	# qu'apres coup, sur le vrai indice de surface obtenu (compte a part,
+	# qui n'avance que quand un commit() a effectivement ajoute une surface).
+	var bucket_materials := {
+		0: _make_vertex_color_material(),
+		1: _make_material(dirt_dark),  # inutilise (voir plus haut)
+		2: _make_vertex_color_material(),
+		3: _make_material(stone_dark),  # inutilise (voir plus haut)
+		4: _make_material(wood_wall),
+		5: _make_material(stone_wall),
+		6: _make_material(_darken(dirt_dark)),
+		7: _make_material(_darken(stone_dark)),
+		8: _make_material(_darken(wood_wall)),
+		9: _make_material(_darken(stone_wall)),
+		10: _make_vertex_color_material(),
+	}
+
+	var mesh := ArrayMesh.new()
+	for bucket_idx in range(surface_tools.size()):
+		var st: SurfaceTool = surface_tools[bucket_idx]
+		var surfaces_before := mesh.get_surface_count()
+		st.commit(mesh)
+		if mesh.get_surface_count() > surfaces_before:
+			mesh.surface_set_material(surfaces_before, bucket_materials[bucket_idx])
 
 	mesh_instance.mesh = mesh
 	_rebuild_vein_pepites()

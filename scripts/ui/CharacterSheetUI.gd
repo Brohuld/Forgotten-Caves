@@ -11,35 +11,185 @@ extends CanvasLayer
 ## Sprint 18 : affiche aussi les competences (liste dans SkillDefinitions.gd)
 ## et leur niveau, qui evolue avec le temps (contrairement aux caracteristiques
 ## du Sprint 12) : rafraichi a chaque frame comme faim/energie.
+## 2026-07-02 : chaque bouton affiche desormais un vrai portrait 3D du nain
+## (mini SubViewport + camera cadree sur la tete, voir _make_portrait_texture)
+## a la place du cercle colore generique, et son nom en permanence a cote
+## (voir _create_entry) - avant, le nom n'etait visible qu'en ouvrant la
+## fiche complete.
+## 2026-07-02 (2e passe) : fiche de personnage agrandie (police bien plus
+## grosse) et reorganisee en 3 onglets (TabContainer) - "Etat general" (nom,
+## PV/Energie/Faim/Soif, tache en cours), "Caracteristiques", "Competences" -
+## au lieu d'un long panneau vertical unique qui devenait difficile a lire.
+## "Soif" est un placeholder pour l'instant (barre toujours pleine, jamais
+## mise a jour) : aucune mecanique de soif n'existe encore cote gameplay
+## (pas de baisse dans le temps, pas de source d'eau), meme traitement que
+## "PV" (deja un placeholder depuis le Sprint 9).
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
+const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
 
-const ICON_SIZE := 40
+const ICON_SIZE := 72  # 2026-07-02 : agrandi (etait 48), jugee trop petite
 const ICON_MARGIN := 16
-const ICON_SPACING := 8
-const SKILL_ROW_HEIGHT := 22
-# Hauteur de base (260, comme avant le Sprint 18) + une ligne par competence
-# de la table + une ligne pour le titre "Competences" ; si la table grandit
-# beaucoup plus tard, ajuster ce calcul ou reduire ICON_MARGIN/PANEL_HEIGHT.
-var PANEL_HEIGHT: int = 260 + SKILL_ROW_HEIGHT * (SkillDefs.SKILLS.size() + 1)
+const ICON_SPACING := 10
+const NAME_LABEL_WIDTH := 260  # 2026-07-02 : elargi (etait 160), la boite ne contenait pas les noms les plus longs (prenom + nom de clan)
+const NAME_LABEL_GAP := 8  # espace entre le texte du nom et l'icone
+
+# Fiche de personnage (panel + onglets) : tailles et polices, nettement
+# agrandies par rapport a l'ancien panneau unique (300x~370 px, police par
+# defaut ~16). PANEL_WIDTH elargi une 2e fois (2026-07-02, 460->640) pour que
+# les 3 onglets (Etat general/Caracteristiques/Competences) soient tous
+# visibles d'un coup dans la barre d'onglets, sans fleches de defilement.
+const PANEL_WIDTH := 640
+const PANEL_HEIGHT := 460
+const FONT_TITLE := 30       # nom du nain, en haut de la fiche
+const FONT_SECTION := 20     # titres d'onglets + police des labels de contenu
+const FONT_BODY := 20        # texte courant (stats, competences, tache en cours)
+const BAR_HEIGHT := 26        # hauteur des barres PV/Faim/Energie/Soif
+
+# Portrait 3D : taille de rendu du SubViewport (plus grand que l'icone
+# affichee, ICON_SIZE, pour rester net une fois redimensionne) + reglages de
+# cadrage de la mini-camera. Champs d'apparence copies depuis le vrai
+# DwarfModel3D du nain (voir Dwarf.gd/_build_appearance) - liste explicite
+# plutot qu'une copie generique par reflexion, pour ne jamais copier par
+# erreur des proprietes de noeud (position/rotation/scale...) qui n'ont rien
+# a voir avec l'apparence.
+const PORTRAIT_RENDER_SIZE := 128
+const PORTRAIT_CAMERA_FOV := 30.0
+const PORTRAIT_APPEARANCE_FIELDS := [
+	"skin_color", "hair_color", "beard_color", "clothing_color", "pants_color",
+	"armor_color", "boot_color", "coat_color", "wear_gloves", "wear_coat",
+	"leg_height", "torso_height", "torso_shoulder_width", "torso_waist_width",
+	"torso_depth", "head_radius", "head_height_factor", "arm_length",
+	"hair_size", "hair_lift", "hair_back_offset",
+	"hair_style", "beard_style", "beard_width", "corpulence", "outfit_style",
+]
+
+# Anneau de selection (2026-07-02) : un rond bleu pose au sol autour des
+# pieds du nain dont la fiche est actuellement ouverte, pour voir en un coup
+# d'oeil qui est selectionne. Un seul anneau partage, deplace/montre-cache
+# selon selected_dwarf plutot qu'un par nain (inutile puisqu'un seul nain
+# peut etre "selectionne" - fiche ouverte - a la fois).
+const SELECTION_RING_INNER_RADIUS := 0.32
+const SELECTION_RING_OUTER_RADIUS := 0.5
+const SELECTION_RING_COLOR := Color(0.25, 0.55, 1.0, 0.85)
 
 var panels: Array = []  # un Panel par nain, meme ordre que le groupe "dwarves"
+var selected_dwarf: Node3D = null
+var selection_ring: MeshInstance3D
 
 
 func _ready() -> void:
+	_create_selection_ring()
 	var dwarves: Array = get_tree().get_nodes_in_group("dwarves")
 	dwarves.sort_custom(func(a, b): return a.name < b.name)
 	for i in range(dwarves.size()):
 		_create_entry(dwarves[i], i)
 
 
-## Cree l'icone + la fiche (masquee au depart) pour un nain donne
+## Construit l'anneau de selection et l'ajoute au parent 3D (Main), pas a ce
+## CanvasLayer - c'est un objet du monde 3D, pas un element d'interface.
+## Cache par defaut (aucun nain selectionne au demarrage).
+## 2026-07-02 : anneau plat construit a la main (ArrayMesh, voir
+## _build_ring_mesh) au lieu d'un TorusMesh aplati par scale - l'anneau ne
+## s'affichait pas du tout avec TorusMesh (tres probablement un souci de nom
+## de propriete cote moteur), cette approche est la meme technique deja
+## utilisee ailleurs dans le projet pour des formes generees par code (pas de
+## dependance a l'API exacte d'un mesh primitif).
+func _create_selection_ring() -> void:
+	selection_ring = MeshInstance3D.new()
+	selection_ring.name = "SelectionRing"
+	selection_ring.mesh = _build_ring_mesh(SELECTION_RING_INNER_RADIUS, SELECTION_RING_OUTER_RADIUS)
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = SELECTION_RING_COLOR
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED  # visible de dessus ET de dessous, peu importe le sens des triangles
+	# 2026-07-02 : le nain se tient exactement AU NIVEAU du dessus du terrain
+	# (voir VoxelWorld._add_face, face du haut a world_y = block_y + 1 = 30 =
+	# ground_level) - un anneau colle a 0.03 au-dessus etait probablement
+	# perdu dans un z-fighting avec la face du terrain (memes profondeurs, a
+	# quelques cm pres). no_depth_test force l'anneau a toujours se dessiner
+	# PAR-DESSUS le reste (meme technique que sleep_indicator dans Dwarf.gd),
+	# donc plus aucune ambiguite de profondeur possible.
+	mat.no_depth_test = true
+	selection_ring.set_surface_override_material(0, mat)
+	selection_ring.visible = false
+	get_parent().add_child(selection_ring)
+
+
+## Construit un anneau plat (dans le plan XZ, donc pose "a plat" au sol sans
+## rotation a appliquer) : deux cercles de rayons "inner"/"outer" relies par
+## des triangles. Technique manuelle (ArrayMesh) plutot qu'un mesh primitif
+## du moteur, pour un rendu garanti sans dependre des noms de proprietes
+## exacts d'une classe comme TorusMesh.
+func _build_ring_mesh(inner: float, outer: float, segments: int = 48) -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var indices := PackedInt32Array()
+	for i in range(segments + 1):
+		var angle: float = i * TAU / float(segments)
+		var dir := Vector3(cos(angle), 0.0, sin(angle))
+		verts.append(dir * outer)
+		verts.append(dir * inner)
+	for i in range(segments):
+		var a: int = i * 2
+		var b: int = a + 1
+		var c: int = a + 2
+		var d: int = a + 3
+		indices.append(a)
+		indices.append(c)
+		indices.append(b)
+		indices.append(b)
+		indices.append(c)
+		indices.append(d)
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_INDEX] = indices
+	var array_mesh := ArrayMesh.new()
+	array_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return array_mesh
+
+
+## Cree le nom, l'icone-portrait + la fiche (masquee au depart) pour un nain donne
 func _create_entry(dwarf: Node3D, index: int) -> void:
 	var top_offset: float = ICON_MARGIN + index * (ICON_SIZE + ICON_SPACING)
 
+	# 2026-07-02 : fond sombre semi-transparent derriere le nom - le blanc seul
+	# (meme avec un contour noir) restait peu lisible selon ce qu'il y a
+	# derriere dans la scene 3D (ciel clair, terrain...). Un "chip" sombre
+	# garantit le contraste quel que soit l'arriere-plan.
+	var name_bg := ColorRect.new()
+	name_bg.color = Color(0.05, 0.05, 0.07, 0.6)
+	name_bg.anchor_left = 1.0
+	name_bg.anchor_right = 1.0
+	name_bg.offset_right = -ICON_MARGIN - ICON_SIZE - NAME_LABEL_GAP * 0.5
+	name_bg.offset_left = name_bg.offset_right - NAME_LABEL_WIDTH - NAME_LABEL_GAP * 0.5
+	name_bg.offset_top = top_offset
+	name_bg.offset_bottom = top_offset + ICON_SIZE
+	name_bg.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	name_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(name_bg)
+
+	var name_label := Label.new()
+	name_label.text = dwarf.dwarf_name
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 18)
+	name_label.add_theme_color_override("font_color", Color(1, 1, 1))
+	name_label.clip_text = true
+	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS  # filet de securite si un nom depasse quand meme NAME_LABEL_WIDTH
+	name_label.anchor_left = 1.0
+	name_label.anchor_right = 1.0
+	name_label.offset_right = -ICON_MARGIN - ICON_SIZE - NAME_LABEL_GAP
+	name_label.offset_left = name_label.offset_right - NAME_LABEL_WIDTH
+	name_label.offset_top = top_offset
+	name_label.offset_bottom = top_offset + ICON_SIZE
+	name_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	add_child(name_label)
+
 	var icon_button := Button.new()
 	icon_button.custom_minimum_size = Vector2(ICON_SIZE, ICON_SIZE)
-	icon_button.icon = _make_circle_icon(Color(0.8, 0.6, 0.4), ICON_SIZE)
+	icon_button.icon = _make_portrait_texture(dwarf)
 	icon_button.expand_icon = true
 	icon_button.anchor_left = 1.0
 	icon_button.anchor_right = 1.0
@@ -53,31 +203,70 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	var panel := Panel.new()
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
-	panel.offset_left = -300.0
-	panel.offset_right = -16.0
+	panel.offset_left = -PANEL_WIDTH - ICON_MARGIN
+	panel.offset_right = -ICON_MARGIN
 	panel.offset_top = top_offset
 	panel.offset_bottom = top_offset + PANEL_HEIGHT
 	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	panel.visible = false
+	# 2026-07-02 : fond fonce explicite + theme "texte blanc" pour toute la
+	# fiche - le nom (et le reste du texte) restait illisible sur le fond
+	# gris clair par defaut du theme Godot. Le Theme assigne ici au panel
+	# s'applique en cascade a tous ses enfants (titre, onglets, labels...),
+	# pas besoin de repeter la couleur sur chaque Label individuellement.
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.12, 0.12, 0.15, 0.97)
+	panel_style.set_corner_radius_all(6)
+	panel_style.set_content_margin_all(4)
+	panel.add_theme_stylebox_override("panel", panel_style)
+	var sheet_theme := Theme.new()
+	sheet_theme.set_color("font_color", "Label", Color(0.95, 0.95, 0.95))
+	panel.theme = sheet_theme
 	add_child(panel)
 
-	var vbox := VBoxContainer.new()
-	vbox.offset_left = 12.0
-	vbox.offset_top = 12.0
-	vbox.offset_right = 270.0
-	vbox.offset_bottom = PANEL_HEIGHT - 15.0
-	vbox.add_theme_constant_override("separation", 6)
-	panel.add_child(vbox)
+	var outer_vbox := VBoxContainer.new()
+	outer_vbox.offset_left = 16.0
+	outer_vbox.offset_top = 12.0
+	outer_vbox.offset_right = PANEL_WIDTH - 16.0
+	outer_vbox.offset_bottom = PANEL_HEIGHT - 12.0
+	outer_vbox.add_theme_constant_override("separation", 10)
+	panel.add_child(outer_vbox)
 
 	var title := Label.new()
-	title.add_theme_font_size_override("font_size", 18)
+	title.add_theme_font_size_override("font_size", FONT_TITLE)
 	title.text = dwarf.dwarf_name
-	vbox.add_child(title)
+	outer_vbox.add_child(title)
 
+	var tabs := TabContainer.new()
+	tabs.custom_minimum_size = Vector2(PANEL_WIDTH - 32.0, PANEL_HEIGHT - 90.0)
+	tabs.add_theme_font_size_override("font_size", FONT_SECTION)
+	outer_vbox.add_child(tabs)
+
+	# --- Onglet 1 : Etat general (nom deja affiche au-dessus des onglets,
+	# donc ici juste PV/Energie/Faim/Soif + la tache en cours) ---
+	var general_tab := VBoxContainer.new()
+	general_tab.add_theme_constant_override("separation", 10)
+	tabs.add_child(general_tab)
+	tabs.set_tab_title(0, "Etat general")
+
+	_make_stat_bar(general_tab, "PV", 100.0, 100.0)
+	var hunger_bar := _make_stat_bar(general_tab, "Faim", dwarf.hunger_max, dwarf.hunger)
+	var energy_bar := _make_stat_bar(general_tab, "Energie", dwarf.energy_max, dwarf.energy)
+	# Soif : placeholder, aucune mecanique de soif n'existe encore (voir note
+	# en tete de fichier) - barre toujours pleine, jamais rafraichie en _process.
+	_make_stat_bar(general_tab, "Soif", 100.0, 100.0)
+
+	var task_label := _make_label("Tache en cours : -", FONT_BODY)
+	task_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	general_tab.add_child(task_label)
+
+	# --- Onglet 2 : Caracteristiques (Sprint 12, fixees a la creation) ---
 	var stats_grid := GridContainer.new()
 	stats_grid.columns = 2
-	stats_grid.add_theme_constant_override("h_separation", 16)
-	vbox.add_child(stats_grid)
+	stats_grid.add_theme_constant_override("h_separation", 24)
+	stats_grid.add_theme_constant_override("v_separation", 10)
+	tabs.add_child(stats_grid)
+	tabs.set_tab_title(1, "Caracteristiques")
 	_add_stat_label(stats_grid, "Force", dwarf.force)
 	_add_stat_label(stats_grid, "Agilite", dwarf.agilite)
 	_add_stat_label(stats_grid, "Constitution", dwarf.constitution)
@@ -85,52 +274,32 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	_add_stat_label(stats_grid, "Beaute", dwarf.beaute)
 	_add_stat_label(stats_grid, "Bonheur", "%d%%" % dwarf.bonheur)
 
-	# Competences (Sprint 18) : generees dynamiquement a partir de la table
-	# SkillDefinitions.SKILLS, donc s'adapte automatiquement si on en ajoute.
-	# Le niveau progresse avec le temps (contrairement aux caracteristiques
-	# ci-dessus) : les labels sont donc rafraichis dans _process.
-	var skills_title := Label.new()
-	skills_title.add_theme_font_size_override("font_size", 14)
-	skills_title.text = "Competences"
-	vbox.add_child(skills_title)
+	# --- Onglet 3 : Competences (Sprint 18) - generees dynamiquement a
+	# partir de la table SkillDefinitions.SKILLS, donc s'adapte
+	# automatiquement si on en ajoute. Le niveau progresse avec le temps
+	# (contrairement aux caracteristiques ci-dessus) : niveau + barre
+	# rafraichis dans _process (voir _update_skill_row). 3 colonnes : nom de
+	# la competence, niveau (juste le nombre, sans le mot "niveau"), barre de
+	# progression vers le niveau suivant.
+	var skills_grid := GridContainer.new()
+	skills_grid.columns = 3
+	skills_grid.add_theme_constant_override("h_separation", 16)
+	skills_grid.add_theme_constant_override("v_separation", 10)
+	tabs.add_child(skills_grid)
+	tabs.set_tab_title(2, "Competences")
 
-	var skill_labels: Dictionary = {}
+	var skill_rows: Dictionary = {}
 	for skill in SkillDefs.SKILLS:
 		var skill_id: String = skill["id"]
-		var lbl := Label.new()
-		lbl.text = _skill_line(dwarf, skill_id)
-		vbox.add_child(lbl)
-		skill_labels[skill_id] = lbl
-
-	var pv_label := Label.new()
-	pv_label.text = "PV"
-	vbox.add_child(pv_label)
-	var pv_bar := ProgressBar.new()
-	pv_bar.custom_minimum_size = Vector2(240, 16)
-	pv_bar.max_value = 100
-	pv_bar.value = 100
-	vbox.add_child(pv_bar)
-
-	var hunger_label := Label.new()
-	hunger_label.text = "Faim"
-	vbox.add_child(hunger_label)
-	var hunger_bar := ProgressBar.new()
-	hunger_bar.custom_minimum_size = Vector2(240, 16)
-	hunger_bar.max_value = dwarf.hunger_max
-	vbox.add_child(hunger_bar)
-
-	var energy_label := Label.new()
-	energy_label.text = "Energie"
-	vbox.add_child(energy_label)
-	var energy_bar := ProgressBar.new()
-	energy_bar.custom_minimum_size = Vector2(240, 16)
-	energy_bar.max_value = dwarf.energy_max
-	vbox.add_child(energy_bar)
-
-	var task_label := Label.new()
-	task_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-	task_label.text = "Tache en cours : -"
-	vbox.add_child(task_label)
+		skills_grid.add_child(_make_label(SkillDefs.display_name(skill_id), FONT_BODY))
+		var level_label := _make_label("0", FONT_BODY)
+		skills_grid.add_child(level_label)
+		var xp_bar := ProgressBar.new()
+		xp_bar.custom_minimum_size = Vector2(220.0, BAR_HEIGHT)
+		skills_grid.add_child(xp_bar)
+		var row: Dictionary = {"level_label": level_label, "bar": xp_bar}
+		skill_rows[skill_id] = row
+		_update_skill_row(dwarf, skill_id, row)
 
 	# On garde les refs necessaires au _process directement sur le Panel,
 	# pour ne pas avoir a maintenir plusieurs tableaux paralleles
@@ -138,26 +307,51 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	panel.set_meta("hunger_bar", hunger_bar)
 	panel.set_meta("energy_bar", energy_bar)
 	panel.set_meta("task_label", task_label)
-	panel.set_meta("skill_labels", skill_labels)
+	panel.set_meta("skill_rows", skill_rows)
 
 	panels.append(panel)
 	icon_button.pressed.connect(_on_icon_pressed.bind(index))
 
 
+## Petit Label prerempli avec la police "fiche de personnage" (FONT_BODY par
+## defaut), pour eviter de repeter add_theme_font_size_override partout.
+func _make_label(text: String, font_size: int = FONT_BODY) -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", font_size)
+	return lbl
+
+
+## Ajoute une ligne "Titre" + barre de progression dans un conteneur vertical
+## (utilise par PV/Faim/Energie/Soif dans l'onglet "Etat general") et renvoie
+## la barre pour que l'appelant puisse la garder (rafraichie en _process pour
+## Faim/Energie, jamais pour PV/Soif qui sont des placeholders).
+func _make_stat_bar(container: VBoxContainer, label_text: String, max_value: float, value: float) -> ProgressBar:
+	container.add_child(_make_label(label_text, FONT_SECTION))
+	var bar := ProgressBar.new()
+	bar.custom_minimum_size = Vector2(PANEL_WIDTH - 64.0, BAR_HEIGHT)
+	bar.max_value = max_value
+	bar.value = value
+	container.add_child(bar)
+	return bar
+
+
 ## Ajoute un label "Nom : valeur" dans une grille (caracteristiques du Sprint 12,
 ## fixees a la creation du nain, donc pas besoin de les rafraichir en _process)
 func _add_stat_label(grid: GridContainer, label_text: String, value) -> void:
-	var lbl := Label.new()
-	lbl.text = "%s : %s" % [label_text, str(value)]
-	grid.add_child(lbl)
+	grid.add_child(_make_label("%s : %s" % [label_text, str(value)], FONT_BODY))
 
 
-## Texte d'une ligne de competence : "Nom : niveau (xp/xp_suivant)"
-func _skill_line(dwarf, skill_id: String) -> String:
+## Met a jour une ligne de l'onglet Competences : niveau (juste le nombre) +
+## barre de progression vers le niveau suivant (row = {"level_label": Label,
+## "bar": ProgressBar}, voir _create_entry).
+func _update_skill_row(dwarf, skill_id: String, row: Dictionary) -> void:
 	var level: int = dwarf.skill_levels.get(skill_id, 0)
 	var xp: float = dwarf.skill_xp.get(skill_id, 0.0)
 	var xp_needed: float = dwarf._xp_needed_for_level(level)
-	return "%s : niveau %d (%d/%d xp)" % [SkillDefs.display_name(skill_id), level, int(xp), int(xp_needed)]
+	row["level_label"].text = str(level)
+	row["bar"].max_value = xp_needed
+	row["bar"].value = xp
 
 
 func _on_icon_pressed(index: int) -> void:
@@ -166,9 +360,33 @@ func _on_icon_pressed(index: int) -> void:
 	for p in panels:
 		p.visible = false
 	target.visible = not was_visible
+	selected_dwarf = target.get_meta("dwarf") if target.visible else null
+
+
+## 2026-07-02 : ferme la fiche actuellement ouverte (s'il y en a une) en
+## appuyant sur Echap - en plus du re-clic sur le portrait (deja pris en
+## charge par _on_icon_pressed ci-dessus, qui referme si on reclique sur
+## l'icone deja ouverte). "ui_cancel" est l'action Echap par defaut de Godot.
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		for p in panels:
+			p.visible = false
+		selected_dwarf = null
 
 
 func _process(_delta: float) -> void:
+	# Anneau de selection : suit le nain dont la fiche est ouverte, cache
+	# sinon (voir _create_selection_ring).
+	if selected_dwarf != null and is_instance_valid(selected_dwarf):
+		selection_ring.visible = true
+		selection_ring.global_position = Vector3(
+			selected_dwarf.global_position.x,
+			selected_dwarf.global_position.y + 0.03,
+			selected_dwarf.global_position.z
+		)
+	else:
+		selection_ring.visible = false
+
 	for panel in panels:
 		if not panel.visible:
 			continue
@@ -181,9 +399,9 @@ func _process(_delta: float) -> void:
 
 		# Competences (Sprint 18) : niveau/xp progressent avec le temps,
 		# contrairement aux caracteristiques du Sprint 12
-		var skill_labels: Dictionary = panel.get_meta("skill_labels")
-		for skill_id in skill_labels:
-			skill_labels[skill_id].text = _skill_line(dwarf, skill_id)
+		var skill_rows: Dictionary = panel.get_meta("skill_rows")
+		for skill_id in skill_rows:
+			_update_skill_row(dwarf, skill_id, skill_rows[skill_id])
 
 
 func _task_description(dwarf) -> String:
@@ -202,16 +420,44 @@ func _task_description(dwarf) -> String:
 	return "Errance"
 
 
-## Genere une icone circulaire coloree sans avoir besoin d'un fichier image
-func _make_circle_icon(color: Color, size: int) -> ImageTexture:
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	var center := size / 2.0
-	var radius := size / 2.0 - 2.0
-	for y in range(size):
-		for x in range(size):
-			var dx := x - center
-			var dy := y - center
-			if dx * dx + dy * dy <= radius * radius:
-				img.set_pixel(x, y, color)
-	return ImageTexture.create_from_image(img)
+## Portrait 3D (2026-07-02) : construit un mini SubViewport isole contenant
+## une COPIE du modele DwarfModel3D du nain (meme apparence, voir
+## PORTRAIT_APPEARANCE_FIELDS), filmee par une camera cadree sur la tete, et
+## renvoie sa texture de rendu pour l'utiliser comme icone de bouton. Le
+## SubViewport doit rester dans l'arbre de scene pour continuer a rendre (il
+## est ajoute comme enfant de ce CanvasLayer, invisible a l'ecran comme tout
+## SubViewport non affiche dans un SubViewportContainer).
+func _make_portrait_texture(dwarf: Node3D) -> Texture2D:
+	var src_model: Node3D = dwarf.dwarf_model
+
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(PORTRAIT_RENDER_SIZE, PORTRAIT_RENDER_SIZE)
+	viewport.transparent_bg = true
+	# Monde 3D independant du jeu principal : sans ca, la camera du portrait
+	# risquerait de partager (et donc afficher) le monde 3D de la scene
+	# principale au lieu du seul modele copie ci-dessous.
+	viewport.own_world_3d = true
+	add_child(viewport)
+
+	var portrait_model := Node3D.new()
+	portrait_model.set_script(DwarfModel3DScript)
+	viewport.add_child(portrait_model)
+	for field in PORTRAIT_APPEARANCE_FIELDS:
+		portrait_model.set(field, src_model.get(field))
+	portrait_model.weapon_loadout = "Aucune"  # jamais d'arme dans le portrait, coherent avec le jeu principal
+	portrait_model._rebuild()
+
+	# Cadrage "buste" : vise un peu sous le sommet de la tete (voir la formule
+	# de head_y dans DwarfModel3D._build_model) pour laisser de la marge au-
+	# dessus (cheveux) et voir un peu des epaules en bas de l'image. Distance
+	# proportionnelle a head_radius pour rester correct si la tete change de
+	# taille plus tard.
+	var target_y: float = portrait_model.leg_height + portrait_model.torso_height + portrait_model.head_radius * 0.1
+	var camera := Camera3D.new()
+	camera.fov = PORTRAIT_CAMERA_FOV
+	camera.position = Vector3(0, target_y, portrait_model.head_radius * 3.8)
+	camera.look_at(Vector3(0, target_y, 0), Vector3.UP)
+	camera.current = true
+	viewport.add_child(camera)
+
+	return viewport.get_texture()

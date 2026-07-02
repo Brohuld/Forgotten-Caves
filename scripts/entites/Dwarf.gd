@@ -71,6 +71,7 @@ const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials
 const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
+const NainNames := preload("res://scripts/data/creatures/nains/NainNames.gd")
 
 signal build_task_finished(task_id: int, bx: int, bz: int)
 ## Sprint 26 : signal generique emis a la fin de N'IMPORTE QUELLE tache
@@ -79,7 +80,11 @@ signal build_task_finished(task_id: int, bx: int, bz: int)
 ## build_task_finished ci-dessus (garde pour le mur fantome, inchange).
 signal task_finished(task_id: int)
 
-@export var dwarf_name: String = "Nain"
+# 2026-07-02 : nom laisse vide par defaut -> genere aleatoirement a la
+# creation (voir _ready, NainNames.gd). Toujours possible de forcer un nom
+# precis a la main (Inspecteur/.tscn) pour un futur nain nomme/unique - dans
+# ce cas la valeur fournie est respectee et n'est pas ecrasee.
+@export var dwarf_name: String = ""
 
 # Personnalisation par region (Sprint 16) : couleurs par defaut proches de
 # l'image d'origine, pour qu'un nain sans reglage particulier ressemble a
@@ -88,6 +93,13 @@ signal task_finished(task_id: int)
 @export var beard_color: Color = Color(0.80, 0.71, 0.53)
 @export var clothing_color: Color = Color(0.68, 0.51, 0.41)
 @export var armor_color: Color = Color(0.55, 0.55, 0.58)
+
+# Ajustement de gabarit (2026-07-02) : nains juges trop grands par rapport
+# aux arbres/buissons - reduction uniforme de 20% appliquee au modele 3D
+# (voir _build_appearance). Les pieds restent au sol : le modele a son
+# origine locale a y=0 (au niveau des pieds), un scale uniforme autour de
+# cette origine ne decale donc pas verticalement le nain.
+@export var model_scale: float = 0.8
 
 # Doivent correspondre a VoxelWorld.gd
 @export var grid_width: int = 20
@@ -178,6 +190,8 @@ func _ready() -> void:
 	var jitter_z := randf_range(-1.5, 1.5)
 	global_position = Vector3(grid_width / 2.0 + jitter_x, ground_level, grid_depth / 2.0 + jitter_z)
 	add_to_group("dwarves")
+	if dwarf_name == "":
+		dwarf_name = NainNames.random_name()
 	_generate_characteristics()
 	_generate_skills()
 	_build_appearance()
@@ -313,6 +327,7 @@ func _build_appearance() -> void:
 	# voir README) : on force "sans arme" quel que soit le tirage aleatoire.
 	dwarf_model.weapon_loadout = "Aucune"
 	dwarf_model._rebuild()
+	dwarf_model.scale = Vector3.ONE * model_scale
 
 	_build_tool_accessory()
 	_build_sleep_indicator()
@@ -414,7 +429,7 @@ func _build_sleep_indicator() -> void:
 	sleep_indicator.modulate = Color(0.85, 0.9, 1.0)
 	sleep_indicator.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	sleep_indicator.no_depth_test = true
-	sleep_indicator.position = Vector3(0, HEAD_HEIGHT_APPROX + 0.35, 0)
+	sleep_indicator.position = Vector3(0, (HEAD_HEIGHT_APPROX + 0.35) * model_scale, 0)
 	sleep_indicator.visible = false
 	body.add_child(sleep_indicator)
 
@@ -430,7 +445,7 @@ func _build_food_indicator() -> void:
 	mat.albedo_color = Color(0.55, 0.1, 0.35)
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	food_indicator.set_surface_override_material(0, mat)
-	food_indicator.position = Vector3(0, HEAD_HEIGHT_APPROX * 0.9, 0.18)  # hauteur approximative de la bouche
+	food_indicator.position = Vector3(0, HEAD_HEIGHT_APPROX * 0.9 * model_scale, 0.18 * model_scale)  # hauteur approximative de la bouche
 	food_indicator.visible = false
 	body.add_child(food_indicator)
 
@@ -521,7 +536,7 @@ func _start_resting() -> void:
 func _process_resting(delta: float) -> void:
 	energy = min(energy + energy_regen_rate * delta, energy_max)
 	# le "Z z z" flotte doucement au-dessus de la tete
-	sleep_indicator.position.y = HEAD_HEIGHT_APPROX + 0.35 + sin(Time.get_ticks_msec() / 600.0) * 0.08
+	sleep_indicator.position.y = (HEAD_HEIGHT_APPROX + 0.35) * model_scale + sin(Time.get_ticks_msec() / 600.0) * 0.08
 	if energy >= energy_rest_target:
 		is_resting = false
 		sleep_indicator.visible = false
@@ -574,7 +589,7 @@ func _try_start_eating() -> bool:
 func _process_eating(delta: float) -> void:
 	eat_timer += delta
 	food_indicator.visible = true
-	food_indicator.position.z = 0.18 - absf(sin(eat_timer * 14.0)) * 0.10
+	food_indicator.position.z = (0.18 - absf(sin(eat_timer * 14.0)) * 0.10) * model_scale
 
 	if eat_timer >= eat_duration:
 		if eating_food_id != "" and inventory.remove_resource(eating_food_id, 1):

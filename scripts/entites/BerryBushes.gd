@@ -23,6 +23,7 @@ const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes
 @export var grid_depth: int = 20
 @export var ground_level: float = 30.0  # sommet de la carte (HEIGHT, Sprint 23 : 10 -> 30)
 @export var bush_count: int = 8  # Sprint 24quater : un peu plus (etait 5), pour varier les types
+@export var size_multiplier: float = 0.9  # 2026-07-02 : buissons/plantes reduits de 10% (jauges nains/arbres/buissons rejustees)
 const BERRIES_PER_BUSH := 4
 
 
@@ -44,6 +45,7 @@ func _spawn_bush() -> void:
 	bush.set_meta("fruit_resource", berry_type["id"])
 	bush.set_meta("fruits_left", BERRIES_PER_BUSH)
 	bush.set_meta("species_name", berry_type["nom"])
+	bush.scale = Vector3.ONE * size_multiplier  # meme mecanisme que Forest.gd/tree.scale, ancre au sol
 	add_child(bush)
 
 	if berry_type.get("categorie", "buisson") == "plante":

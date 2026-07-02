@@ -1032,3 +1032,121 @@ Par defaut, Godot lance le jeu integre dans une fenetre-panneau a l'interieur de
 - `DwarfModel3D.gd` reste dans `scripts/prototypes/` (pas duplique) - `Dwarf.gd` le precharge directement, meme pattern que `DwarfVariationGrid.gd` ; la scene de prototype isolee reste disponible pour des reglages fins independants du jeu principal
 - Acces aux membres prefixes `_` du script attache (`_hand_r`, `_randomize_variation()`, `_rebuild()`) depuis `Dwarf.gd` malgre le typage statique `Node3D` de la variable : GDScript n'a pas de vraie visibilite privee, comportement deja valide par `DwarfVariationGrid.gd`
 - Les assets/fichiers du sprite 2D (`nain.png`, `nain_normal.png`, `nain_mask.png`, `shaders/dwarf_recolor.gdshader`) sont laisses en place, orphelins et inutilises, plutot que supprimes - meme choix que les fichiers orphelins du Sprint 23quater
+
+## Sprint 28undecies — Redimensionnement (nains, arbres, buissons)
+
+- [x] Nains reduits d'environ 20% (`Dwarf.model_scale = 0.8`, applique au modele 3D - sans effet sur la logique de jeu, l'origine du modele reste au niveau des pieds)
+- [x] Arbres agrandis d'environ 30% (`Forest.size_multiplier = 1.3`, multiplie dans le jitter d'echelle deja existant)
+- [x] Buissons/plantes reduits d'environ 10% (`BerryBushes.size_multiplier = 0.9`)
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 28undecies
+
+- Les trois echelles sont ancrees a la position au sol de chaque objet (origine du modele = pieds/base) - redimensionner ne decale rien verticalement
+- Indicateurs (sommeil/repas) et position de l'outil dans la main sont eux aussi mis a l'echelle de `model_scale` dans `Dwarf.gd`, pour rester correctement positionnes sur un nain plus petit
+
+## Sprint 28duodecies — Noms de nains aleatoires (prenom + clan)
+
+- [x] `scripts/data/creatures/nains/NainNames.gd` : table de prenoms puisee dans le Dvergatal (catalogue des nains de l'Edda poetique, domaine public - la meme source dont Tolkien a tire Thorin/Fili/Kili/Bombur...) completee de prenoms feminins authentiques du vieux norrois, et une table de noms de clan inventes ("Barbe-de-Fer", "Poing-de-Granit"...)
+- [x] `Dwarf.dwarf_name` genere automatiquement au `_ready()` si laisse vide (`NainNames.random_name()`), au lieu des noms fixes "Nain 1/2/3"
+- [x] `Main.tscn` nettoye des noms fixes
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 28duodecies
+
+- Choix de source deliberement du domaine public (Edda poetique, XIIIe siecle) pour obtenir le style "nom de nain classique" sans reprendre de noms de personnages d'une oeuvre protegee
+- `random_name()` est un simple tirage independant prenom/nom de clan (pas de logique d'unicite entre nains pour l'instant - deux nains pourraient theoriquement partager le meme nom)
+
+## Sprint 28tredecies — Portraits 3D et refonte complete de la fiche personnage
+
+- [x] Chaque bouton de portrait affiche desormais un vrai rendu 3D de la tete du nain (mini `SubViewport` isole + camera cadree), plus son nom en permanence a cote (avant : cercle colore generique, nom visible seulement en ouvrant la fiche)
+- [x] Fiche de personnage agrandie (police bien plus grosse) et reorganisee en 3 onglets : **Etat general** (nom, PV/Energie/Faim/Soif, tache en cours), **Caracteristiques**, **Competences**
+- [x] "Soif" ajoutee comme jauge placeholder (toujours pleine) - aucune mecanique de soif n'existe encore cote gameplay, meme traitement que "PV" depuis le Sprint 9
+- [x] Onglet Competences : nom de la competence + niveau (juste le chiffre) + barre de progression vers le niveau suivant, au lieu d'une ligne de texte
+- [x] Icone de portrait agrandie, nom lisible (fond sombre semi-transparent derriere le texte blanc), fiche elargie pour que les 3 onglets soient visibles sans fleches de defilement
+- [x] Fermeture de la fiche par Echap ou en recliquant sur le portrait deja ouvert
+- [x] Anneau bleu au sol autour des pieds du nain dont la fiche est ouverte
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 28tredecies
+
+- Portrait 3D : `SubViewport` avec `own_world_3d = true` contenant une copie du `DwarfModel3D` du nain (apparence copiee via une liste explicite de champs, pas une reflexion generique, pour ne jamais copier par erreur une propriete de transform) + une `Camera3D` cadree sur le buste
+- Panel de fiche : `StyleBoxFlat` sombre + `Theme` assigne au panel (cascade la couleur du texte a tous les enfants) pour rester lisible quel que soit l'arriere-plan 3D
+- Deux bugs corriges pendant ce sprint, tous deux de la meme famille ("noeud pas encore pret") :
+  - L'anneau de selection ne s'affichait pas du tout : `add_child()` appele depuis `_ready()` echouait silencieusement ("Parent node is busy setting up children") - corrige avec `add_child.call_deferred(...)`
+  - La camera du portrait plantait avec l'erreur "Node not inside tree" : `look_at()` etait appele AVANT `add_child()` (une camera hors de l'arbre n'a pas de transform global valide) - corrige en inversant l'ordre des deux lignes
+  - Lecon generale : quand un noeud genere par code "ne fait rien" sans plantage visible, verifier d'abord la console pour une erreur silencieuse de ce type avant de soupconner un probleme de position/materiau
+
+## Sprint 29 — Correction du bug de materiaux VoxelWorld (des milliers d'erreurs en debogueur)
+
+- [x] Bug trouve pendant le sprint precedent (sans lien avec l'anneau de selection) : `VoxelWorld.rebuild_mesh()` assignait un materiau a des indices de surface fixes (0 a 10), alors qu'un `SurfaceTool` sans aucune face ne produit PAS de surface au moment du `commit()` - des qu'un type de bloc etait absent de la carte (frequent sur une petite carte), les indices reels se decalaient et l'appel plantait ("Index p_idx out of bounds"), en continu
+- [x] Corrige : les materiaux sont maintenant assignes au VRAI indice de surface obtenu apres chaque `commit()` (compte a part, qui n'avance que si une surface a effectivement ete ajoutee), plus a un indice fixe suppose
+- [x] Teste et confirme par l'utilisateur (plus aucune erreur dans le debogueur)
+
+### Notes techniques Sprint 29
+
+- Lecon generale (meme famille que les corrections du Sprint 28tredecies) : dans Godot, une operation "vide" (SurfaceTool sans geometrie, noeud pas encore dans l'arbre...) echoue souvent silencieusement plutot que de lever une exception bloquante - toujours verifier la console en cas de comportement inattendu avant de chercher ailleurs
+
+## Sprint 30 — Cycle jour/nuit
+
+- [x] Nouveau `scripts/systemes/DayNightCycle.gd`, cycle complet (matin rose -> jour bleu -> soir rouge sombre -> nuit gris tres sombre) avec transitions continues (aucune bascule brutale)
+- [x] Rotation continue de la lumiere directionnelle (le "soleil"), qui balaie le ciel en diagonale et passe sous l'horizon la nuit - fait naturellement suivre les ombres
+- [x] Lune fixe (sphere simple, non eclairee) qui apparait uniquement la nuit, en fondu
+- [x] `cycle_duration_seconds` reglable dans l'inspecteur (30s pour les tests, a ralentir pour la version definitive - simple changement de valeur)
+- [x] Teste et confirme par l'utilisateur
+- [x] Purement visuel (aucun lien avec le sommeil des nains ou toute autre mecanique de jeu)
+
+### Notes techniques Sprint 30
+
+- Les couleurs (ciel, lumiere, fog) sont interpolees en continu entre 4 phases reparties a intervalles egaux sur le cycle
+- La rotation du soleil N'utilise PAS ce systeme de phases (risque de mauvais sens de rotation avec une interpolation par quaternions entre positions disjointes) : une seule formule continue base directement sur l'avancement du cycle, un tour complet par cycle
+
+## Sprint 30bis — Ombres reelles et obscurite nocturne complete
+
+- [x] Cause trouvee suite a un signalement de l'utilisateur ("ombres quasi invisibles", "il ne devrait plus y avoir de lumiere sur la carte la nuit") : tous les materiaux du terrain (`VoxelWorld.gd`), des arbres (`Forest.gd`) et des decorations de sol (`GroundDecoration.gd`, `BerryBushes.gd`) etaient en mode "non eclaire" (`SHADING_MODE_UNSHADED`) - un materiau non eclaire ignore totalement la lumiere ET les ombres, quel que soit le cycle jour/nuit
+- [x] Ces materiaux passent en eclairage reel (`roughness = 1.0`, `metallic = 0.0` pour garder le rendu plat/mat sans reflet) - le terrain recoit desormais vraiment les ombres portees et s'assombrit la nuit
+- [x] `DayNightCycle.gd` pilote maintenant aussi la lumiere ambiante (`environment.ambient_light_energy`), a 0.0 exactement la nuit (comme la lumiere directionnelle) - plus aucune lumiere sur la carte la nuit, comme demande
+- [x] Les nains (modele 3D) restent volontairement non eclaires pour l'instant : passer leur materiau en eclaire casserait le rendu du portrait 3D dans la fiche personnage (mini-monde isole sans source de lumiere) - point identifie, pas encore traite
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 30bis
+
+- Lecon pour la suite : toute nouvelle fabrique de materiau devrait par defaut utiliser l'eclairage reel (ou documenter explicitement pourquoi elle reste non eclairee) - un materiau non eclaire sort silencieusement un objet de tout le systeme jour/nuit, sans que ca se voie en le regardant seul
+
+## Sprint 31 — Systeme meteo (Normal / Brouillard / Pluie / Neige)
+
+- [x] Nouveau `scripts/systemes/WeatherSystem.gd` : alterne aleatoirement entre 4 etats a intervalles de 15 a 35 secondes (rythme de test, "Normal" deux fois plus frequent que les 3 autres)
+- [x] Pluie et neige : vraies particules qui tombent (`GPUParticles3D`), couvrant toute la carte
+- [x] Brouillard : densite de fog augmentee ; pluie/neige assombrissent legerement la lumiere (ciel couvert), par-dessus l'etat du cycle jour/nuit sans l'ecraser
+- [x] Purement visuel (aucun effet sur le gameplay) pour l'instant
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 31
+
+- `WeatherSystem` est place juste apres `DayNightCycle` dans `Main.tscn` : Godot traite les enfants dans l'ordre de l'arbre, donc son `_process()` s'execute juste apres celui du cycle jour/nuit et peut ajouter ses propres effets (fog, multiplicateur de lumiere) sans les figer en dur ni entrer en conflit
+- Particules generees entierement par code (pas de scene/ressource dediee) : necessite de definir `visibility_aabb` a la main, sans quoi Godot peut considerer les particules hors-champ et ne jamais les afficher (pas d'etape editeur "Generate Visibility AABB" possible pour un noeud cree au runtime)
+
+## Sprint 32 — Selection multiple de nains
+
+- [x] Glisser-clic sur la carte (uniquement quand aucun mode d'action Miner/Couper/Cueillir/Construire n'est actif) : dessine un rectangle et selectionne tous les nains a l'interieur au relachement
+- [x] Ctrl ou Maj + clic sur un portrait (liste a droite) : ajoute/retire ce nain de la selection sans ouvrir sa fiche
+- [x] Un clic simple sur un portrait garde le comportement historique (ouvre/ferme sa fiche, remplace la selection par ce seul nain)
+- [x] Chaque nain selectionne a son anneau bleu au sol, et son portrait est legerement teinte dans la liste
+- [x] Purement visuel pour l'instant (aucune action groupee disponible - viendra plus tard, une fois un besoin concret identifie)
+- [x] Teste et confirme par l'utilisateur
+
+### Notes techniques Sprint 32
+
+- Le glisser-carte coexiste avec le clic simple "Inspecter" (Sprint 25) deja en place quand aucun mode n'est actif : la decision clic-simple vs glisser est prise au relachement de la souris (seuil de 6 pixels), pas a l'appui, pour eviter tout affichage parasite d'un panneau d'inspection avant qu'un vrai glisser ne soit detecte
+- `CharacterSheetUI.gd` : l'ancien `selected_dwarf` unique devient `selected_dwarves` (un ensemble), et l'ancien anneau de selection partage devient un anneau par nain (`selection_rings`) - meme principe que les portraits/fiches, deja construits dynamiquement par nain
+- `ActionController.gd` doit maintenant referencer `CharacterSheetUI` (`%CharacterSheetUI`) pour lui transmettre la selection issue du glisser - a necessite d'ajouter `unique_name_in_owner` sur ce noeud dans `Main.tscn`
+
+---
+
+# Phase 1 — Nains de base et environnement : FINALISEE (2026-07-02)
+
+Cette etiquette regroupe tout le travail effectue jusqu'ici (l'ancien "MVP" du Sprint 0 a 10, et l'ancienne "Phase 2 - Colonie complete" du Sprint 11 au Sprint 32 ci-dessus) sous un seul intitule, a la demande de Francois : **"Phase 1 - nains de base et environnement"**. Elle couvre : le terrain en blocs, la navigation camera, un puis plusieurs nains autonomes (taches, besoins, caracteristiques, competences, fiche de personnage complete, selection multiple), la vegetation et le decor (arbres par espece, buissons/plantes, decorations de sol, filons souterrains), et l'environnement (cycle jour/nuit, meteo, eclairage/ombres reels).
+
+**Phase 2 (a venir) : Ateliers & artisanat.** D'apres la decision de Francois du 2026-07-02, l'equipement (habits/armures/armes utilisables et fabricables, pas seulement l'apparence du modele 3D) sera traite avec ce systeme d'ateliers, plutot qu'en sprint isole. Le "Bonheur" (stat existante mais sans effet reel) est explicitement reporte a beaucoup plus tard.
+
+Voir `Forgotten_Caves_Sprints.xlsx` (dossier parent) pour le detail phase par phase mis a jour.

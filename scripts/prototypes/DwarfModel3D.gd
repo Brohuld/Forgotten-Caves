@@ -505,7 +505,7 @@ func _build_belt() -> void:
 ## Sprint 28unvicies : meme principe de pivot que les jambes (voir
 ## _build_legs) - pivot place au niveau de l'epaule, bras/biceps/main
 ## suspendus dessous, garde dans _arm_pivot_l/_arm_pivot_r pour l'animation.
-func _build_arms(head_y: float) -> void:
+func _build_arms(_head_y: float) -> void:
 	var shoulder_y: float = leg_height + torso_height - 0.06
 	var arm_x_offset: float = torso_shoulder_width * 0.5 + 0.04
 	var limb_factor: float = 1.0 + (corpulence - 1.0) * 0.5
@@ -1741,7 +1741,7 @@ func _attach_to_belt(item: Node3D, side: float) -> void:
 ## Sprint 28quinvicies : attache une arme a 2 mains/bouclier/arme a distance
 ## dans le dos (position "Repos") - a la verticale, centree derriere le
 ## torse, legerement inclinee pour coller au dos.
-func _attach_to_back(item: Node3D, head_y: float) -> void:
+func _attach_to_back(item: Node3D, _head_y: float) -> void:
 	var depth: float = torso_depth * corpulence
 	# Sprint 28quatersexagesies : attache remontee pres de l'epaule (etait
 	# torso_height * 0.55, plus bas) - necessaire maintenant que la tete/lame

@@ -561,24 +561,35 @@ func _darken(color: Color) -> Color:
 	return Color(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
 
 
-## Cree un materiau simple, non eclaire, dans la couleur donnee
+## Cree un materiau simple, dans la couleur donnee.
+## 2026-07-02 : passe de SHADING_MODE_UNSHADED a l'eclairage reel (mode par
+## defaut de StandardMaterial3D) pour que le terrain reagisse enfin au cycle
+## jour/nuit (DayNightCycle.gd) - un materiau "unshaded" ignore totalement
+## la lumiere/les ombres, ce qui rendait la carte aussi lumineuse en pleine
+## nuit qu'en plein jour et empechait toute ombre portee de s'afficher.
+## roughness=1/metallic=0 evite les reflets speculaires pour garder un rendu
+## plat/mat coherent avec le style low-poly du jeu, tout en recevant
+## lumiere directionnelle + ombres + lumiere ambiante.
 func _make_material(color: Color) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.roughness = 1.0
+	mat.metallic = 0.0
 	return mat
 
 
 ## Sprint 21 : materiau pour le bucket 0 (herbe), qui lit la couleur par
 ## sommet (definie via SurfaceTool.set_color dans _add_face) au lieu d'une
 ## seule couleur fixe - c'est ce qui permet la variation continue par case.
+## 2026-07-02 : meme passage a l'eclairage reel que _make_material ci-dessus.
 func _make_vertex_color_material() -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color.WHITE
 	mat.vertex_color_use_as_albedo = true
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.roughness = 1.0
+	mat.metallic = 0.0
 	return mat
 
 
@@ -669,10 +680,10 @@ func _rebuild_vein_pepites() -> void:
 			var offset := _biased_local_offset(rng, exposed_dir)
 			var world_pos := Vector3(pos.x, pos.y, pos.z) + offset
 			var radius: float = PEPITE_BASE_RADIUS * rarity_scale * rng.randf_range(0.85, 1.15)
-			var basis := Basis.from_euler(Vector3(
+			var pepite_basis := Basis.from_euler(Vector3(
 				rng.randf_range(0, TAU), rng.randf_range(0, TAU), rng.randf_range(0, TAU)
 			)).scaled(Vector3.ONE * radius)
-			var xform := Transform3D(basis, world_pos)
+			var xform := Transform3D(pepite_basis, world_pos)
 
 			if is_metal:
 				metal_transforms.append(xform)

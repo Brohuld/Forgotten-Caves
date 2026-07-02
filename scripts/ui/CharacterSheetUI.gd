@@ -64,41 +64,49 @@ const PORTRAIT_APPEARANCE_FIELDS := [
 	"hair_style", "beard_style", "beard_width", "corpulence", "outfit_style",
 ]
 
-# Anneau de selection (2026-07-02) : un rond bleu pose au sol autour des
-# pieds du nain dont la fiche est actuellement ouverte, pour voir en un coup
-# d'oeil qui est selectionne. Un seul anneau partage, deplace/montre-cache
-# selon selected_dwarf plutot qu'un par nain (inutile puisqu'un seul nain
-# peut etre "selectionne" - fiche ouverte - a la fois).
+# Anneau de selection (2026-07-02, devenu multiple le meme jour) : un rond
+# bleu pose au sol autour des pieds de chaque nain SELECTIONNE, pour voir en
+# un coup d'oeil qui est selectionne. Un anneau par nain (selection_rings,
+# cree dans _create_entry), montre/cache selon l'appartenance a
+# selected_dwarves (Dictionary utilise comme un ensemble) - plus un seul
+# anneau partage comme au depart, puisque plusieurs nains peuvent maintenant
+# etre selectionnes en meme temps (Ctrl/Maj+clic sur les portraits, ou
+# glisser-clic sur la carte via ActionController.set_map_selection).
 const SELECTION_RING_INNER_RADIUS := 0.32
 const SELECTION_RING_OUTER_RADIUS := 0.5
 const SELECTION_RING_COLOR := Color(0.25, 0.55, 1.0, 0.85)
+# Teinte appliquee au portrait (modulate) d'un nain selectionne, pour le
+# distinguer dans la liste sans avoir a ouvrir sa fiche.
+const SELECTED_ICON_TINT := Color(0.55, 0.8, 1.3, 1.0)
 
 var panels: Array = []  # un Panel par nain, meme ordre que le groupe "dwarves"
-var selected_dwarf: Node3D = null
-var selection_ring: MeshInstance3D
+# 2026-07-02 : Dictionary utilise comme un ensemble (cle = noeud nain, valeur
+# toujours true) plutot qu'un Array, pour un has()/erase() en O(1) - remplace
+# l'ancien "selected_dwarf" unique (un seul nain a la fois).
+var selected_dwarves: Dictionary = {}
+var selection_rings: Dictionary = {}  # dwarf -> MeshInstance3D (un par nain)
 
 
 func _ready() -> void:
-	_create_selection_ring()
 	var dwarves: Array = get_tree().get_nodes_in_group("dwarves")
 	dwarves.sort_custom(func(a, b): return a.name < b.name)
 	for i in range(dwarves.size()):
 		_create_entry(dwarves[i], i)
 
 
-## Construit l'anneau de selection et l'ajoute au parent 3D (Main), pas a ce
-## CanvasLayer - c'est un objet du monde 3D, pas un element d'interface.
-## Cache par defaut (aucun nain selectionne au demarrage).
+## Construit l'anneau de selection d'UN nain et l'ajoute au parent 3D (Main),
+## pas a ce CanvasLayer - c'est un objet du monde 3D, pas un element
+## d'interface. Cache par defaut (aucun nain selectionne au demarrage).
 ## 2026-07-02 : anneau plat construit a la main (ArrayMesh, voir
 ## _build_ring_mesh) au lieu d'un TorusMesh aplati par scale - l'anneau ne
 ## s'affichait pas du tout avec TorusMesh (tres probablement un souci de nom
 ## de propriete cote moteur), cette approche est la meme technique deja
 ## utilisee ailleurs dans le projet pour des formes generees par code (pas de
 ## dependance a l'API exacte d'un mesh primitif).
-func _create_selection_ring() -> void:
-	selection_ring = MeshInstance3D.new()
-	selection_ring.name = "SelectionRing"
-	selection_ring.mesh = _build_ring_mesh(SELECTION_RING_INNER_RADIUS, SELECTION_RING_OUTER_RADIUS)
+func _create_selection_ring_for(dwarf: Node3D) -> MeshInstance3D:
+	var ring := MeshInstance3D.new()
+	ring.name = "SelectionRing_%s" % dwarf.name
+	ring.mesh = _build_ring_mesh(SELECTION_RING_INNER_RADIUS, SELECTION_RING_OUTER_RADIUS)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = SELECTION_RING_COLOR
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -112,9 +120,18 @@ func _create_selection_ring() -> void:
 	# PAR-DESSUS le reste (meme technique que sleep_indicator dans Dwarf.gd),
 	# donc plus aucune ambiguite de profondeur possible.
 	mat.no_depth_test = true
-	selection_ring.set_surface_override_material(0, mat)
-	selection_ring.visible = false
-	get_parent().add_child(selection_ring)
+	ring.set_surface_override_material(0, mat)
+	ring.visible = false
+	# 2026-07-02 : appele depuis _ready() (via _create_entry), le parent
+	# (Main) est encore en train d'instancier ses propres enfants a ce moment
+	# precis -> add_child() direct echoue silencieusement en erreur ("Parent
+	# node is busy setting up children"), donc l'anneau n'etait jamais
+	# reellement ajoute a la scene (d'ou "toujours rien" malgre plusieurs
+	# corrections avant de trouver la vraie cause). call_deferred() repousse
+	# l'ajout a apres la fin de l'initialisation en cours, ce qui resout le
+	# probleme.
+	get_parent().add_child.call_deferred(ring)
+	return ring
 
 
 ## Construit un anneau plat (dans le plan XZ, donc pose "a plat" au sol sans
@@ -152,6 +169,8 @@ func _build_ring_mesh(inner: float, outer: float, segments: int = 48) -> ArrayMe
 
 ## Cree le nom, l'icone-portrait + la fiche (masquee au depart) pour un nain donne
 func _create_entry(dwarf: Node3D, index: int) -> void:
+	selection_rings[dwarf] = _create_selection_ring_for(dwarf)
+
 	var top_offset: float = ICON_MARGIN + index * (ICON_SIZE + ICON_SPACING)
 
 	# 2026-07-02 : fond sombre semi-transparent derriere le nom - le blanc seul
@@ -304,6 +323,7 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	# On garde les refs necessaires au _process directement sur le Panel,
 	# pour ne pas avoir a maintenir plusieurs tableaux paralleles
 	panel.set_meta("dwarf", dwarf)
+	panel.set_meta("icon_button", icon_button)
 	panel.set_meta("hunger_bar", hunger_bar)
 	panel.set_meta("energy_bar", energy_bar)
 	panel.set_meta("task_label", task_label)
@@ -354,43 +374,84 @@ func _update_skill_row(dwarf, skill_id: String, row: Dictionary) -> void:
 	row["bar"].value = xp
 
 
+## 2026-07-02 : Ctrl/Maj+clic sur un portrait ajoute/retire CE nain de la
+## selection multiple courante SANS toucher a sa fiche (la multi-selection
+## reste purement visuelle pour l'instant - anneaux au sol + surbrillance des
+## portraits, voir _process). Un clic simple garde le comportement historique
+## : ouvre/ferme la fiche de ce nain (une seule fiche a la fois, pour ne pas
+## encombrer l'ecran) et remplace toute selection multiple en cours par ce
+## seul nain.
 func _on_icon_pressed(index: int) -> void:
 	var target: Panel = panels[index]
+	var dwarf = target.get_meta("dwarf")
+	var additive: bool = Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
+
+	if additive:
+		if selected_dwarves.has(dwarf):
+			selected_dwarves.erase(dwarf)
+		else:
+			selected_dwarves[dwarf] = true
+		return
+
 	var was_visible := target.visible
 	for p in panels:
 		p.visible = false
 	target.visible = not was_visible
-	selected_dwarf = target.get_meta("dwarf") if target.visible else null
+	selected_dwarves.clear()
+	if target.visible:
+		selected_dwarves[dwarf] = true
 
 
-## 2026-07-02 : ferme la fiche actuellement ouverte (s'il y en a une) en
-## appuyant sur Echap - en plus du re-clic sur le portrait (deja pris en
-## charge par _on_icon_pressed ci-dessus, qui referme si on reclique sur
-## l'icone deja ouverte). "ui_cancel" est l'action Echap par defaut de Godot.
+## Appelee par ActionController lors d'une selection par rectangle sur la
+## carte (glisser-clic quand aucun mode d'action n'est actif) - voir
+## ActionController._finalize_box_selection. additive = Maj/Ctrl enfonce au
+## relachement du clic = ajoute a la selection existante au lieu de la
+## remplacer (meme convention que Ctrl/Maj+clic sur un portrait ci-dessus).
+## Purement visuel pour l'instant (anneaux + surbrillance des portraits),
+## n'ouvre aucune fiche automatiquement.
+func set_map_selection(dwarves: Array, additive: bool) -> void:
+	if not additive:
+		selected_dwarves.clear()
+		for p in panels:
+			p.visible = false
+	for dwarf in dwarves:
+		selected_dwarves[dwarf] = true
+
+
+## 2026-07-02 : ferme la fiche actuellement ouverte (s'il y en a une) et vide
+## la selection en appuyant sur Echap - en plus du re-clic sur le portrait
+## (deja pris en charge par _on_icon_pressed ci-dessus, qui referme si on
+## reclique sur l'icone deja ouverte). "ui_cancel" est l'action Echap par
+## defaut de Godot.
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		for p in panels:
 			p.visible = false
-		selected_dwarf = null
+		selected_dwarves.clear()
 
 
 func _process(_delta: float) -> void:
-	# Anneau de selection : suit le nain dont la fiche est ouverte, cache
-	# sinon (voir _create_selection_ring).
-	if selected_dwarf != null and is_instance_valid(selected_dwarf):
-		selection_ring.visible = true
-		selection_ring.global_position = Vector3(
-			selected_dwarf.global_position.x,
-			selected_dwarf.global_position.y + 0.03,
-			selected_dwarf.global_position.z
-		)
-	else:
-		selection_ring.visible = false
+	# Anneaux de selection : un par nain (selection_rings), visible seulement
+	# si ce nain fait partie de la selection courante.
+	for dwarf in selection_rings:
+		var ring: MeshInstance3D = selection_rings[dwarf]
+		if selected_dwarves.has(dwarf) and is_instance_valid(dwarf):
+			ring.visible = true
+			ring.global_position = Vector3(
+				dwarf.global_position.x,
+				dwarf.global_position.y + 0.03,
+				dwarf.global_position.z
+			)
+		else:
+			ring.visible = false
 
 	for panel in panels:
+		var dwarf = panel.get_meta("dwarf")
+		var icon_button: Button = panel.get_meta("icon_button")
+		icon_button.modulate = SELECTED_ICON_TINT if selected_dwarves.has(dwarf) else Color.WHITE
+
 		if not panel.visible:
 			continue
-		var dwarf = panel.get_meta("dwarf")
 		if not is_instance_valid(dwarf):
 			continue
 		panel.get_meta("hunger_bar").value = dwarf.hunger
@@ -456,8 +517,12 @@ func _make_portrait_texture(dwarf: Node3D) -> Texture2D:
 	var camera := Camera3D.new()
 	camera.fov = PORTRAIT_CAMERA_FOV
 	camera.position = Vector3(0, target_y, portrait_model.head_radius * 3.8)
-	camera.look_at(Vector3(0, target_y, 0), Vector3.UP)
 	camera.current = true
+	# 2026-07-02 : look_at() a besoin de la transform globale du noeud, donc
+	# le noeud doit deja etre DANS l'arbre de scene (add_child avant, pas
+	# apres) - meme famille de bug que le "Parent node is busy" de l'anneau
+	# de selection, mais ici c'est l'ordre des deux lignes qui etait inverse.
 	viewport.add_child(camera)
+	camera.look_at(Vector3(0, target_y, 0), Vector3.UP)
 
 	return viewport.get_texture()

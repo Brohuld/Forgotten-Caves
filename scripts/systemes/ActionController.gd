@@ -24,6 +24,15 @@ extends CanvasLayer
 ## d'outil reconnaissable (pioche/hache/panier selon le mode), dessinee
 ## pixel par pixel a l'execution (voir _get_icon_texture et les fonctions
 ## _draw_*_icon), toujours dans la couleur du bouton du mode correspondant.
+## Sprint 29 : selection multiple de nains par rectangle (glisser-clic),
+## uniquement quand aucun mode d'action n'est actif (comme Inspecter). Un
+## clic simple (sans glisser reel) continue de declencher Inspecter, comme
+## avant ; un glisser au-dela de SELECT_DRAG_THRESHOLD pixels dessine un
+## rectangle de selection a l'ecran et, au relachement, transmet a
+## CharacterSheetUI.set_map_selection() tous les nains dont la position
+## projetee a l'ecran tombe dans le rectangle. Ctrl/Maj enfonce au
+## relachement = ajoute a la selection existante au lieu de la remplacer
+## (meme convention que Ctrl/Maj+clic sur un portrait de la fiche).
 
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
 
@@ -61,6 +70,17 @@ const ICON_SIZE := 20
 @onready var task_queue: Node = %TaskQueue
 @onready var camera: Camera3D = %Camera3D
 @onready var inventory: Node = %Inventory
+@onready var character_sheet_ui: CanvasLayer = %CharacterSheetUI
+
+# Sprint 29 : selection multiple de nains par rectangle (Mode.NONE
+# uniquement). Distinct du systeme de glisser du mode CONSTRUIRE ci-dessus
+# (is_dragging/drag_start/drag_end, qui travaille en cases de grille, pas en
+# coordonnees ecran).
+const SELECT_DRAG_THRESHOLD := 6.0  # pixels avant de considerer que c'est un glisser, pas un simple clic
+var _select_button_down: bool = false   # vrai entre l'appui et le relachement du clic gauche (Mode.NONE)
+var _select_dragging_active: bool = false  # vrai seulement une fois le seuil de glisser depasse
+var _select_press_pos: Vector2 = Vector2.ZERO
+var _select_box: Panel
 
 # Selection multi-cases par cliquer-glisser (mode CONSTRUIRE uniquement)
 var is_dragging: bool = false
@@ -100,6 +120,23 @@ func _ready() -> void:
 	_update_material_buttons()
 	material_box.visible = false
 	info_panel.visible = false
+	_setup_select_box()
+
+
+## Sprint 29 : rectangle de selection affiche pendant un glisser-clic en
+## Mode.NONE (voir _update_select_drag). Simple Panel + StyleBoxFlat (fond
+## bleu tres transparent + bordure), cree une seule fois et repositionne/
+## redimensionne a chaque frame de glisser plutot que recree.
+func _setup_select_box() -> void:
+	_select_box = Panel.new()
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.3, 0.6, 1.0, 0.15)
+	style.border_color = Color(0.45, 0.75, 1.0, 0.9)
+	style.set_border_width_all(1)
+	_select_box.add_theme_stylebox_override("panel", style)
+	_select_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_select_box.visible = false
+	add_child(_select_box)
 
 
 ## Sprint 9 : petites icones de couleur (formes simples) sur chaque bouton,
@@ -195,9 +232,19 @@ func _update_material_buttons() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if current_mode == Mode.NONE:
 		# Sprint 25 : aucun mode d'action actif -> le clic gauche sert a
-		# inspecter l'objet sous la souris au lieu de ne rien faire
-		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-			_handle_inspect_click(event.position)
+		# inspecter l'objet sous la souris (si pas de glisser reel).
+		# Sprint 29 : un glisser (au-dela de SELECT_DRAG_THRESHOLD pixels)
+		# selectionne plutot les nains dans le rectangle trace - voir
+		# _on_select_press/_update_select_drag/_on_select_release.
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_select_button_down = true
+				_on_select_press(event.position)
+			else:
+				_select_button_down = false
+				_on_select_release(event.position)
+		elif event is InputEventMouseMotion and _select_button_down:
+			_update_select_drag(event.position)
 		return
 
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
@@ -249,6 +296,62 @@ func _update_drag(screen_pos: Vector2) -> void:
 func _cancel_drag() -> void:
 	is_dragging = false
 	_clear_drag_preview()
+
+
+## Sprint 29 : appui du clic gauche en Mode.NONE - on ne sait pas encore si
+## ce sera un simple clic (Inspecter) ou un glisser (selection de nains), la
+## decision est prise au relachement (_on_select_release) ou des que le
+## glisser depasse SELECT_DRAG_THRESHOLD (_update_select_drag).
+func _on_select_press(screen_pos: Vector2) -> void:
+	_select_press_pos = screen_pos
+	_select_dragging_active = false
+
+
+## Appelee a chaque mouvement de souris tant que le bouton gauche est enfonce
+## en Mode.NONE. Bascule en mode "glisser" des que la distance au point de
+## depart depasse le seuil, et affiche/redimensionne le rectangle a l'ecran.
+func _update_select_drag(screen_pos: Vector2) -> void:
+	if not _select_dragging_active:
+		if _select_press_pos.distance_to(screen_pos) < SELECT_DRAG_THRESHOLD:
+			return
+		_select_dragging_active = true
+		_select_box.visible = true
+		_hide_info_panel()  # au cas ou un panneau d'inspection venait de s'afficher juste avant que le glisser ne soit detecte
+	var top_left := Vector2(minf(_select_press_pos.x, screen_pos.x), minf(_select_press_pos.y, screen_pos.y))
+	var size := (_select_press_pos - screen_pos).abs()
+	_select_box.position = top_left
+	_select_box.size = size
+
+
+## Relachement du clic gauche en Mode.NONE : soit on termine un vrai glisser
+## (selection de nains dans le rectangle), soit c'etait un simple clic
+## (Inspecter, comportement inchange depuis le Sprint 25).
+func _on_select_release(screen_pos: Vector2) -> void:
+	if _select_dragging_active:
+		_finalize_box_selection(_select_press_pos, screen_pos)
+		_select_dragging_active = false
+		_select_box.visible = false
+	else:
+		_handle_inspect_click(_select_press_pos)
+
+
+## Trouve tous les nains dont la position ecran (projetee via la camera
+## active) tombe dans le rectangle glisse, et transmet la selection a
+## CharacterSheetUI (qui gere l'affichage - anneaux au sol + surbrillance des
+## portraits, purement visuel pour l'instant). Ctrl/Maj enfonce au
+## relachement = ajoute a la selection existante au lieu de la remplacer,
+## meme convention que Ctrl/Maj+clic sur un portrait de la fiche.
+func _finalize_box_selection(a: Vector2, b: Vector2) -> void:
+	var top_left := Vector2(minf(a.x, b.x), minf(a.y, b.y))
+	var bottom_right := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
+	var found: Array = []
+	for dwarf in get_tree().get_nodes_in_group("dwarves"):
+		var screen_pos: Vector2 = camera.unproject_position(dwarf.global_position)
+		if screen_pos.x >= top_left.x and screen_pos.x <= bottom_right.x \
+				and screen_pos.y >= top_left.y and screen_pos.y <= bottom_right.y:
+			found.append(dwarf)
+	var additive: bool = Input.is_key_pressed(KEY_SHIFT) or Input.is_key_pressed(KEY_CTRL)
+	character_sheet_ui.set_map_selection(found, additive)
 
 
 ## Intersection du rayon camera->souris avec le plan horizontal du sol

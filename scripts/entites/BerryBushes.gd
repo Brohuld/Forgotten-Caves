@@ -89,7 +89,8 @@ func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 func _build_plant_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	var leaf_mat := StandardMaterial3D.new()
 	leaf_mat.albedo_color = Color(0.20, 0.42, 0.16)
-	leaf_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	leaf_mat.roughness = 1.0
+	leaf_mat.metallic = 0.0
 	leaf_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 	var leaf_count := randi_range(6, 9)

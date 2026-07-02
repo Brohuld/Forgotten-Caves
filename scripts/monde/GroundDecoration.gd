@@ -68,7 +68,8 @@ func _spawn_grass_tuft(x: int, y: int, z: int, climate: Dictionary) -> void:
 		blade.rotation.z = randf_range(-0.3, 0.3)
 		var mat := StandardMaterial3D.new()
 		mat.albedo_color = variations[randi_range(0, variations.size() - 1)]
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.roughness = 1.0
+		mat.metallic = 0.0
 		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 		blade.set_surface_override_material(0, mat)
 		tuft.add_child(blade)
@@ -91,7 +92,8 @@ func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
 	stem.position.y = 0.09
 	var stem_mat := StandardMaterial3D.new()
 	stem_mat.albedo_color = Color(0.3, 0.5, 0.2)
-	stem_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	stem_mat.roughness = 1.0
+	stem_mat.metallic = 0.0
 	stem.set_surface_override_material(0, stem_mat)
 	flower.add_child(stem)
 
@@ -104,7 +106,8 @@ func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
 	var fleurs: Array = climate.get("fleurs", [Color.WHITE])
 	var bloom_mat := StandardMaterial3D.new()
 	bloom_mat.albedo_color = fleurs[randi_range(0, fleurs.size() - 1)]
-	bloom_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bloom_mat.roughness = 1.0
+	bloom_mat.metallic = 0.0
 	bloom.set_surface_override_material(0, bloom_mat)
 	flower.add_child(bloom)
 
@@ -121,6 +124,7 @@ func _spawn_pebble(x: int, y: int, z: int) -> void:
 	var shade: float = randf_range(0.45, 0.62)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(shade, shade, shade * 1.02)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.roughness = 1.0
+	mat.metallic = 0.0
 	pebble.set_surface_override_material(0, mat)
 	add_child(pebble)

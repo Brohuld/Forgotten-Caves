@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://cxpq7fcavesmain"]
+[gd_scene load_steps=17 format=3 uid="uid://cxpq7fcavesmain"]
 
 [ext_resource type="Script" path="res://scripts/systemes/CameraRig.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/monde/VoxelWorld.gd" id="2"]
@@ -10,6 +10,8 @@
 [ext_resource type="Script" path="res://scripts/entites/BerryBushes.gd" id="8"]
 [ext_resource type="Script" path="res://scripts/ui/CharacterSheetUI.gd" id="9"]
 [ext_resource type="Script" path="res://scripts/monde/GroundDecoration.gd" id="11"]
+[ext_resource type="Script" path="res://scripts/systemes/DayNightCycle.gd" id="12"]
+[ext_resource type="Script" path="res://scripts/systemes/WeatherSystem.gd" id="13"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
 sky_top_color = Color(0.32, 0.52, 0.85, 1)
@@ -28,14 +30,38 @@ fog_enabled = true
 fog_light_color = Color(0.65, 0.68, 0.72, 1)
 fog_density = 0.008
 
+[sub_resource type="SphereMesh" id="SphereMesh_Moon"]
+radius = 2.5
+height = 5.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_Moon"]
+shading_mode = 0
+albedo_color = Color(0.85, 0.87, 0.95, 1)
+transparency = 1
+
 [node name="Main" type="Node3D"]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+unique_name_in_owner = true
 environment = SubResource("Environment_1")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+unique_name_in_owner = true
 transform = Transform3D(0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, -0.75, 0.433013, 0, 20, 0)
 shadow_enabled = true
+
+[node name="Moon" type="MeshInstance3D" parent="."]
+unique_name_in_owner = true
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -55, 14, -55)
+visible = false
+mesh = SubResource("SphereMesh_Moon")
+material_override = SubResource("StandardMaterial3D_Moon")
+
+[node name="DayNightCycle" type="Node" parent="."]
+script = ExtResource("12")
+
+[node name="WeatherSystem" type="Node" parent="."]
+script = ExtResource("13")
 
 [node name="VoxelWorld" type="Node3D" parent="."]
 unique_name_in_owner = true
@@ -182,4 +208,5 @@ custom_minimum_size = Vector2(0, 24)
 text = "Fermer"
 
 [node name="CharacterSheetUI" type="CanvasLayer" parent="."]
+unique_name_in_owner = true
 script = ExtResource("9")

@@ -315,10 +315,15 @@ func _build_leaf_cluster(parent: Node3D, colors: Array, tint: float, count: int,
 		parent.add_child(leaf)
 
 
-## Materiau plat non eclaire, coherent avec le style du reste du jeu
-## (terrain, decorations de sol : voir VoxelWorld._make_material)
+## Materiau plat (visuellement "flat" = pas de texture/reflet), coherent
+## avec le style du reste du jeu (terrain, decorations de sol : voir
+## VoxelWorld._make_material). 2026-07-02 : passe de SHADING_MODE_UNSHADED a
+## l'eclairage reel pour que les arbres reagissent au cycle jour/nuit
+## (DayNightCycle.gd) - meme raison que VoxelWorld._make_material.
+## roughness=1/metallic=0 garde l'aspect plat/mat, sans reflet.
 func _flat_material(color: Color) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.roughness = 1.0
+	mat.metallic = 0.0
 	return mat

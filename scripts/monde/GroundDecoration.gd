@@ -52,6 +52,15 @@ enum PartType { GRASS_BLADE, FLOWER_STEM, FLOWER_BLOOM, PEBBLE }
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
 var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
 var _pending_colors: Dictionary = {}   # PartType -> Array[Color]
+## Sprint 87 (2026-07-04, demande explicite de Francois : "les decorations
+## (fleurs etc) doivent disparaitre aussi" en descendant de niveau, comme les
+## arbres/buissons - voir Forest.gd/update_view_level) - contrairement aux
+## arbres/buissons, une decoration n'a PAS de noeud persistant (root.queue_free()
+## dans _harvest_and_clear, aucun groupe) : le bloc de sol de chaque instance
+## est donc retenu ici, en parallele de _pending_xforms/_pending_colors (meme
+## index), pour permettre update_view_level plus bas.
+var _pending_ground_y: Dictionary = {}  # PartType -> Array[float]
+var _view_level: int = 999999  # tres haut par defaut = rien de cache avant le premier appel de CameraRig
 
 
 func _ready() -> void:
@@ -97,6 +106,7 @@ func _build_shared_meshes() -> void:
 	for key in _mmi.keys():
 		_pending_xforms[key] = []
 		_pending_colors[key] = []
+		_pending_ground_y[key] = []
 
 
 func _make_mmi(mesh: Mesh) -> MultiMeshInstance3D:
@@ -172,7 +182,7 @@ func _spawn_grass_tuft(x: int, y: int, z: int, climate: Dictionary) -> void:
 		_tag_part(blade, PartType.GRASS_BLADE, color, Vector3(1.0, mesh.height, 1.0))
 		tuft.add_child(blade)
 
-	_harvest_and_clear(tuft)
+	_harvest_and_clear(tuft, float(y) - 1.0)
 
 
 ## Petite fleur (tige + bouton), couleur choisie au hasard parmi les
@@ -205,7 +215,7 @@ func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
 	_tag_part(bloom, PartType.FLOWER_BLOOM, bloom_color, Vector3.ONE * bloom_mesh.radius)
 	flower.add_child(bloom)
 
-	_harvest_and_clear(flower)
+	_harvest_and_clear(flower, float(y) - 1.0)
 
 
 ## Petit caillou gris, taille/teinte/rotation legerement aleatoires
@@ -226,7 +236,7 @@ func _spawn_pebble(x: int, y: int, z: int) -> void:
 	_tag_part(mesh_part, PartType.PEBBLE, color, mesh.size)
 	pebble.add_child(mesh_part)
 
-	_harvest_and_clear(pebble)
+	_harvest_and_clear(pebble, float(y) - 1.0)
 
 
 ## Sprint 34 : marque une MeshInstance3D temporaire comme "piece a recolter"
@@ -243,7 +253,7 @@ func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector
 ## MultiMeshInstance3D partage correspondant, puis supprime "root" entier (pas
 ## besoin de garder de noeud racine ici, contrairement aux arbres - une
 ## decoration n'a ni groupe ni metadonnee ni logique de suppression future).
-func _harvest_and_clear(root: Node3D) -> void:
+func _harvest_and_clear(root: Node3D, ground_block_y: float) -> void:
 	var parts: Array = []
 	_collect_tagged_parts(root, parts)
 	for node in parts:
@@ -253,6 +263,10 @@ func _harvest_and_clear(root: Node3D) -> void:
 		var xform: Transform3D = node.global_transform * Transform3D(Basis().scaled(part_scale), Vector3.ZERO)
 		_pending_xforms[part_type].append(xform)
 		_pending_colors[part_type].append(color)
+		# Sprint 87 : voir declaration de "_pending_ground_y" plus haut -
+		# necessaire ici puisque "root" est libere juste apres (aucun noeud
+		# ne survit pour retenir cette information autrement).
+		_pending_ground_y[part_type].append(ground_block_y)
 	root.queue_free()
 
 
@@ -275,3 +289,28 @@ func _apply_pending_instances() -> void:
 		for i in range(xforms.size()):
 			mmi.multimesh.set_instance_transform(i, xforms[i])
 			mmi.multimesh.set_instance_color(i, colors[i])
+
+
+## Sprint 87 (2026-07-04, demande explicite de Francois : "les decorations
+## (fleurs etc) doivent disparaitre aussi" en descendant de niveau) - appele
+## par CameraRig a chaque changement de niveau de vue, comme pour Forest.gd/
+## BerryBushes.gd. Contrairement a ces 2 scripts, il n'y a ici aucun noeud
+## par decoration a interroger (voir _harvest_and_clear, "root" est libere
+## immediatement) : chaque instance de chaque MultiMesh partage est donc
+## cachee/reaffichee directement, en comparant son bloc de sol
+## (_pending_ground_y[part_type][i], retenu a la creation) au niveau de vue -
+## meme convention que VoxelWorld ("y > view_level" = cache). _pending_xforms
+## reste en memoire (jamais vide) apres _apply_pending_instances, donc la
+## transform d'origine est toujours disponible pour la restauration.
+func update_view_level(level: int) -> void:
+	_view_level = level
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	for part_type in _mmi.keys():
+		var mmi: MultiMeshInstance3D = _mmi[part_type]
+		var xforms: Array = _pending_xforms[part_type]
+		var ground_ys: Array = _pending_ground_y[part_type]
+		for i in range(xforms.size()):
+			if ground_ys[i] > float(_view_level):
+				mmi.multimesh.set_instance_transform(i, zero_xform)
+			else:
+				mmi.multimesh.set_instance_transform(i, xforms[i])

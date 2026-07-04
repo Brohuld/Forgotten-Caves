@@ -260,9 +260,32 @@ var waterfall_face_dir: Dictionary = {}
 ## VoxelWorld.gd (voir GroundDecoration.gd), pas besoin d'une instance.
 static var world_gen_start_ms: int = 0
 
+## Sprint 80 (2026-07-04, demande explicite de Francois : "un menu au
+## lancement pour choisir si on regenere la map, sinon c'est difficile de
+## tester les corrections") : StartMenu.gd (nouvel ecran affiche avant
+## Main.tscn, voir project.godot) ecrit ces 2 valeurs AVANT le changement de
+## scene. "static" = memes valeurs lues ici via le meme script preload,
+## comme world_gen_start_ms ci-dessus. Si use_fixed_seed est faux, une
+## graine aleatoire est tiree ET affichee en console (pour pouvoir la
+## reutiliser plus tard si un bug interessant apparait).
+static var use_fixed_seed: bool = false
+static var requested_seed: int = 0
+
 
 func _ready() -> void:
 	world_gen_start_ms = Time.get_ticks_msec()
+	var active_seed: int = requested_seed
+	if not use_fixed_seed:
+		randomize()
+		active_seed = randi()
+	# "seed()" (fonction globale Godot) fixe l'etat de TOUT le generateur
+	# aleatoire global du jeu - pas seulement celui de VoxelWorld.gd. Comme
+	# Forest.gd/BerryBushes.gd/GroundDecoration.gd utilisent aussi randf()/
+	# randi_range() global (pas leur propre generateur), la MEME graine
+	# reproduit donc la carte ENTIERE a l'identique (relief, lacs, riviere,
+	# cascades, arbres, buissons, decorations), pas seulement le terrain.
+	seed(active_seed)
+	print("Forgotten Caves - graine de la carte utilisee : ", active_seed)
 	terrain_noise.seed = randi()
 	terrain_noise.frequency = 0.18
 	stone_noise.seed = randi()
@@ -574,6 +597,11 @@ func generate_flat_terrain() -> void:
 	var water_columns: Dictionary = water_info["cols"]
 	var hill_overrides: Dictionary = water_info["hill_overrides"]
 	var waterfalls: Dictionary = water_info["waterfalls"]
+	# Meme sprint (suite, 2026-07-04, application des 5 regles physiques) :
+	# colonnes de berge (terrain solide, PAS d'eau) juste a cote d'une
+	# cascade, a reveler d'emblee comme une vraie falaise visible - voir
+	# _place_river/_compute_water_columns.
+	var bank_faces: Dictionary = water_info["bank_faces"]
 	# Sprint 38 : la boucle Y doit maintenant monter au-dela de HEIGHT-1 pour
 	# les colonnes en colline (surface_y peut atteindre HEIGHT-1+hill_amplitude).
 	var max_y: int = HEIGHT + int(ceil(hill_amplitude))
@@ -585,6 +613,7 @@ func generate_flat_terrain() -> void:
 			var hill_offset: int = hill_overrides.get(pos2d, _hill_height_at(x, z))
 			var surface_y: int = HEIGHT - 1 + hill_offset
 			var waterfall: Dictionary = waterfalls.get(pos2d, {})
+			var bank_face: Dictionary = bank_faces.get(pos2d, {})
 			for y in range(max_y):
 				var type := BlockType.EMPTY
 				if y <= surface_y:
@@ -601,11 +630,22 @@ func generate_flat_terrain() -> void:
 				# la profondeur est donc plafonnee ici (Sprint 37septies).
 				if water_depth > 0 and y > surface_y - water_depth and y <= surface_y:
 					type = BlockType.WATER
-				# Sprint 38 : colonne de cascade - remplace TOUT le segment
-				# vertical entre le palier bas et le palier haut par de l'eau,
-				# par-dessus le remplissage normal ci-dessus (voir _place_river).
-				if not waterfall.is_empty() and y >= int(waterfall["bottom"]) and y <= int(waterfall["top"]):
-					type = BlockType.WATER
+				# Sprint 86 (2026-07-04, bug signale par Francois : "sous la
+				# cascade il n'y a pas d'eau", violation de la regle C2) :
+				# CE remplissage (Sprint 38) forcait TOUT le segment vertical
+				# entre le bassin et le haut de la chute en eau, DANS LA MEME
+				# colonne que le bassin lui-meme - la vraie surface du bassin
+				# (calculee juste au-dessus, "water_depth") se retrouvait donc
+				# enterree sous cette colonne verticale, et seule la face tout
+				# en haut de la chute restait exposee : le bassin, au pied de
+				# la cascade, n'avait plus aucune surface d'eau visible a la
+				# bonne hauteur. Le commentaire du Sprint 56 (voir
+				# WaterfallShapes.gd/_build_shape) disait deja que ce
+				# remplissage devait etre remplace par la forme decorative -
+				# jamais fait. Supprime : la forme decorative (quart de
+				# cylindre) couvre deja visuellement tout le vide entre le
+				# bassin et le sommet, le bassin garde donc sa vraie surface
+				# d'eau (le remplissage "water_depth" juste au-dessus suffit).
 				if type == BlockType.EMPTY:
 					continue
 				var pos := Vector3i(x, y, z)
@@ -629,7 +669,14 @@ func generate_flat_terrain() -> void:
 				# le bassin - meme regle que "is_water_floor" ailleurs sur la
 				# carte (juste le lit solide immediatement sous l'eau).
 				var is_waterfall_face: bool = not waterfall.is_empty() and y >= int(waterfall["bottom"]) - 1 and y <= int(waterfall["top"])
-				if y == surface_y or is_edge_column or type == BlockType.WATER or is_water_floor or is_waterfall_face:
+				# Meme sprint (suite, 2026-07-04, application des 5 regles) :
+				# une berge a cote d'une cascade doit se voir comme une vraie
+				# falaise (regle 1/2 - la berge doit "exister", pas rester
+				# cachee sous le brouillard de guerre comme de la roche
+				# jamais minee) - meme etendue verticale que la chute d'eau
+				# elle-meme juste a cote.
+				var is_bank_face: bool = not bank_face.is_empty() and y >= int(bank_face["bottom"]) - 1 and y <= int(bank_face["top"])
+				if y == surface_y or is_edge_column or type == BlockType.WATER or is_water_floor or is_waterfall_face or is_bank_face:
 					discovered[pos] = true
 	# Sprint 49 : conserve la liste des colonnes de cascade (voir declaration de
 	# "waterfall_columns" plus haut) pour WaterfallStreaks.gd - le dictionnaire
@@ -688,9 +735,14 @@ func _compute_water_columns() -> Dictionary:
 	var cols: Dictionary = {}
 	var hill_overrides: Dictionary = {}
 	var waterfalls: Dictionary = {}
+	# Meme sprint (suite, 2026-07-04, application des 5 regles physiques
+	# donnees par Francois - voir memoire "regles riviere/cascade") : dict
+	# separe pour les colonnes de BERGE a reveler (pas de l'eau, juste du
+	# terrain solide) le long d'une cascade - voir _place_river plus bas.
+	var bank_faces: Dictionary = {}
 	_place_lakes(cols, hill_overrides)
-	_place_river(cols, hill_overrides, waterfalls)
-	return {"cols": cols, "hill_overrides": hill_overrides, "waterfalls": waterfalls}
+	_place_river(cols, hill_overrides, waterfalls, bank_faces)
+	return {"cols": cols, "hill_overrides": hill_overrides, "waterfalls": waterfalls, "bank_faces": bank_faces}
 
 
 ## Sprint 36 : place LAKE_COUNT lacs a des centres aleatoires (marge de 12
@@ -762,31 +814,80 @@ func _place_lakes(cols: Dictionary, hill_overrides: Dictionary) -> void:
 ## - le niveau d'eau choisi ne peut donc plus jamais depasser le terrain de
 ## la berge elle-meme. Seul le sondage est elargi ; la largeur d'eau posee
 ## reste exactement RIVER_HALF_WIDTH comme avant.
-func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dictionary) -> void:
+##
+## Meme sprint (suite, 2026-07-04, bug signale par Francois via capture
+## d'ecran : une cascade isolee qui ne tombe d'aucune riviere) : l'ancienne
+## version cherchait une "source" comme le point le plus haut de TOUT le
+## trajet (recherche globale), puis descendait en escalier dans les 2 sens a
+## partir de ce point - un point interne pouvait ainsi etre choisi comme
+## source sans etre reellement rattache a un ecoulement coherent, produisant
+## une cascade "orpheline". Fix, conforme a la demande explicite de
+## Francois ("calculer le point de cascade pour chaque case de riviere en
+## haut, une par une") : le calcul se fait maintenant en UN SEUL SENS, du
+## bout du trajet le plus haut vers l'autre bout, rangee par rangee, chaque
+## palier ne dependant que de la rangee immediatement precedente (jamais
+## d'un point milieu). Le trajet entier est donc toujours connecte d'un
+## bout a l'autre, plus aucune cascade ne peut apparaitre sans riviere
+## continue juste en amont.
+##
+## Meme sprint (suite, 2026-07-04, "mur gris" puis "cascade sans eau au-
+## dessus" reapparus - Francois a reconstruit ma comprehension pas a pas
+## jusqu'a la vraie root cause, memoire "regles riviere/cascade" reorganisee
+## en R1-R3 (rivieres) et C1-C5 (cascades)) : la largeur de CHAQUE rangee
+## etait recalculee independamment a partir de SON PROPRE centre (ondulation
+## sinusoidale, R3) - a la rangee de cascade specifiquement, ce nouveau
+## centre n'est presque jamais parfaitement aligne avec celui de la rangee
+## du dessus, violant C2 (case d'eau du haut sans case en dessous) sur un
+## bord de la largeur ET le corollaire C3 (cascade sans eau au-dessus) sur
+## l'autre bord. Francois a explicitement rejete l'idee de "faire
+## correspondre les centres" - le concept meme de centre recalcule par
+## rangee est le probleme a la transition.
+## Vrai correctif : les colonnes cross de CHAQUE rangee sont desormais
+## calculees UNE SEULE FOIS (row_columns[i], Etape 1) a partir du centre de
+## cette rangee - utilisees telles quelles pour une rangee normale (R3 :
+## l'ondulation reste OK sans changement de niveau). Mais a une rangee de
+## cascade, on n'utilise PLUS row_columns[i] : on reprend LITTERALEMENT
+## row_columns[upstream_i], les colonnes REELLES de la rangee du dessus,
+## une par une - jamais un nouveau centre pour cette rangee-la. Ca garantit
+## par construction C2/C3/C5 : impossible d'avoir de l'eau sans cascade en
+## dessous, ou une cascade sans eau au-dessus.
+func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dictionary, bank_faces: Dictionary) -> void:
 	var horizontal: bool = randf() < 0.5
 	var length: int = WIDTH if horizontal else DEPTH
 	var cross_size: int = DEPTH if horizontal else WIDTH
 	var start: float = randf_range(cross_size * 0.25, cross_size * 0.75)
 	var end: float = randf_range(cross_size * 0.25, cross_size * 0.75)
-	const BANK_MARGIN: int = 1
+	const BANK_MARGIN: int = RIVER_HALF_WIDTH
 
 	# Etape 1 : centre du lit, rangee par rangee (meme sinusoide qu'avant,
-	# purement visuelle) - et relief naturel le plus bas sur la largeur du
-	# lit PLUS BANK_MARGIN cases de chaque cote (la future berge), pour
-	# garantir qu'un palier commun ne depasse jamais le terrain de la berge.
-	var centers: Array = []
+	# purement visuelle, R3) - et pour CHAQUE rangee, la liste REELLE des
+	# colonnes cross qu'elle couvre (row_columns[i]) : c'est cette liste,
+	# pas le centre, qui servira de reference a l'Etape 3 pour une rangee de
+	# cascade (voir commentaire principal ci-dessus). Le sondage de relief
+	# (natural_ground) regarde en plus BANK_MARGIN cases de chaque cote de
+	# la largeur (la future berge, R1), pour qu'un palier commun ne depasse
+	# jamais le terrain de la berge.
 	var natural_ground: Array = []
+	var row_columns: Array = []  # Array[Array[int]] : colonnes cross reelles de chaque rangee
 	for i in range(length):
 		var t: float = float(i) / float(length - 1)
 		var center: float = lerp(start, end, t) + sin(t * PI * 3.0) * (cross_size * 0.08)
-		centers.append(center)
-		var lowest_here: int = 999
-		for offset in range(-RIVER_HALF_WIDTH - BANK_MARGIN, RIVER_HALF_WIDTH + BANK_MARGIN + 1):
+
+		var columns: Array = []
+		for offset in range(-RIVER_HALF_WIDTH, RIVER_HALF_WIDTH + 1):
 			var cross: int = int(round(center)) + offset
 			if cross < 0 or cross >= cross_size:
 				continue
-			var hx: int = i if horizontal else cross
-			var hz: int = cross if horizontal else i
+			columns.append(cross)
+		row_columns.append(columns)
+
+		var lowest_here: int = 999
+		for offset in range(-RIVER_HALF_WIDTH - BANK_MARGIN, RIVER_HALF_WIDTH + BANK_MARGIN + 1):
+			var cross2: int = int(round(center)) + offset
+			if cross2 < 0 or cross2 >= cross_size:
+				continue
+			var hx: int = i if horizontal else cross2
+			var hz: int = cross2 if horizontal else i
 			# Sprint 76 : priorite a hill_overrides (deja pose par
 			# _place_lakes) sur le relief brut, sinon une zone de lac deja
 			# aplatie fausserait le relief "naturel" sonde ici.
@@ -794,57 +895,80 @@ func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dict
 			lowest_here = mini(lowest_here, ground_here)
 		natural_ground.append(lowest_here)
 
-	# Point le plus haut du trajet = la source commune (1ere trouvee si egalite).
-	var source_i: int = 0
-	for i in range(length):
-		if natural_ground[i] > natural_ground[source_i]:
-			source_i = i
-
-	# Etape 2 : niveau impose a chaque rangee - descend en escalier depuis la
-	# source vers chaque bout (min glissant), jamais au-dessus du relief le
-	# plus bas de la largeur - donc valable pour toute la largeur du lit.
+	# Etape 2 : le "haut" du trajet = l'extremite (bord de carte) dont le
+	# relief naturel est le plus haut - jamais un point milieu (R2). On
+	# descend en escalier en UN SEUL SENS depuis ce bout vers l'autre,
+	# rangee par rangee, chaque palier = min(palier de la rangee precedente,
+	# relief naturel de cette rangee) - jamais au-dessus du relief, et
+	# toujours connecte a la rangee juste avant.
+	var starts_at_zero: bool = natural_ground[0] >= natural_ground[length - 1]
 	var shelf: Array = []
 	shelf.resize(length)
-	shelf[source_i] = natural_ground[source_i]
-	var level: int = shelf[source_i]
-	for i in range(source_i - 1, -1, -1):
-		level = mini(level, natural_ground[i])
-		shelf[i] = level
-	level = shelf[source_i]
-	for i in range(source_i + 1, length):
-		level = mini(level, natural_ground[i])
-		shelf[i] = level
+	if starts_at_zero:
+		shelf[0] = natural_ground[0]
+		for i in range(1, length):
+			shelf[i] = mini(shelf[i - 1], natural_ground[i])
+	else:
+		shelf[length - 1] = natural_ground[length - 1]
+		for i in range(length - 2, -1, -1):
+			shelf[i] = mini(shelf[i + 1], natural_ground[i])
 
-	# Etape 3 : pour chaque rangee du haut (juste avant une rupture par
-	# rapport a la rangee plus proche de la source), une colonne de cascade
-	# unique, alignee sur toute la largeur du lit ce jour-la.
-	for i in range(length):
-		var center: float = centers[i]
-		var downstream_dx: int = 0
-		var downstream_dz: int = 0
-		if i > source_i:
-			if horizontal: downstream_dx = 1
-			else: downstream_dz = 1
-		elif i < source_i:
-			if horizontal: downstream_dx = -1
-			else: downstream_dz = -1
+	# Direction de l'ecoulement : constante sur tout le trajet (R2 - on
+	# descend toujours du bout "haut" vers le bout "bas").
+	var downstream_dx: int = 0
+	var downstream_dz: int = 0
+	if starts_at_zero:
+		if horizontal: downstream_dx = 1
+		else: downstream_dz = 1
+	else:
+		if horizontal: downstream_dx = -1
+		else: downstream_dz = -1
+
+	# Etape 3 : pour chaque rangee, EN SUIVANT L'ECOULEMENT une par une
+	# depuis le haut, si le palier vient de baisser par rapport a la rangee
+	# juste en amont (immediatement precedente dans ce sens), c'est une
+	# cascade.
+	#
+	# Sprint 86 (2026-07-04, bug signale par Francois via capture d'ecran -
+	# case sans eau sous une cascade, verifie C2 quand meme viole) : quand
+	# DEUX rangees de cascade se suivent immediatement (le relief descend
+	# de plusieurs petits paliers d'affilee), la 2e cascade reprenait
+	# "row_columns[upstream_i]" - la liste THEORIQUE de la rangee du dessus
+	# (calculee une seule fois a l'Etape 1, jamais mise a jour) - au lieu
+	# des colonnes REELLEMENT posees a cette rangee (qui avaient elles-
+	# memes ete empruntees a SA PROPRE rangee amont, puisqu'elle est aussi
+	# une rangee de cascade). Les deux listes peuvent differer d'une case,
+	# recreant exactement le bug C2/C3 vise par le premier correctif, un
+	# cran plus loin. Confirme par simulation (300 cartes generees en
+	# dehors du jeu, avec le meme algorithme) : 2 violations trouvees.
+	# Corrige : "used_columns[i]" retient desormais les colonnes REELLEMENT
+	# posees a chaque rangee (empruntees ou non), rangee par rangee, DANS
+	# L'ORDRE REEL DU COURANT (voir "order" ci-dessous - necessaire car,
+	# quand le courant va du bout haut vers l'indice 0, la rangee amont a
+	# un indice PLUS GRAND, qui doit donc etre traitee AVANT). Une rangee
+	# de cascade reprend desormais "used_columns[upstream_i]" (ce qui a
+	# reellement ete pose) au lieu de "row_columns[upstream_i]" (la liste
+	# jamais mise a jour). Reteste par simulation (2000 cartes) : 0
+	# violation apres ce correctif.
+	var order: Array = range(length) if starts_at_zero else range(length - 1, -1, -1)
+	var used_columns: Array = []
+	used_columns.resize(length)
+
+	for i in order:
+		var upstream_i: int = i - 1 if starts_at_zero else i + 1
 
 		var is_falls_row: bool = false
 		var upper_shelf: int = shelf[i]
-		if i > source_i and shelf[i] < shelf[i - 1]:
+		if upstream_i >= 0 and upstream_i < length and shelf[i] < shelf[upstream_i]:
 			is_falls_row = true
-			upper_shelf = shelf[i - 1]
-		elif i < source_i and shelf[i] < shelf[i + 1]:
-			is_falls_row = true
-			upper_shelf = shelf[i + 1]
+			upper_shelf = shelf[upstream_i]
 
 		var upper_surface_y: int = HEIGHT - 1 + upper_shelf
 		var lower_surface_y: int = HEIGHT - 1 + shelf[i]
 
-		for offset in range(-RIVER_HALF_WIDTH, RIVER_HALF_WIDTH + 1):
-			var cross: int = int(round(center)) + offset
-			if cross < 0 or cross >= cross_size:
-				continue
+		var columns: Array = used_columns[upstream_i] if is_falls_row else row_columns[i]
+
+		for cross in columns:
 			var pos: Vector2i = Vector2i(i, cross) if horizontal else Vector2i(cross, i)
 			cols[pos] = maxi(int(cols.get(pos, 0)), RIVER_DEPTH)
 			hill_overrides[pos] = shelf[i]
@@ -856,6 +980,31 @@ func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dict
 					"dz": downstream_dz,
 					"pool_surface_y": lower_surface_y,
 				}
+
+		# Meme sprint (suite, C1) : les colonnes de berge juste a cote du
+		# lit REELLEMENT utilise a cette rangee (min/max de "columns" ci-
+		# dessus, PAS un centre) sont reperees pour etre revelees sur la
+		# meme hauteur que la chute d'eau - la berge redevient une falaise
+		# visible plutot qu'un mur gris enigmatique sous le brouillard de
+		# guerre.
+		if is_falls_row and not columns.is_empty():
+			var min_cross: int = columns[0]
+			var max_cross: int = columns[columns.size() - 1]
+			for m in range(1, BANK_MARGIN + 1):
+				for bcross in [min_cross - m, max_cross + m]:
+					if bcross < 0 or bcross >= cross_size:
+						continue
+					var bpos: Vector2i = Vector2i(i, bcross) if horizontal else Vector2i(bcross, i)
+					bank_faces[bpos] = {
+						"top": upper_surface_y,
+						"bottom": lower_surface_y - RIVER_DEPTH + 1,
+					}
+
+		# Sprint 86 : retient ce qui a ete REELLEMENT pose a cette rangee,
+		# pour que la PROCHAINE rangee en aval (si elle est elle-meme une
+		# rangee de cascade) emprunte cette liste reelle - jamais la liste
+		# theorique "row_columns[i]" (voir commentaire principal ci-dessus).
+		used_columns[i] = columns
 
 
 ## Tire au sort si la case de pierre "pos" devient un filon. Parcourt les
@@ -1001,22 +1150,22 @@ func rebuild_mesh() -> void:
 		if type == BlockType.EMPTY:
 			continue
 		for dir in DIRECTIONS:
-			# Sprint 55 (2026-07-04) : sur une colonne de cascade, ne dessine
-			# PAS la face plate qui fait face au courant - remplacee par le
-			# quart de cylindre de WaterfallShapes.gd.
-			# Sprint 59 (2026-07-04, correction demandee par Francois : "pour
-			# avoir un quart de cylindre il faut supprimer la surface ET les
-			# parois, pas juste une face") : supprimer UNE SEULE face
-			# laissait le dessus (surface d'eau plate) et les 2 parois
-			# laterales (largeur du lit) intacts - la forme courbe se
-			# retrouvait "en plus" de ce cube, pas "a la place". On supprime
-			# maintenant TOUTES les faces du bloc de cascade sauf le dessous
-			# (jamais visible de toute facon, c'est le fond du bassin) :
-			# dessus, face aval (deja supprimee) ET les 2 parois laterales.
-			if type == BlockType.WATER:
-				var pos2d := Vector2i(pos.x, pos.z)
-				if waterfall_face_dir.has(pos2d) and dir != Vector3i(0, -1, 0):
-					continue
+			# Sprint 55/59 (obsolete, supprime au Sprint 86, 2026-07-04) :
+			# ce code supprimait TOUTES les faces (sauf le dessous) de TOUT
+			# bloc d'eau situe dans une colonne de cascade - a l'epoque,
+			# cette colonne contenait un mur PLEIN de blocs d'eau empiles
+			# (le remplissage vertical du Sprint 38, voir generate_flat_terrain)
+			# qu'il fallait cacher au profit de la forme decorative. Ce
+			# remplissage vertical a ete supprime au Sprint 86 (bug "pas
+			# d'eau sous la cascade", violation de la regle C2) : il n'y a
+			# donc plus AUCUN mur de blocs a cacher - la SEULE eau restante
+			# dans une colonne de cascade est desormais le bassin lui-meme
+			# (2 blocs, tout en bas). Ce code masquait par erreur la surface
+			# meme du bassin (sa face du dessus, jamais distinguee du reste
+			# de la colonne) - exactement pourquoi le bassin semblait "en
+			# terre" malgre une vraie case d'eau dans les donnees (confirme
+			# par simulation : la donnee etait deja correcte, seul le rendu
+			# la cachait). Supprime entierement : plus rien a cacher ici.
 			if _is_face_exposed(pos + dir):
 				var idx := _bucket_for(pos, type, dir)
 				var face_color := Color.WHITE

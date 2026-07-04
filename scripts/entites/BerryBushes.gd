@@ -197,6 +197,7 @@ func _spawn_bush() -> void:
 	bush.name = "Bush_%d" % get_child_count()
 	bush.position = Vector3(x, _ground_y_at(x, z), z)
 	bush.add_to_group("cueillette")
+	bush.add_to_group("bushes")  # Sprint 85 : groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
 	bush.set_meta("fruit_resource", berry_type["id"])
 	bush.set_meta("fruits_left", BERRIES_PER_BUSH)
 	bush.set_meta("species_name", berry_type["nom"])
@@ -305,6 +306,7 @@ func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector
 func _harvest_and_clear(bush: Node3D) -> void:
 	var parts: Array = []
 	_collect_tagged_parts(bush, parts)
+	var refs: Array = []
 	for node in parts:
 		var part_type: int = node.get_meta("part_type")
 		var color: Color = node.get_meta("part_color")
@@ -312,6 +314,9 @@ func _harvest_and_clear(bush: Node3D) -> void:
 		var xform: Transform3D = node.global_transform * Transform3D(Basis().scaled(part_scale), Vector3.ZERO)
 		_pending_xforms[part_type].append(xform)
 		_pending_colors[part_type].append(color)
+		refs.append([part_type, _pending_xforms[part_type].size() - 1])  # Sprint 85 : reference pour update_view_level (meme principe que Forest.gd)
+
+	bush.set_meta("visual_refs", refs)
 
 	for child in bush.get_children():
 		if not (child.name as String).begins_with("Fruit_"):
@@ -337,3 +342,28 @@ func _apply_pending_instances() -> void:
 		for i in range(xforms.size()):
 			mmi.multimesh.set_instance_transform(i, xforms[i])
 			mmi.multimesh.set_instance_color(i, colors[i])
+
+
+## Sprint 85 (2026-07-04, meme demande que Forest.gd/update_view_level -
+## voir ses commentaires pour le detail complet du raisonnement) : cache/
+## reaffiche chaque buisson/plante selon que son bloc de sol (bush.position.y
+## - 1.0) est au-dessus ou non du niveau de vue courant. Restauration via
+## _pending_xforms (jamais vide apres _apply_pending_instances). Les baies
+## ("Fruit_%d") bascules via leur propre "visible".
+func update_view_level(level: int) -> void:
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	for bush in get_tree().get_nodes_in_group("bushes"):
+		var ground_block_y: float = bush.position.y - 1.0
+		var hidden: bool = ground_block_y > float(level)
+		if bush.has_meta("visual_refs"):
+			var refs: Array = bush.get_meta("visual_refs")
+			for ref in refs:
+				var part_type: int = ref[0]
+				var idx: int = ref[1]
+				if hidden:
+					_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+				else:
+					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
+		for child in bush.get_children():
+			if (child.name as String).begins_with("Fruit_"):
+				child.visible = not hidden

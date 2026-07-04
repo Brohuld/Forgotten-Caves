@@ -717,3 +717,41 @@ func hide_tree_visuals(tree: Node3D) -> void:
 		var part_type: int = ref[0]
 		var idx: int = ref[1]
 		_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+
+
+## Sprint 85 (2026-07-04, demande explicite de Francois : "quand je descends
+## d'un niveau, les arbres et buissons du niveau superieur restent affiches -
+## il faut les faire disparaitre completement") - appele par CameraRig a
+## chaque changement de niveau de vue (meme moment que
+## VoxelWorld.set_view_level), en plus de ce dernier, jamais a sa place.
+## Un arbre est cache des que le BLOC de sol sur lequel il repose (indice
+## entier, tree.position.y - 1.0, meme convention que tree.position.y =
+## get_top_block_y+1.0 dans _ground_y_at) est strictement au-dessus du niveau
+## de vue - exactement la meme regle que VoxelWorld ("pos.y > view_level" =
+## cache). Pour reafficher un arbre, on restaure sa transform d'ORIGINE (pas
+## de recalcul) depuis _pending_xforms : ce tableau, remplit une seule fois
+## par _harvest_and_clear/_apply_pending_instances, reste en memoire pour
+## toute la duree de vie de Forest.gd (jamais vide), donc aucun stockage
+## supplementaire n'est necessaire. Un arbre coupe (hide_tree_visuals suivi
+## de tree.queue_free(), voir Dwarf.gd) est libere immediatement et ne fait
+## donc plus partie du groupe "trees" - pas de risque de le "reafficher" par
+## erreur ici.
+## Les fruits (seuls enfants restants de "tree", noms "Fruit_*", pas geres par
+## le MultiMesh partage) sont bascules directement via leur propre "visible".
+func update_view_level(level: int) -> void:
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	for tree in get_tree().get_nodes_in_group("trees"):
+		var ground_block_y: float = tree.position.y - 1.0
+		var hidden: bool = ground_block_y > float(level)
+		if tree.has_meta("visual_refs"):
+			var refs: Array = tree.get_meta("visual_refs")
+			for ref in refs:
+				var part_type: int = ref[0]
+				var idx: int = ref[1]
+				if hidden:
+					_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+				else:
+					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
+		for child in tree.get_children():
+			if (child.name as String).begins_with("Fruit_"):
+				child.visible = not hidden

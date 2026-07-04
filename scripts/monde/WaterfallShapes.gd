@@ -43,14 +43,37 @@ const SHAPE_SEGMENTS := 16  # lisse (le tronc d'arbre utilise aussi un cylindre 
 ## Sprint 72 (2026-07-04, demande explicite : "on enleve l'eclairage, on prend
 ## la couleur de l'eau de la riviere en haut de cascade, et on decale vers le
 ## bleu clair en bas"). TOP_COLOR = couleur de l'eau de la riviere.
-const TOP_COLOR := Color(0.45, 0.80, 0.98)  # identique a VoxelWorld.WATER_COLOR
-const BOTTOM_COLOR := Color(0.65, 0.88, 1.0)  # bleu clair
+##
+## Meme sprint (suite, 2026-07-04, demande explicite de Francois : le degrade
+## haut/bas + l'ecume melangee dans cette fonction s'est avere "trop
+## difficile" a regler visuellement - simplifie en UNE seule couleur plate
+## pour toute la forme. L'effet d'ecume (fonce en haut, clair en bas) est
+## desormais gere ailleurs, par de petits nuages de particules mobiles
+## separes - voir WaterfallFoamClouds.gd - plutot que par un degrade de
+## couleur sur ce maillage).
+const WATERFALL_COLOR := Color(0.45, 0.80, 0.98)  # identique a VoxelWorld.WATER_COLOR
+
+## Sprint 82 (2026-07-04, demande explicite de Francois : "au lieu d'un quart
+## de cylindre unicolore, un degrade plus sombre en haut et meme couleur en
+## bas" - ne pas toucher aux autres parametres de colorisation/ombres, voir
+## _ready). Le bas garde exactement WATERFALL_COLOR (couleur inchangee) ; le
+## haut est une version assombrie de cette meme teinte (memes proportions
+## R/G/B, juste multipliees), pas une couleur totalement differente.
+const WATERFALL_TOP_DARKEN := 0.65  # facteur multiplicatif (1.0 = pas de changement)
 
 
-## Couleur interpolee selon la hauteur locale y (0 = bas, radius = haut).
+## Degrade vertical simple : meme couleur qu'avant en bas (y=0), assombrie en
+## haut (y=radius). Signature conservee (y, radius) pour ne pas toucher les
+## nombreux appels dans _build_quarter_cylinder_mesh.
 func _color_for_height(y: float, radius: float) -> Color:
 	var t: float = clamp(y / radius, 0.0, 1.0)
-	return BOTTOM_COLOR.lerp(TOP_COLOR, t)
+	var dark_color: Color = Color(
+		WATERFALL_COLOR.r * WATERFALL_TOP_DARKEN,
+		WATERFALL_COLOR.g * WATERFALL_TOP_DARKEN,
+		WATERFALL_COLOR.b * WATERFALL_TOP_DARKEN,
+		WATERFALL_COLOR.a
+	)
+	return WATERFALL_COLOR.lerp(dark_color, t)
 
 
 ## Construit un vrai quart de cylindre PLEIN (pas juste la peau courbe) via
@@ -200,4 +223,36 @@ func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 	mi.mesh = _build_quarter_cylinder_mesh(radius, 1.0, SHAPE_SEGMENTS, mat)
 	mi.position = Vector3(float(col["x"]) + x_offset, pool_surface_y + 1.0, float(col["z"]) + z_offset)
 	mi.rotation.y = atan2(-float(dz), float(dx))
+
+	# Meme sprint (suite, 2026-07-04, demande explicite de Francois : cas
+	# particulier d'une cascade sur 2 niveaux - "le quart de cylindre doit
+	# etre un ovale de 2 de hauteur et 1 de largeur"). La chute reelle
+	# (col.top - pool_surface_y) peut depasser 1 niveau ; le rayon de base
+	# (SHAPE_RADIUS/radius, geometrie GELEE) reste a 1 dans tous les cas -
+	# on etire seulement l'instance en hauteur (echelle Y locale, PAS la
+	# geometrie elle-meme) pour que le sommet de la forme rejoigne le vrai
+	# sommet de la chute. La largeur (axe X, "profondeur" de la courbe hors
+	# du mur) et la longueur (axe Z, largeur du lit) ne changent pas. Pour
+	# une chute normale d'1 niveau, drop=1 -> echelle 1.0 -> comportement
+	# strictement identique a avant (aucune regression sur le cas deja valide).
+	var drop: float = float(col["top"]) - pool_surface_y
+	if drop > 1.0:
+		mi.scale.y = drop
+	# Sprint 85 (2026-07-04, demande explicite : "les cascades doivent
+	# disparaitre avec leur niveau de riviere, comme les rivieres elles
+	# memes") : memorise le niveau (indice de bloc) du sommet de CETTE
+	# cascade, pour update_view_level - ne touche ni geometrie ni
+	# position/rotation/echelle (regles gelees ci-dessus, inchangees).
+	mi.set_meta("waterfall_top", float(col["top"]))
 	return mi
+
+
+## Sprint 85 : cache/reaffiche chaque forme de cascade selon que son sommet
+## (col.top, memorise dans _build_shape) est au-dessus ou non du niveau de
+## vue courant - meme convention que VoxelWorld ("y > view_level" = cache).
+## Simple bascule de "visible" sur le noeud deja construit, geometrie GELEE
+## non touchee.
+func update_view_level(level: int) -> void:
+	for child in get_children():
+		if child is MeshInstance3D and child.has_meta("waterfall_top"):
+			child.visible = float(child.get_meta("waterfall_top")) <= float(level)

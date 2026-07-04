@@ -39,6 +39,18 @@ var is_middle_dragging: bool = false
 
 @onready var camera: Camera3D = $Camera3D
 @onready var voxel_world: Node3D = %VoxelWorld
+# Sprint 85 (2026-07-04, demande explicite : "les arbres/buissons/cascades
+# doivent disparaitre avec leur niveau, comme les rivieres elles memes") -
+# memes noeuds que VoxelWorld ci-dessus, notifies a chaque changement de
+# niveau de vue (voir _update_view_level plus bas).
+@onready var forest: Node3D = %Forest
+@onready var berry_bushes: Node3D = %BerryBushes
+@onready var waterfall_shapes: Node3D = %WaterfallShapes
+@onready var waterfall_streaks: Node3D = %WaterfallStreaks
+@onready var waterfall_foam_clouds: Node3D = %WaterfallFoamClouds
+# Sprint 87 (2026-07-04, demande explicite : "les decorations (fleurs etc)
+# doivent disparaitre aussi" en descendant de niveau).
+@onready var ground_decoration: Node3D = %GroundDecoration
 var level_label: Label
 
 
@@ -158,6 +170,21 @@ func _update_camera_offset() -> void:
 func _update_view_level() -> void:
 	if voxel_world != null and voxel_world.has_method("set_view_level"):
 		voxel_world.set_view_level(current_level)
+	# Sprint 85 : meme notification pour les arbres/buissons/cascades (voir
+	# Forest.gd/BerryBushes.gd/WaterfallShapes.gd/WaterfallStreaks.gd/
+	# WaterfallFoamClouds.gd/update_view_level).
+	if forest != null and forest.has_method("update_view_level"):
+		forest.update_view_level(current_level)
+	if berry_bushes != null and berry_bushes.has_method("update_view_level"):
+		berry_bushes.update_view_level(current_level)
+	if waterfall_shapes != null and waterfall_shapes.has_method("update_view_level"):
+		waterfall_shapes.update_view_level(current_level)
+	if waterfall_streaks != null and waterfall_streaks.has_method("update_view_level"):
+		waterfall_streaks.update_view_level(current_level)
+	if waterfall_foam_clouds != null and waterfall_foam_clouds.has_method("update_view_level"):
+		waterfall_foam_clouds.update_view_level(current_level)
+	if ground_decoration != null and ground_decoration.has_method("update_view_level"):
+		ground_decoration.update_view_level(current_level)
 
 
 ## current_level est stocke en interne comme la coordonnee Y reelle de la

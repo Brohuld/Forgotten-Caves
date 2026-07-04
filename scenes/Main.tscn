@@ -1,4 +1,4 @@
-[gd_scene load_steps=24 format=3 uid="uid://cxpq7fcavesmain"]
+[gd_scene load_steps=25 format=3 uid="uid://cxpq7fcavesmain"]
 
 [ext_resource type="Script" path="res://scripts/systemes/CameraRig.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/monde/VoxelWorld.gd" id="2"]
@@ -19,6 +19,7 @@
 [ext_resource type="Script" path="res://scripts/entites/Birds.gd" id="18"]
 [ext_resource type="Script" path="res://scripts/monde/WaterfallStreaks.gd" id="19"]
 [ext_resource type="Script" path="res://scripts/monde/WaterfallShapes.gd" id="20"]
+[ext_resource type="Script" path="res://scripts/monde/WaterfallFoamClouds.gd" id="21"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1"]
 sky_top_color = Color(0.32, 0.52, 0.85, 1)
@@ -86,7 +87,16 @@ unique_name_in_owner = true
 script = ExtResource("2")
 
 [node name="WaterfallShapes" type="Node3D" parent="."]
+unique_name_in_owner = true
 script = ExtResource("20")
+
+[node name="WaterfallStreaks" type="Node3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("19")
+
+[node name="WaterfallFoamClouds" type="Node3D" parent="."]
+unique_name_in_owner = true
+script = ExtResource("21")
 
 [node name="Forest" type="Node3D" parent="."]
 unique_name_in_owner = true
@@ -104,9 +114,11 @@ unique_name_in_owner = true
 script = ExtResource("16")
 
 [node name="BerryBushes" type="Node3D" parent="."]
+unique_name_in_owner = true
 script = ExtResource("8")
 
 [node name="GroundDecoration" type="Node3D" parent="."]
+unique_name_in_owner = true
 script = ExtResource("11")
 
 [node name="TaskQueue" type="Node" parent="."]

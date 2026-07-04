@@ -382,27 +382,71 @@ func _randomize_variation() -> void:
 ## found" en boucle a chaque reconstruction). Corrige aussi en donnant un
 ## nom explicite et stable a chaque noeud genere (voir _build_*).
 func _rebuild() -> void:
+	# Sprint 34undecies : instrumentation temporaire - _build_model() est deja
+	# instrumente en detail et ne montre rien de lent, alors que l'appel a
+	# _rebuild() complet (mesure depuis Dwarf.gd) prend ~5-6s pour le premier
+	# nain. Il ne reste que cette boucle de nettoyage des enfants precedents
+	# (issus du 1er build automatique, avec les valeurs par defaut, declenche
+	# par add_child avant que Dwarf.gd n'appelle explicitement _rebuild()) -
+	# separee ici du reste pour confirmer si c'est bien elle.
+	var _t0: int = Time.get_ticks_msec()
+	var _child_count: int = get_children().size()
 	for child in get_children():
 		remove_child(child)
 		child.free()
+	var _t1: int = Time.get_ticks_msec()
+	print("[Perf][DwarfModel3D] nettoyage de %d enfant(s) precedent(s) : %.3f s" % [_child_count, (_t1 - _t0) / 1000.0])
 	_build_model()
+	var _t2: int = Time.get_ticks_msec()
+	print("[Perf][DwarfModel3D] _build_model() (nouvelle construction) : %.3f s" % [(_t2 - _t1) / 1000.0])
 
 
+## Sprint 34octies (2026-07-03) : instrumentation temporaire pour localiser
+## precisement la sous-etape responsable du cout de ~6s observe sur le tout
+## premier DwarfModel3D construit dans une partie (voir memoire perf "lancement
+## lent" - 2 tentatives de prechauffage sans effet, la cause exacte reste
+## inconnue). N'affiche que les etapes prenant plus de 5ms (voir _log_step),
+## pour ne pas polluer la console sur les rebuilds normaux (~quelques ms).
 func _build_model() -> void:
 	var head_y: float = leg_height + torso_height + head_radius * 0.85
+	var _tperf := Time.get_ticks_msec()
 	_build_legs()
+	_tperf = _log_step("legs", _tperf)
 	_build_torso()
+	_tperf = _log_step("torso", _tperf)
 	_build_belt()
+	_tperf = _log_step("belt", _tperf)
 	_build_arms(head_y)
+	_tperf = _log_step("arms", _tperf)
 	_build_shoulder_caps()
+	_tperf = _log_step("shoulder_caps", _tperf)
 	_build_head(head_y)
+	_tperf = _log_step("head", _tperf)
 	_build_hair(head_y)
+	_tperf = _log_step("hair(%s)" % hair_style, _tperf)
 	_build_beard(head_y)
+	_tperf = _log_step("beard(%s)" % beard_style, _tperf)
 	_build_face(head_y)
+	_tperf = _log_step("face", _tperf)
 	_build_outfit(head_y)
+	_tperf = _log_step("outfit(%s)" % outfit_style, _tperf)
 	_build_coat()
+	_tperf = _log_step("coat", _tperf)
 	_build_gloves()
+	_tperf = _log_step("gloves", _tperf)
 	_build_weapons(head_y)
+	_tperf = _log_step("weapons", _tperf)
+
+
+## Sprint 34octies : affiche la duree ecoulee depuis "t_prev" si superieure a
+## 5ms (seuil purement pour filtrer le bruit des etapes triviales), et renvoie
+## l'horodatage courant pour chainer l'appel suivant.
+func _log_step(label: String, t_prev: int) -> int:
+	var now: int = Time.get_ticks_msec()
+	var dt: int = now - t_prev
+	if dt > 5:
+		print("[Perf][DwarfModel3D] %s : %.3f s" % [label, dt / 1000.0])
+	return now
 
 
 ## Jambes courtes et epaisses (silhouette trapue de nain) + petites bottes

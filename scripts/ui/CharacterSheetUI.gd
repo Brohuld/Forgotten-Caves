@@ -20,13 +20,19 @@ extends CanvasLayer
 ## grosse) et reorganisee en 3 onglets (TabContainer) - "Etat general" (nom,
 ## PV/Energie/Faim/Soif, tache en cours), "Caracteristiques", "Competences" -
 ## au lieu d'un long panneau vertical unique qui devenait difficile a lire.
-## "Soif" est un placeholder pour l'instant (barre toujours pleine, jamais
-## mise a jour) : aucune mecanique de soif n'existe encore cote gameplay
-## (pas de baisse dans le temps, pas de source d'eau), meme traitement que
-## "PV" (deja un placeholder depuis le Sprint 9).
+## Sprint 36 (2026-07-03) : "Soif" n'est plus un placeholder - branchee sur
+## dwarf.thirst/thirst_max (meme mecanique que Faim/Energie, voir Dwarf.gd),
+## rafraichie a chaque frame. "PV" reste un placeholder (pas encore de systeme
+## de degats/combat).
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
 const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
+## Sprint 34ter : uniquement pour lire DayNightCycleScript.scene_start_ms - ce
+## script est le DERNIER a finir son _ready() dans l'ordre de Main.tscn (les
+## portraits 3D, construits ici pour chaque nain, sont probablement la partie
+## la plus couteuse du chargement) donc le bon endroit pour afficher le temps
+## total ecoule depuis le tout debut de la scene.
+const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
 const ICON_SIZE := 72  # 2026-07-02 : agrandi (etait 48), jugee trop petite
 const ICON_MARGIN := 16
@@ -88,10 +94,28 @@ var selection_rings: Dictionary = {}  # dwarf -> MeshInstance3D (un par nain)
 
 
 func _ready() -> void:
+	# Sprint 34quater : mesure a l'ENTREE de ce script (donc APRES la
+	# generation du monde ET apres la creation des nains eux-memes, qui ont
+	# deja du construire leur propre modele 3D pour exister dans le groupe
+	# "dwarves" - voir Dwarf.gd) - permet d'isoler le cout de la boucle
+	# ci-dessous (_create_entry, qui construit un DEUXIEME modele 3D par nain
+	# pour le portrait, voir _make_portrait_texture) du reste du chargement.
+	var elapsed_before_portraits_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
+	print("[Perf] Debut de CharacterSheetUI (nains deja crees), temps ecoule : %.1f s" % (elapsed_before_portraits_ms / 1000.0))
+
 	var dwarves: Array = get_tree().get_nodes_in_group("dwarves")
 	dwarves.sort_custom(func(a, b): return a.name < b.name)
 	for i in range(dwarves.size()):
 		_create_entry(dwarves[i], i)
+
+	# Sprint 34ter : dernier script a finir son _ready() (voir ordre des noeuds
+	# dans Main.tscn) - affiche le temps total ecoule depuis le debut de la
+	# scene, pour comparer avec les mesures de GroundDecoration.gd et voir si
+	# la construction des portraits 3D (_make_portrait_texture, appelee juste
+	# au-dessus pour chaque nain) explique l'ecart signale par Francois entre
+	# la generation du monde (~7s) et le lancement complet (~17s).
+	var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
+	print("[Perf] Chargement complet (fiches + portraits 3D) termine, temps total depuis le debut de la scene : %.1f s" % (elapsed_since_scene_start_ms / 1000.0))
 
 
 ## Construit l'anneau de selection d'UN nain et l'ajoute au parent 3D (Main),
@@ -271,9 +295,15 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	_make_stat_bar(general_tab, "PV", 100.0, 100.0)
 	var hunger_bar := _make_stat_bar(general_tab, "Faim", dwarf.hunger_max, dwarf.hunger)
 	var energy_bar := _make_stat_bar(general_tab, "Energie", dwarf.energy_max, dwarf.energy)
-	# Soif : placeholder, aucune mecanique de soif n'existe encore (voir note
-	# en tete de fichier) - barre toujours pleine, jamais rafraichie en _process.
-	_make_stat_bar(general_tab, "Soif", 100.0, 100.0)
+	# Sprint 36 : Soif branchee sur dwarf.thirst/thirst_max (voir note en tete
+	# de fichier), rafraichie en _process comme Faim/Energie.
+	var thirst_bar := _make_stat_bar(general_tab, "Soif", dwarf.thirst_max, dwarf.thirst)
+
+	# Sprint 37 (backlog Phase 1 item 6) : confort thermique - purement
+	# informatif pour l'instant (voir Dwarf.temperature_status), aucun effet
+	# sur le gameplay tant qu'il n'y a pas de systeme d'habits.
+	var comfort_label := _make_label("Confort : Normal", FONT_BODY)
+	general_tab.add_child(comfort_label)
 
 	var task_label := _make_label("Tache en cours : -", FONT_BODY)
 	task_label.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -320,14 +350,40 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 		skill_rows[skill_id] = row
 		_update_skill_row(dwarf, skill_id, row)
 
+	# --- Onglet 4 : Equipement (Sprint 37, backlog Phase 1 item 11bis) -
+	# stub minimal en lecture seule sur dwarf.personal_inventory ; pas de
+	# systeme d'equipement/artisanat reel pour l'instant (Phase 2, voir note
+	# en tete de dwarf.personal_inventory).
+	var equip_grid := GridContainer.new()
+	equip_grid.columns = 2
+	equip_grid.add_theme_constant_override("h_separation", 24)
+	equip_grid.add_theme_constant_override("v_separation", 10)
+	tabs.add_child(equip_grid)
+	tabs.set_tab_title(3, "Equipement")
+	var equip_labels: Dictionary = {}
+	var slot_display_names: Dictionary = {
+		"gourde": "Gourde",
+		"sac_a_dos": "Sac a dos",
+		"habit": "Habit",
+		"arme": "Arme",
+	}
+	for slot in dwarf.personal_inventory.keys():
+		equip_grid.add_child(_make_label(slot_display_names.get(slot, slot.capitalize()), FONT_BODY))
+		var value_label := _make_label("-", FONT_BODY)
+		equip_grid.add_child(value_label)
+		equip_labels[slot] = value_label
+
 	# On garde les refs necessaires au _process directement sur le Panel,
 	# pour ne pas avoir a maintenir plusieurs tableaux paralleles
 	panel.set_meta("dwarf", dwarf)
 	panel.set_meta("icon_button", icon_button)
 	panel.set_meta("hunger_bar", hunger_bar)
 	panel.set_meta("energy_bar", energy_bar)
+	panel.set_meta("thirst_bar", thirst_bar)
+	panel.set_meta("comfort_label", comfort_label)
 	panel.set_meta("task_label", task_label)
 	panel.set_meta("skill_rows", skill_rows)
+	panel.set_meta("equip_labels", equip_labels)
 
 	panels.append(panel)
 	icon_button.pressed.connect(_on_icon_pressed.bind(index))
@@ -345,7 +401,7 @@ func _make_label(text: String, font_size: int = FONT_BODY) -> Label:
 ## Ajoute une ligne "Titre" + barre de progression dans un conteneur vertical
 ## (utilise par PV/Faim/Energie/Soif dans l'onglet "Etat general") et renvoie
 ## la barre pour que l'appelant puisse la garder (rafraichie en _process pour
-## Faim/Energie, jamais pour PV/Soif qui sont des placeholders).
+## Faim/Energie/Soif, jamais pour PV qui reste un placeholder).
 func _make_stat_bar(container: VBoxContainer, label_text: String, max_value: float, value: float) -> ProgressBar:
 	container.add_child(_make_label(label_text, FONT_SECTION))
 	var bar := ProgressBar.new()
@@ -418,6 +474,36 @@ func set_map_selection(dwarves: Array, additive: bool) -> void:
 		selected_dwarves[dwarf] = true
 
 
+## Sprint 37 (backlog Phase 1 item 9) : appelee par ActionController quand un
+## clic simple (pas de glisser) tombe directement sur un nain dans le monde
+## (voir ActionController._handle_inspect_click/_dwarf_at_screen_pos) - meme
+## comportement qu'un clic sur son portrait (_on_icon_pressed ci-dessus),
+## juste retrouve via le noeud nain plutot qu'un index de panneau.
+func select_and_open_dwarf(dwarf, additive: bool) -> void:
+	var target: Panel = null
+	for p in panels:
+		if p.get_meta("dwarf") == dwarf:
+			target = p
+			break
+	if target == null:
+		return
+
+	if additive:
+		if selected_dwarves.has(dwarf):
+			selected_dwarves.erase(dwarf)
+		else:
+			selected_dwarves[dwarf] = true
+		return
+
+	var was_visible := target.visible
+	for p in panels:
+		p.visible = false
+	target.visible = not was_visible
+	selected_dwarves.clear()
+	if target.visible:
+		selected_dwarves[dwarf] = true
+
+
 ## 2026-07-02 : ferme la fiche actuellement ouverte (s'il y en a une) et vide
 ## la selection en appuyant sur Echap - en plus du re-clic sur le portrait
 ## (deja pris en charge par _on_icon_pressed ci-dessus, qui referme si on
@@ -456,6 +542,8 @@ func _process(_delta: float) -> void:
 			continue
 		panel.get_meta("hunger_bar").value = dwarf.hunger
 		panel.get_meta("energy_bar").value = dwarf.energy
+		panel.get_meta("thirst_bar").value = dwarf.thirst
+		panel.get_meta("comfort_label").text = "Confort : %s" % dwarf.temperature_status()
 		panel.get_meta("task_label").text = "Tache en cours : %s" % _task_description(dwarf)
 
 		# Competences (Sprint 18) : niveau/xp progressent avec le temps,
@@ -463,6 +551,13 @@ func _process(_delta: float) -> void:
 		var skill_rows: Dictionary = panel.get_meta("skill_rows")
 		for skill_id in skill_rows:
 			_update_skill_row(dwarf, skill_id, skill_rows[skill_id])
+
+		# Equipement (Sprint 37, backlog Phase 1 item 11bis) : stub en lecture
+		# seule sur dwarf.personal_inventory, "-" tant qu'un emplacement est vide.
+		var equip_labels: Dictionary = panel.get_meta("equip_labels")
+		for slot in equip_labels:
+			var value: String = String(dwarf.personal_inventory.get(slot, ""))
+			equip_labels[slot].text = value if value != "" else "-"
 
 
 func _task_description(dwarf) -> String:
@@ -476,6 +571,9 @@ func _task_description(dwarf) -> String:
 		# seul etat "Manger" suffit desormais (l'ancien "Va manger" n'a plus
 		# de sens sans deplacement).
 		return "Manger"
+	elif dwarf.is_drinking:
+		# Sprint 36 : meme principe que "Manger" ci-dessus, pour la soif.
+		return "Boire"
 	elif not dwarf.current_task.is_empty():
 		return String(dwarf.current_task.get("type", "?")).capitalize()
 	return "Errance"
@@ -500,13 +598,21 @@ func _make_portrait_texture(dwarf: Node3D) -> Texture2D:
 	viewport.own_world_3d = true
 	add_child(viewport)
 
+	# Sprint 34duodecies : apparence fixee AVANT d'ajouter le noeud a l'arbre
+	# (meme correction que Dwarf.gd/_build_appearance, voir memoire perf
+	# "lancement lent") - add_child declenche _ready()->_rebuild() qui
+	# construit alors directement le bon portrait, sans passer par un premier
+	# essai jetable (valeurs par defaut) qu'il faudrait ensuite nettoyer via
+	# un 2e appel explicite a _rebuild(). Ce nettoyage inutile (jamais visible
+	# ~0.01-0.02s la plupart du temps) causait une pause de ~5s la toute
+	# premiere fois qu'il se produisait dans une partie (peu importe si
+	# c'etait sur un nain ou sur un portrait).
 	var portrait_model := Node3D.new()
 	portrait_model.set_script(DwarfModel3DScript)
-	viewport.add_child(portrait_model)
 	for field in PORTRAIT_APPEARANCE_FIELDS:
 		portrait_model.set(field, src_model.get(field))
 	portrait_model.weapon_loadout = "Aucune"  # jamais d'arme dans le portrait, coherent avec le jeu principal
-	portrait_model._rebuild()
+	viewport.add_child(portrait_model)
 
 	# Cadrage "buste" : vise un peu sous le sommet de la tete (voir la formule
 	# de head_y dans DwarfModel3D._build_model) pour laisser de la marge au-

@@ -1141,11 +1141,181 @@ Par defaut, Godot lance le jeu integre dans une fenetre-panneau a l'interieur de
 - `CharacterSheetUI.gd` : l'ancien `selected_dwarf` unique devient `selected_dwarves` (un ensemble), et l'ancien anneau de selection partage devient un anneau par nain (`selection_rings`) - meme principe que les portraits/fiches, deja construits dynamiquement par nain
 - `ActionController.gd` doit maintenant referencer `CharacterSheetUI` (`%CharacterSheetUI`) pour lui transmettre la selection issue du glisser - a necessite d'ajouter `unique_name_in_owner` sur ce noeud dans `Main.tscn`
 
+## Sprint 33 — Saisons et calendrier
+
+- [x] 4 saisons (ete/automne/hiver/printemps) qui tournent reellement, avec recoloration du sol et reteinte du feuillage des arbres deja plantes
+- [x] Meteo tiree dans une urne differente selon la saison en cours
+- [x] Horloge/calendrier affiche en haut de l'ecran ("Jour 5 (Mois 2) - 14h30 - Hiver")
+- [x] Durees finalisees apres discussion : 1 jour = 2 minutes reelles, 1 mois = 20 jours, 1 saison = 3 mois (60 jours)
+- [x] Correction : `SeasonSystem` demarrait avant `VoxelWorld`/`Forest` dans l'ordre des noeuds de la scene, ce qui provoquait un plantage au lancement - deplace apres eux
+- [x] Correction : le nouveau bandeau horloge chevauchait le label "Niveau : X" deja affiche en haut a gauche par la camera - recentre en haut de l'ecran
+- [ ] A tester dans Godot
+
+### Notes techniques Sprint 33
+
+- `scripts/systemes/SeasonSystem.gd` : minuteur independant du cycle jour/nuit (`DayNightCycle.gd`), mais les deux avancent du meme delta chaque frame et restent synchronises tant que la duree d'une saison reste un multiple exact de la duree d'un jour
+- Plusieurs systemes de ce jeu creent leur UI par code (pas visible juste en lisant `Main.tscn`) : avant d'ajouter un nouveau label/bouton a l'ecran, verifier les zones deja occupees (haut-gauche = niveau + panneau d'inspection, haut-droite = portraits des nains, haut-centre = horloge)
+
+## Sprint 34 — Carte agrandie (100x100x50) + refonte performance
+
+- [x] Carte agrandie de 20x20x30 a 100x100x50 blocs
+- [x] Densite d'arbres/buissons/decorations repensee comme un vrai parametre reutilisable ("par 1000 cases"), pas juste un multiplicateur fixe
+- [x] Optimisation : `rebuild_mesh()` ne reparcourt plus toute la carte a chaque minage/construction, seulement la portion visible
+- [x] Refonte majeure des performances : arbres/buissons/decorations de sol ne sont plus des dizaines de milliers de petits objets individuels, mais partagent quelques `MultiMeshInstance3D` (meme principe deja utilise pour les pepites de filons) - la geometrie de chaque objet est construite exactement comme avant, puis "recoltee" dans le pool partage
+- [x] Teste et confirme par l'utilisateur (rendu visuel correct + FPS ameliore)
+- [ ] Reste ouvert : lancement de l'application lent (carte 25x plus grande = plus de blocs a generer au demarrage) - cause probable identifiee mais pas mesuree precisement, pas encore traite
+
+### Notes techniques Sprint 34
+
+- La taille de la carte est dupliquee dans plusieurs fichiers sans reference croisee vers `VoxelWorld.gd` (`CameraRig.gd`, `ActionController.gd`, `Forest.gd`, `BerryBushes.gd`, `GroundDecoration.gd`, `Dwarf.gd`) - a mettre a jour un par un a chaque futur redimensionnement de carte
+- Couper un arbre : comme toute sa geometrie vit desormais dans des MultiMesh partages entre TOUS les arbres, `queue_free()` seul ne suffit plus a le faire disparaitre - `Forest.hide_tree_visuals()` met a l'echelle zero uniquement les instances de cet arbre precis
+
+## Sprint 35 — Brouillard de guerre souterrain + corrections de navigation
+
+- [x] Systeme de decouverte ("brouillard de guerre") par case/niveau dans `VoxelWorld.gd`, qui a remplace une bonne partie de l'ancienne logique d'affichage par niveau
+- [x] Correction : sur trackpad Mac (defilement "naturel"), la molette de changement de niveau reagissait a l'envers du sens attendu - corrige
+- [x] Correction : un trou fraichement mine pouvait ne plus s'afficher comme un trou - resolu par la refonte du systeme de decouverte ci-dessus
+- [x] Teste et confirme par l'utilisateur ("ok ça marche, et les trous aussi")
+
+### Notes techniques Sprint 35
+
+- Regle de session : ne pas demander/faire de captures d'ecran pour deboguer `VoxelWorld.gd` sauf si explicitement redemande (juge trop couteux en credits par rapport a l'utilite)
+
+## Sprint 36 / 36bis — Lacs, riviere et soif des nains
+
+- [x] Lacs (2, contour irregulier par bruit) et une riviere traversant la carte d'un bord a l'autre (X ou Z au hasard, legere ondulation)
+- [x] L'eau est un vrai bloc de terrain (pas un decor), avec une vraie profondeur par niveaux
+- [x] Nouvelle ressource "eau" : les nains la recoltent en inventaire via un nouveau bouton **Puiser** (meme mecanique de glisser-selection que Miner), plutot que de boire directement au bord de l'eau
+- [x] Jauge Soif branchee sur une vraie valeur (avant : simple decor toujours plein) - critique, un nain va puiser/boire quand elle est basse, comme pour la faim
+- [ ] A tester dans Godot : lacs/riviere visibles, bouton Puiser fonctionnel, jauge Soif qui baisse et se recharge
+
+### Notes techniques Sprint 36 / 36bis
+
+- Choix fait via questions posees a l'utilisateur avant implementation : recolte en inventaire (pas de boisson directe), eau = vrai bloc de terrain, 2 lacs + 1 riviere
+- La profondeur de l'eau a ete revue plusieurs fois dans les sprints suivants (voir Sprint 37septies) pour garantir qu'un niveau juste sous une riviere/un lac affiche toujours de l'eau, sans jamais s'etendre trop loin en profondeur
+
+## Sprint 37 — Backlog Phase 1 (16 points) + 37bis
+
+Implemente en une seule passe continue, sur demande explicite de l'utilisateur ("lance l'implementation sans t'arreter a chaque etape, je testerai tout a la fin").
+
+- [x] Climat/temperature : temperature par saison + cycle jour/nuit, gel (bloque Puiser si l'eau est gelee), neige qui s'accumule/fond et teinte le terrain, episodes de vague de froid/canicule, ressenti chaud/froid affiche par nain (purement informatif pour l'instant)
+- [x] Icones (soleil/lune, saison, meteo) a la place du texte pour le climat
+- [x] Boutons Pause / x1 / x2 / x4 pour la vitesse du temps
+- [x] Selection d'un nain par clic direct sur le monde (en plus du portrait)
+- [x] Tas de ressources fusionnes : deux recoltes du meme type pres l'une de l'autre rejoignent le meme tas au lieu d'en creer un nouveau, avec info au survol
+- [x] Inventaire personnel des nains (stub minimal : gourde/sac a dos/habit/arme) - onglet "Equipement" en lecture seule dans la fiche personnage, pas encore un vrai systeme d'equipement/artisanat
+- [x] Panneau d'information standard en bas a droite, mis a jour au survol de la souris (nain/tas/arbre/buisson/bloc)
+- [x] Pathfinding partiel : l'eau peu profonde est traversable (mais ralentit la marche), les arbres devient legerement le trajet - **non implemente : un vrai denivele de plus d'un niveau par deplacement** (deferre, hors de portee sans une vraie refonte du deplacement)
+- [x] Les nains ne dorment plus dans l'eau
+- [x] Eclairage general augmente
+- [x] Repousse : de nouveaux arbres apparaissent si la population repasse sous la densite cible ; les baies des buissons repoussent une par une au fil du temps
+- [x] Sprint 37bis (meme jour) : les arbres et buissons ne peuvent plus apparaitre dans l'eau (ni a la generation initiale, ni a la repousse)
+- [ ] A tester dans Godot (rien de ce sprint n'a encore ete essaye en jeu)
+
+### Notes techniques Sprint 37
+
+- Point 13d (denivele de plus d'un niveau par deplacement) reste ouvert si un vrai pathfinding 3D est un jour souhaite - gros chantier, volontairement hors de portee ici
+
+## Sprint 38 — Relief (collines douces) + premiere cascade
+
+- [x] Collines douces (2 a 4 blocs de haut) generees par bruit, meme technique que les couleurs de terrain
+- [x] La riviere gere desormais un denivele avec une cascade simple a la transition entre les deux niveaux
+- [x] Les nains, arbres et buissons suivent la vraie hauteur du terrain (avant : hauteur fixe, ce qui les faisait flotter ou s'enfoncer sur une colline)
+- [x] Ralentissement simple en montee de pente
+- [x] Le clic souris (viser une case pour Miner/Couper/Construire) a ete corrige pour viser la vraie hauteur de la colonne visee, meme sur une pente
+- [ ] A tester dans Godot (collines visibles, cascade coherente, nains/arbres bien places, clic precis sur les pentes)
+
+### Notes techniques Sprint 38
+
+- Portee confirmee par questions posees a l'utilisateur avant implementation : relief genere par bruit, amplitude douce (2-4 blocs), cascade en effet visuel simple (pas d'hydraulique reelle), les pentes ralentissent vraiment le deplacement (pas juste cosmetique)
+- Ce sprint a ouvert un chantier "forme et alignement de la cascade" qui s'est etale sur de tres nombreux sprints (voir les sections suivantes) - un simple denivele de terrain suffit a declencher une cascade, mais la representer visuellement de facon satisfaisante a demande beaucoup d'iterations
+
+## Sprint 39 a 50bis — Cycle jour/nuit : couleurs, luminosite et interface climat
+
+À partir d'ici, plusieurs sujets ont ete travailles en parallele le meme jour (2026-07-04) : le cycle jour/nuit, la meteo avancee et la forme des cascades. Les sections ci-dessous regroupent les sprints PAR THEME plutot que par ordre strict de numero, pour rester lisibles.
+
+- [x] Lever/coucher du soleil exact par saison (ete 6h-22h, hiver 8h-20h, printemps/automne 7h-21h), avec une fenetre de transition a largeur fixe ancree sur le vrai lever/coucher (corrige un bug ou le ciel commençait a s'eclaircir en pleine nuit d'ete)
+- [x] Jeu demarre desormais a 7h du matin plutot qu'a minuit
+- [x] Plusieurs passes de correction de couleur (herbe/eau/sapin trop sombres ou aux mauvaises teintes), avant de trouver la vraie cause
+- [x] **Cause racine trouvee** : `ambient_light_source` de la scene etait regle sur une source qui ne se met pas a jour instantanement avec un cycle jour/nuit tres rapide (2 minutes) - passe sur une couleur pilotee directement par script a chaque frame. Confirme par l'utilisateur ("ça a marche")
+- [x] Luminosite generale rebaissee 3 fois de suite apres ce fix (jugee trop forte a chaque fois)
+- [x] Bandeau horaire redessine : degrade noir/bleu fonce/bleu clair suivant vraiment l'heure, marqueur de l'heure courante
+- [x] Bandeau saison redessine : 4 segments colores avec progression
+- [x] Boutons Pause/x1/x2/x4 remplaces par des icones + raccourcis clavier (Espace/F1/F2/F3)
+- [x] Correction d'un bug d'affichage "bande blanche a droite" (points par defaut d'un degrade jamais supprimes)
+- [x] Correction d'un plantage au lancement provoque par le correctif precedent (boucle infinie des qu'il ne restait plus qu'un point a supprimer)
+- [ ] A tester dans Godot - la base (fix `ambient_light_source`) est deja confirmee fonctionnelle, mais les nombreux reglages fins de luminosite/UI qui ont suivi n'ont pas ete retestes depuis
+
+### Notes techniques Sprint 39-50bis
+
+- Lecon retenue plusieurs fois cette serie de sprints : quand un correctif sur une couleur/valeur n'a AUCUN effet visible peu importe ce qu'on essaie, chercher une autre variable en amont qui pourrait masquer le resultat (ici : la source de lumiere ambiante), plutot que de continuer a retoucher la meme valeur
+- Tout `Gradient` cree par code dans Godot a deja 2 points par defaut qu'il faut explicitement vider avant d'ajouter les siens, sinon ils restent melanges et faussent le degrade pres d'une extremite
+- Les nains restent volontairement non eclaires (`SHADING_MODE_UNSHADED`) : les passer en eclairage reel casserait le rendu du portrait 3D (isole, sans source de lumiere) - point identifie, pas encore traite
+
+## Sprint 41, 43, 46, 48 — Meteo avancee : ciel teinte par le temps
+
+- [x] Le ciel change de couleur selon la meteo (gris pour brouillard/pluie/neige), en plus de son degrade normal jour/nuit
+- [x] **Bug trouve apres plusieurs fausses pistes** : le ciel restait gris en plein jour degage, meme apres plusieurs correctifs de couleur - la vraie cause etait un reglage de brouillard (`fog_sky_affect`) qui recouvrait entierement le ciel par defaut, quelle que soit l'heure ou la meteo. Corrige (le brouillard continue d'agir au loin sur le terrain, mais plus sur le ciel)
+- [x] Une fois le ciel bleu retrouve, un "mur marron" est apparu a l'horizon (degrade "sol du ciel" separe du degrade "ciel", jusque-la cache par le bug de brouillard) - corrige en alignant sa couleur sur l'horizon
+- [ ] A tester dans Godot
+
+### Notes techniques Sprint 41/43/46/48
+
+- Meme lecon que pour l'ambiant (Sprint 39-50bis) : un post-effet (ici le brouillard) peut masquer completement l'effet d'un correctif fait plus en amont, rendant plusieurs tentatives inutiles tant que le post-effet lui-meme n'est pas identifie
+
+## Sprint 42, 44 — Nuages et oiseaux decoratifs
+
+- [x] Nuages proceduraux qui derivent lentement (meme technique que les cimes d'arbres, partages dans un seul mesh pour les performances), teintes par la meteo comme le ciel
+- [x] Forme de nuage amelioree en "rangee de bosses" façon cumulus, plus clairs/transparents, assombris la nuit
+- [x] Oiseaux stylises tres simples (corps + 2 ailes qui battent), purement decoratifs, trajectoire circulaire aleatoire
+- [ ] A tester dans Godot
+
+## Sprint 40, 43, 45, 49, 51 — Forme de la cascade (premiere serie de tentatives) + traits d'eau
+
+- [x] Plusieurs tentatives pour arrondir la forme de la cascade (au lieu d'un simple mur d'eau rectangulaire) - deux causes racines differentes trouvees en cours de route : (1) sur une petite amplitude de relief, la riviere n'avait souvent aucune vraie cascade du tout (les deux bouts tombaient par hasard sur le meme niveau) ; (2) une tentative de courber la cascade colonne par colonne créait des "poteaux" d'eau isoles au lieu d'un mur connecte
+- [x] Retour a une seule rangee de transition commune a toute la largeur, garantissant un mur connecte
+- [x] Ajout de petits traits d'eau (particules bleu clair/blanc) qui tombent en continu sur la hauteur de chaque cascade, pour un effet moins statique
+- [x] 2 plantages corriges en cours de route (une erreur de coordonnee Vector2i, une boucle de correctif precedent qui tournait a l'infini)
+- [ ] A tester dans Godot
+
+### Notes techniques Sprint 40-51
+
+- Cette premiere serie de tentatives sur la forme de la cascade a ensuite ete completement remplacee par une nouvelle forme en quart de cylindre (voir section suivante), puis par la reecriture du tracé de riviere du Sprint 75 (voir tout en bas) - l'historique des essais est garde ici a titre de memoire des pieges rencontres, mais le code actuel ne correspond plus a cette approche colonne par colonne
+
+## Sprint ~52 a 74 — Forme de cascade en quart de cylindre (WaterfallShapes.gd)
+
+- [x] La cascade (mur d'eau plat du Sprint 38-51) est remplacee par une vraie forme en quart de cylindre (`scripts/monde/WaterfallShapes.gd`), positionnee exactement a la limite entre la colonne de cascade et la colonne amont precedente
+- [x] Degrade de couleur du haut (bleu, identique a l'eau du niveau superieur) vers le bas (bleu clair) de la cascade
+- [x] Plusieurs corrections de rendu : couleurs de sommet qui necessitaient un reglage precis (`vertex_color_is_srgb`) pour ne pas paraitre delavees, reflet parasite (`metallic_specular`) supprime sur la surface courbe
+- [ ] A tester dans Godot
+
+### Notes techniques Sprint 52-74
+
+- **La geometrie de base de cette forme est desormais GELEE** : `_build_quarter_cylinder_mesh` et `_build_shape` (rayon, position, rotation) ne doivent plus etre modifies sans autorisation explicite, apres plusieurs regressions successives sur le positionnement lors de tentatives de correction de couleur
+- Un ecart de couleur restant entre la cascade et l'eau de la riviere (a un meme instant du cycle jour/nuit) vient d'un phenomene geometrique documente : une surface courbe attrape toujours un peu de lumiere directe quelque part sur sa courbure, contrairement a une surface plate (l'eau) qui ne l'attrape que quand le soleil est bien aligne - ce n'est pas un reglage de couleur qui peut corriger ça seul
+- Le vrai bug qui rendait cette forme difficile a bien positionner (un "mur gris" affiche a cote/entre les cascades) s'est revele etre un probleme du tracé de riviere lui-meme, pas de cette forme - voir la section suivante
+
+## Sprint 75 a 78 — Reecriture complete du tracé de riviere
+
+- [x] Bug identifie : l'ancien tracé de riviere (Sprint 38-51) ne verifiait le relief naturel qu'aux deux extremites du trajet, jamais entre les deux ni sur les bords de la largeur du lit - une colonne de bord de cascade pouvait alors se retrouver sans vrai mur de pierre en amont (mur gris visible a cote de la cascade)
+- [x] Nouveau tracé : le relief naturel est sonde sur toute la largeur du lit a chaque rangee du trajet ; l'eau part du point le plus haut du trajet (la "source") et redescend en escalier vers chaque bout, sans jamais depasser le relief environnant - une riviere peut desormais avoir plusieurs cascades, ou meme jaillir au sommet d'une colline et s'ecouler des deux cotes
+- [x] Correction complementaire : le calcul du relief naturel ignorait les zones deja aplaties par un lac voisin, ce qui pouvait fausser la largeur reelle de la riviere pres d'un lac
+- [x] Correction d'alignement : la rupture de niveau (donc la cascade) est desormais decidee une seule fois par rangee, valable pour toute la largeur du lit a la fois - garantit une cascade toujours alignee (un seul "mur" net), jamais en escalier avec des blocs de cascade decales les uns par rapport aux autres
+- [x] Teste et confirme par l'utilisateur (2026-07-04)
+
+### Notes techniques Sprint 75-78
+
+- `VoxelWorld._place_river()` a ete entierement reecrite (pas de correctif incremental) : sondage du relief naturel le plus bas sur toute la largeur du lit a chaque rangee, point le plus haut du trajet = source, palier en escalier (min glissant) depuis cette source vers chaque bout, rupture de palier = cascade
+- Le meme "mur gris" avait ete diagnostique a tort plusieurs fois dans les sprints precedents (ondulation du centre, chevauchement avec un lac) avant de trouver la vraie cause : le tracé de riviere lui-meme, pas la forme de cascade en quart de cylindre (qui, elle, reste inchangee et gelee, voir section precedente)
+- Ce sprint clot (pour l'instant) le chantier "forme et alignement de la cascade" ouvert au Sprint 38
+
 ---
 
-# Phase 1 — Nains de base et environnement : FINALISEE (2026-07-02)
+# Phase 1 — Nains de base et environnement : REOUVERTE (2026-07-03)
 
-Cette etiquette regroupe tout le travail effectue jusqu'ici (l'ancien "MVP" du Sprint 0 a 10, et l'ancienne "Phase 2 - Colonie complete" du Sprint 11 au Sprint 32 ci-dessus) sous un seul intitule, a la demande de Francois : **"Phase 1 - nains de base et environnement"**. Elle couvre : le terrain en blocs, la navigation camera, un puis plusieurs nains autonomes (taches, besoins, caracteristiques, competences, fiche de personnage complete, selection multiple), la vegetation et le decor (arbres par espece, buissons/plantes, decorations de sol, filons souterrains), et l'environnement (cycle jour/nuit, meteo, eclairage/ombres reels).
+Cette phase avait ete marquee finalisee le 2026-07-02 (Sprint 0 a 32 : terrain en blocs, navigation camera, plusieurs nains autonomes, taches/besoins/caracteristiques/competences, fiche de personnage complete, selection multiple, vegetation/decor, filons souterrains, cycle jour/nuit, meteo, eclairage/ombres reels). Francois l'a rouverte des le lendemain avec un backlog de 16 points (Sprint 37) puis une longue serie de sprints sur l'environnement : saisons/calendrier, redimensionnement de la carte + refonte performance, brouillard de guerre souterrain, lacs/riviere/soif, relief (collines), cycle jour/nuit (couleurs/luminosite), meteo avancee (ciel teinte), nuages/oiseaux, et la forme des cascades (voir sections Sprint 33 a 78 ci-dessus).
+
+**Etat actuel : la Phase 1 n'est toujours pas refermee.** Beaucoup de ces sprints restent a tester dans Godot (voir les cases a cocher de chaque section) - ne pas commencer la Phase 2 (Ateliers & artisanat) avant que Francois ne confirme que cet ensemble fonctionne et decide de reclore la Phase 1.
 
 **Phase 2 (a venir) : Ateliers & artisanat.** D'apres la decision de Francois du 2026-07-02, l'equipement (habits/armures/armes utilisables et fabricables, pas seulement l'apparence du modele 3D) sera traite avec ce systeme d'ateliers, plutot qu'en sprint isole. Le "Bonheur" (stat existante mais sans effet reel) est explicitement reporte a beaucoup plus tard.
 

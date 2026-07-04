@@ -27,7 +27,7 @@ const SPECIES := [
 		"tronc_color": Color(0.42, 0.28, 0.16),
 		"branche_color": Color(0.36, 0.24, 0.14),
 		"racine_color": Color(0.30, 0.20, 0.12),
-		"feuillage_colors": [Color(0.22, 0.50, 0.18), Color(0.28, 0.56, 0.22)],
+		"feuillage_colors": [Color(0.14, 0.36, 0.12), Color(0.18, 0.40, 0.15)],  # Sprint 37unvicies : assombri (chene trop clair)
 	},
 	{
 		"id": "sapin",
@@ -41,7 +41,14 @@ const SPECIES := [
 		"tronc_color": Color(0.35, 0.22, 0.13),
 		"branche_color": Color(0.30, 0.19, 0.11),
 		"racine_color": Color(0.26, 0.17, 0.10),
-		"feuillage_colors": [Color(0.14, 0.35, 0.22), Color(0.17, 0.40, 0.26)],
+		# Sprint 37octodecies (2026-07-04, "pas assez fonce pour les sapins",
+		# 3e signalement) : au-dela du ratio (deja corrige Sprint 37septdecies),
+		# les cimes (spheres/cones) restent bien eclairees quel que soit
+		# l'angle du soleil (normales dans toutes les directions, voir
+		# DayNightCycle.LIGHT_ENERGY/AMBIENT_ENERGY) - contrairement au sol/
+		# a l'eau (faces plates), donc leur albedo doit rester sombre en
+		# valeur absolue pour paraitre "vert fonce" a l'ecran. Assombri.
+		"feuillage_colors": [Color(0.05, 0.20, 0.08), Color(0.07, 0.24, 0.10)],
 	},
 	{
 		"id": "bouleau",
@@ -52,7 +59,7 @@ const SPECIES := [
 		"tronc_color": Color(0.82, 0.80, 0.74),
 		"branche_color": Color(0.70, 0.68, 0.62),
 		"racine_color": Color(0.55, 0.50, 0.42),
-		"feuillage_colors": [Color(0.55, 0.68, 0.30), Color(0.62, 0.74, 0.36)],
+		"feuillage_colors": [Color(0.30, 0.44, 0.16), Color(0.36, 0.50, 0.20)],  # Sprint 37unvicies : assombri (bouleau trop clair/jaune)
 	},
 ]
 

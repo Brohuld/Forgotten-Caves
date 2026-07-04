@@ -8,6 +8,9 @@ extends Node
 ## (voir VoxelWorld.gd/MetalTypes.gd/GemTypes.gd). Purement suivi en interne
 ## pour l'instant, pas encore affiche dans la barre de stats (deja chargee) -
 ## un vrai panneau d'inventaire viendra plus tard.
+## Sprint 36 : ajoute "eau" (voir bouton Puiser/ActionController.gd), remplie
+## par la tache "puiser" et consommee par les nains lorsque la soif est
+## critique (voir Dwarf.gd/_try_start_drinking).
 
 var resource_counts: Dictionary = {
 	"bois": 0,
@@ -16,6 +19,7 @@ var resource_counts: Dictionary = {
 	"bois_bouleau": 0,
 	"pierre": 0,
 	"terre": 0,
+	"eau": 0,
 	# Metaux (Sprint 23)
 	"fer": 0,
 	"cuivre": 0,

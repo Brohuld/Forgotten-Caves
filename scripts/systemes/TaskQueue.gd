@@ -80,6 +80,22 @@ func add_build_task(walk_pos: Vector3, bx: int, bz: int, material: String) -> in
 	return id
 
 
+## Sprint 36 : ajoute une tache de puisage d'eau sur la colonne (bx,bz) - a la
+## difference de "miner", le bloc n'est PAS retire (l'eau est une ressource
+## renouvelable, voir VoxelWorld.is_water/Dwarf.gd/_complete_task "puiser").
+## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
+func add_puiser_task(walk_pos: Vector3, bx: int, bz: int) -> int:
+	var id := next_task_id
+	next_task_id += 1
+	tasks.append({
+		"type": "puiser",
+		"id": id,
+		"position": walk_pos,
+		"bx": bx, "bz": bz,
+	})
+	return id
+
+
 func has_tasks() -> bool:
 	return tasks.size() > 0
 

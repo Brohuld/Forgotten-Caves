@@ -65,6 +65,13 @@ extends Node3D
 ## avant simulees en position/echelle (limitation du billboard), pilotent
 ## maintenant directement DwarfModel3D.preview_animation - un vrai objet 3D
 ## peut etre anime par rotation d'articulations (voir _process ci-dessous).
+## Sprint 36 (2026-07-03) : soif, demande explicite en meme temps que les
+## lacs/rivieres ("gerer la soif des nains"). Meme mecanique que la faim
+## (Sprint 24quater) : le nain boit directement depuis l'inventaire commun
+## (ressource "eau", remplie par la tache "puiser" designee sur une case d'eau,
+## voir ActionController.gd/VoxelWorld.is_water), pas de deplacement jusqu'au
+## bord de l'eau. Reutilise food_indicator (teinte en bleu) plutot que de
+## creer un second indicateur 3D - repas et boisson ne sont jamais simultanes.
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
@@ -72,6 +79,13 @@ const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecie
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
 const NainNames := preload("res://scripts/data/creatures/nains/NainNames.gd")
+## Sprint 34quinquies : mesure de duree de chargement - pour savoir si le
+## temps passe entre la fin de GroundDecoration et le debut de
+## CharacterSheetUI (voir memoire perf) vient bien de _build_appearance()
+## (construction du modele 3D, voir DwarfModel3D.gd) et si oui, si le cout
+## est reparti sur les 3 nains ou concentre sur le premier (indice d'un
+## "rechauffement" ponctuel, ex. compilation de shader au premier usage).
+const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
 signal build_task_finished(task_id: int, bx: int, bz: int)
 ## Sprint 26 : signal generique emis a la fin de N'IMPORTE QUELLE tache
@@ -102,13 +116,25 @@ signal task_finished(task_id: int)
 @export var model_scale: float = 0.8
 
 # Doivent correspondre a VoxelWorld.gd
-@export var grid_width: int = 20
-@export var grid_depth: int = 20
-@export var ground_level: float = 30.0  # sommet de la carte (HEIGHT, Sprint 23 : 10 -> 30)
+@export var grid_width: int = 100  # 2026-07-03 : map resize (etait 20)
+@export var grid_depth: int = 100  # 2026-07-03 : map resize (etait 20)
+@export var ground_level: float = 50.0  # sommet de la carte (HEIGHT, 2026-07-03 : map resize, etait 30)
+# Sprint 38 (reliefs) : ground_level ci-dessus ne sert plus que de repli (terrain
+# plat sans collines, ou position hors carte) - la hauteur reelle du nain suit
+# desormais le relief case par case via _ground_y_at (voir plus bas).
 
 @export var move_speed: float = 3.0        # unites / seconde
 @export var rotation_speed: float = 8.0    # vitesse de rotation vers la direction
 @export var work_duration: float = 1.5     # secondes pour miner/couper une fois arrive
+
+# Sprint 37 (backlog Phase 1 item 13c) : facteur applique a move_speed quand
+# le nain traverse une case d'eau (voir _move_toward/_is_on_water).
+const WATER_SLOWDOWN_FACTOR := 0.4
+
+# Sprint 38 (reliefs, "impacte le deplacement") : facteur applique en montee -
+# effet simple (pas de vraie physique de pente), meme principe que
+# WATER_SLOWDOWN_FACTOR ci-dessus. Voir _is_climbing/_move_toward.
+const SLOPE_SLOWDOWN_FACTOR := 0.6
 
 # Besoins (Sprint 8) - vitesses volontairement rapides pour tester sans attendre
 @export var hunger_max: float = 100.0
@@ -121,6 +147,15 @@ signal task_finished(task_id: int)
 @export var energy_regen_rate: float = 20.0      # points / seconde au repos
 @export var hunger_restore_per_berry: float = 40.0
 @export var eat_duration: float = 1.2            # secondes, animation de manger
+
+# Soif (Sprint 36) - meme principe que la faim ci-dessus, taux de depletion
+# legerement superieur (la soif devient critique un peu plus vite que la faim,
+# comme dans la realite)
+@export var thirst_max: float = 100.0
+@export var thirst_depletion_rate: float = 9.0   # points / seconde
+@export var thirst_critical: float = 20.0
+@export var thirst_restore_per_gorgee: float = 50.0
+@export var drink_duration: float = 1.2          # secondes, animation de boire
 
 # Repere approximatif de la hauteur de tete du modele 3D (voir DwarfModel3D
 # proportions par defaut : leg_height + torso_height + head_radius), utilise
@@ -141,6 +176,7 @@ const SKILL_BONUS_YIELD_MAX := 0.6         # plafond de la chance de bonus
 
 var hunger: float = 100.0
 var energy: float = 100.0
+var thirst: float = 100.0
 
 # Caracteristiques de base (Sprint 12) : 1-10 pour les 5 premieres, un
 # pourcentage pour le bonheur. Generees une fois a la creation du nain.
@@ -177,10 +213,37 @@ var is_eating: bool = false
 var eat_timer: float = 0.0
 var eating_food_id: String = ""  # Sprint 24quater : id de la ressource en train d'etre mangee (inventaire)
 
+var is_drinking: bool = false
+var drink_timer: float = 0.0
+
+# Sprint 37 (backlog Phase 1 item 14) : le nain ne doit pas s'endormir sur une
+# case d'eau - si l'energie devient critique alors qu'il se trouve sur de
+# l'eau, il marche d'abord jusqu'a une case seche (voir _process_seeking_dry_land)
+# avant de reellement commencer a se reposer.
+var is_seeking_dry_land: bool = false
+
+## Sprint 37 (backlog Phase 1 item 11bis, "inventaire personnel des nains") :
+## stub minimal - juste des emplacements nommes avec un contenu texte libre
+## ("" = vide), affiches en lecture seule dans l'onglet Equipement de la fiche
+## personnage (CharacterSheetUI). Un vrai systeme d'equipement (artisanat,
+## bonus de stats, habits qui protegent du froid - voir temperature_status)
+## est du scope Phase 2 "Ateliers & artisanat" et n'est pas implemente ici.
+var personal_inventory: Dictionary = {
+	"gourde": "",
+	"sac_a_dos": "",
+	"habit": "",
+	"arme": "",
+}
+
 @onready var body: Node3D = $Body
 @onready var task_queue: Node = %TaskQueue
 @onready var voxel_world: Node3D = %VoxelWorld
 @onready var inventory: Node = %Inventory
+# Sprint 34 (2026-07-03, perf) : reference a Forest.gd, necessaire pour
+# hide_tree_visuals() avant de couper un arbre - voir _process_work ci-dessous.
+@onready var forest: Node3D = %Forest
+# Sprint 37 (backlog Phase 1 item 6) : confort thermique, voir temperature_status()
+@onready var temperature_system: Node = %TemperatureSystem
 
 
 func _ready() -> void:
@@ -188,13 +251,19 @@ func _ready() -> void:
 	# ne se superposent exactement au meme endroit (Sprint 11)
 	var jitter_x := randf_range(-1.5, 1.5)
 	var jitter_z := randf_range(-1.5, 1.5)
-	global_position = Vector3(grid_width / 2.0 + jitter_x, ground_level, grid_depth / 2.0 + jitter_z)
+	var spawn_x: float = grid_width / 2.0 + jitter_x
+	var spawn_z: float = grid_depth / 2.0 + jitter_z
+	global_position = Vector3(spawn_x, _ground_y_at(spawn_x, spawn_z), spawn_z)
 	add_to_group("dwarves")
 	if dwarf_name == "":
 		dwarf_name = NainNames.random_name()
 	_generate_characteristics()
 	_generate_skills()
+	var t0: int = Time.get_ticks_msec()
 	_build_appearance()
+	var build_ms: int = Time.get_ticks_msec() - t0
+	var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
+	print("[Perf] Nain '%s' : modele 3D construit en %.2f s (temps ecoule depuis debut de scene : %.1f s)" % [dwarf_name, build_ms / 1000.0, elapsed_since_scene_start_ms / 1000.0])
 	_pick_new_target()
 
 
@@ -307,11 +376,27 @@ func _roll_bonus_yield(skill_id: String) -> bool:
 ## "body" sans decalage vertical necessaire (contrairement au sprite, dont
 ## l'origine devait etre relevee de sprite_neutral_y).
 
+## Sprint 34duodecies (2026-07-03) : reordonnee pour eviter un aller-retour
+## de construction inutile - voir memoire perf "lancement lent" pour le detail
+## du diagnostic. AVANT : dwarf_model etait ajoute a l'arbre (body.add_child)
+## PUIS recevait son apparence (couleurs, style aleatoire) - l'ajout a
+## l'arbre declenche automatiquement _ready()->_rebuild() (voir DwarfModel3D)
+## AVEC LES VALEURS PAR DEFAUT, immediatement jete et reconstruit par un appel
+## EXPLICITE a _rebuild() juste apres. Ce gaspillage (construire le modele
+## 2 fois a chaque nain) etait sans consequence mesurable pour les nains 2 et
+## 3 d'une partie (~0.01-0.02s), mais causait une pause de ~5-6s pour le TOUT
+## PREMIER nain construit : nettoyer les ~47 noeuds de ce premier essai jetable
+## (remove_child + free, voir DwarfModel3D._rebuild) forcait une
+## synchronisation couteuse avec le moteur de rendu, juste apres les ~7s de
+## generation du monde qui laissent une file d'attente de rendu tres chargee.
+## En fixant l'apparence AVANT d'ajouter le noeud a l'arbre, le _rebuild()
+## automatique (declenche par _ready() a l'ajout) construit directement la
+## BONNE apparence du premier coup - plus jamais besoin d'un 2e essai, donc
+## plus jamais rien a nettoyer, pour aucun nain.
 func _build_appearance() -> void:
 	dwarf_model = Node3D.new()
 	dwarf_model.set_script(DwarfModel3DScript)
 	dwarf_model.name = "DwarfModel"
-	body.add_child(dwarf_model)
 
 	# Tire une apparence aleatoire complete (coiffure/barbe/tenue/corpulence/
 	# couleurs) via la meme fonction que la grille de verification du
@@ -326,7 +411,11 @@ func _build_appearance() -> void:
 	# Pas de systeme de combat dans le jeu principal pour l'instant (Phase 4,
 	# voir README) : on force "sans arme" quel que soit le tirage aleatoire.
 	dwarf_model.weapon_loadout = "Aucune"
-	dwarf_model._rebuild()
+
+	# add_child declenche _ready()->_rebuild() (voir DwarfModel3D.gd) qui
+	# construit directement la bonne apparence, deja fixee ci-dessus - plus
+	# aucun appel explicite a _rebuild() necessaire ici.
+	body.add_child(dwarf_model)
 	dwarf_model.scale = Vector3.ONE * model_scale
 
 	_build_tool_accessory()
@@ -451,6 +540,13 @@ func _build_food_indicator() -> void:
 
 
 func _process(delta: float) -> void:
+	# Sprint 37 (backlog Phase 1 item 8) : multiplicateur de vitesse du temps
+	# (Pause/x1/x2/x4, voir ActionController.gd/DayNightCycle.game_speed) -
+	# en multipliant delta une seule fois ici, TOUT ce qui suit (deplacement,
+	# besoins, travail, repas/boisson, repos) suit deja la meme vitesse sans
+	# devoir toucher chaque ligne individuellement. Sciemment PAS applique a
+	# CameraRig.gd : la camera doit rester utilisable meme en pause.
+	delta *= DayNightCycleScript.game_speed
 	_update_needs(delta)
 
 	if is_working:
@@ -465,10 +561,33 @@ func _process(delta: float) -> void:
 		_process_eating(delta)
 		return
 
-	# Les besoins critiques passent avant les taches et l'errance
-	if energy <= energy_critical:
-		_start_resting()
+	if is_drinking:
+		_process_drinking(delta)
 		return
+
+	if is_seeking_dry_land:
+		_process_seeking_dry_land(delta)
+		return
+
+	# Les besoins critiques passent avant les taches et l'errance. La soif est
+	# verifiee avant la faim (Sprint 36, priorite un peu plus urgente).
+	if energy <= energy_critical:
+		# Sprint 37 (backlog Phase 1 item 14) : pas de sieste dans l'eau -
+		# si le nain s'y trouve, il marche d'abord vers une case seche.
+		if _is_on_water():
+			is_seeking_dry_land = true
+			target_position = _find_dry_target()
+			if not current_task.is_empty():
+				task_queue.requeue_task(current_task)
+				current_task = {}
+			_process_seeking_dry_land(delta)
+		else:
+			_start_resting()
+		return
+	if thirst <= thirst_critical:
+		if _try_start_drinking():
+			return
+		# sinon (aucune eau en inventaire) : on continue normalement
 	if hunger <= hunger_critical:
 		if _try_start_eating():
 			return
@@ -498,17 +617,37 @@ func _process(delta: float) -> void:
 	_move_toward(to_target, distance, delta)
 
 
-## Diminue faim et energie au fil du temps
+## Diminue faim, energie et soif au fil du temps
 func _update_needs(delta: float) -> void:
 	hunger = max(hunger - hunger_depletion_rate * delta, 0.0)
 	energy = max(energy - energy_depletion_rate * delta, 0.0)
+	thirst = max(thirst - thirst_depletion_rate * delta, 0.0)
 
 
-## Deplacement generique reutilise par la marche normale et la recherche de nourriture
+## Deplacement generique reutilise par la marche normale et la recherche de
+## nourriture/eau/case seche. Sprint 37 (backlog Phase 1 item 13c, "l'eau
+## ralentit la marche des nains") : vitesse reduite tant que le nain se trouve
+## sur une case d'eau (voir _is_on_water/VoxelWorld.is_water). Sprint 37
+## (item 13a, "les arbres sont non traversables") : pas de vraie navigation
+## avec obstacles (aucun A* dans ce projet), mais une legere deviation de
+## direction ("steering") qui ecarte le nain des troncs proches, voir
+## _tree_avoidance_offset ci-dessous.
 func _move_toward(to_target: Vector3, distance: float, delta: float) -> void:
 	var direction := to_target.normalized()
-	var step: float = min(move_speed * delta, distance)
+	var avoidance := _tree_avoidance_offset(direction)
+	if avoidance != Vector3.ZERO:
+		direction = (direction + avoidance).normalized()
+	var effective_speed: float = move_speed
+	if _is_on_water():
+		effective_speed *= WATER_SLOWDOWN_FACTOR
+	elif _is_climbing(direction):
+		effective_speed *= SLOPE_SLOWDOWN_FACTOR
+	var step: float = min(effective_speed * delta, distance)
 	global_position += direction * step
+	# Sprint 38 (reliefs) : la hauteur suit desormais le relief case par case
+	# (avant : y fige a ground_level, le nain "flottait"/"s'enfoncait" sur une
+	# colline). Voir _ground_y_at.
+	global_position.y = _ground_y_at(global_position.x, global_position.z)
 
 	# Le modele 3D n'est plus un billboard (contrairement au sprite,
 	# Sprint 15) : cette rotation tourne desormais reellement le nain vers sa
@@ -517,6 +656,26 @@ func _move_toward(to_target: Vector3, distance: float, delta: float) -> void:
 	rotation.y = lerp_angle(rotation.y, target_yaw, rotation_speed * delta)
 
 	dwarf_model.preview_animation = "Marche"
+
+
+## Sprint 38 (reliefs) : hauteur du sol (sommet de colonne + 1) a une position
+## XZ donnee. Repli sur ground_level si hors carte (get_top_block_y renvoie -1).
+func _ground_y_at(x: float, z: float) -> float:
+	var top: int = voxel_world.get_top_block_y(int(floor(x)), int(floor(z)))
+	if top < 0:
+		return ground_level
+	return float(top) + 1.0
+
+
+## Sprint 38 (reliefs, "impacte le deplacement") : compare la hauteur du sol
+## juste devant le nain (dans le sens de deplacement) a sa hauteur actuelle -
+## effet simple, pas de vraie physique de pente (voir SLOPE_SLOWDOWN_FACTOR).
+func _is_climbing(direction: Vector3) -> bool:
+	var ahead_x: float = global_position.x + direction.x * 0.5
+	var ahead_z: float = global_position.z + direction.z * 0.5
+	var here_y := _ground_y_at(global_position.x, global_position.z)
+	var ahead_y := _ground_y_at(ahead_x, ahead_z)
+	return ahead_y > here_y + 0.1
 
 
 ## --- Repos (energie critique) : le nain s'allonge et dort sur place ---
@@ -541,6 +700,69 @@ func _process_resting(delta: float) -> void:
 		is_resting = false
 		sleep_indicator.visible = false
 		_reset_pose()
+
+
+## --- Recherche de case seche avant repos (Sprint 37, backlog Phase 1 item
+## 14) : "les nains ne peuvent pas dormir dans l'eau" - si l'energie devient
+## critique alors que le nain se trouve sur de l'eau (ex: apres une tache
+## "puiser"), il marche d'abord jusqu'a une case seche (reutilise _move_toward,
+## donc profite aussi du ralentissement dans l'eau ci-dessus) avant de
+## reellement commencer a se reposer (voir _start_resting).
+
+func _is_on_water() -> bool:
+	return voxel_world.is_water(int(floor(global_position.x)), int(floor(global_position.z)))
+
+
+## Sprint 37 (backlog Phase 1 item 13a) : les arbres n'ont pas de vraie
+## collision/pathfinding (voir les notes du projet - aucun A* dans ce jeu),
+## donc on approxime "traversable/non traversable" par une deviation de
+## direction ("steering") qui repousse doucement le nain des troncs proches
+## situes globalement devant lui. Les arbres restent dans le groupe "trees"
+## (voir Forest.gd/_spawn_tree) meme apres la conversion en MultiMesh visuel.
+const TREE_AVOID_RADIUS := 1.3
+const TREE_AVOID_STRENGTH := 1.6
+
+func _tree_avoidance_offset(direction: Vector3) -> Vector3:
+	var avoid := Vector3.ZERO
+	for tree in get_tree().get_nodes_in_group("trees"):
+		var to_tree: Vector3 = tree.global_position - global_position
+		to_tree.y = 0.0
+		var dist: float = to_tree.length()
+		if dist < 0.001 or dist > TREE_AVOID_RADIUS:
+			continue
+		if direction.dot(to_tree.normalized()) < 0.2:
+			continue
+		var push: Vector3 = global_position - tree.global_position
+		push.y = 0.0
+		var weight: float = (TREE_AVOID_RADIUS - dist) / TREE_AVOID_RADIUS
+		avoid += push.normalized() * weight * TREE_AVOID_STRENGTH
+	return avoid
+
+
+## Tire des positions au hasard sur la carte jusqu'a en trouver une qui n'est
+## pas de l'eau (essais bornes par securite) ; repli sur le centre de la carte
+## si vraiment aucune n'est trouvee (tres improbable, les lacs/la riviere ne
+## couvrent qu'une petite partie de la carte).
+func _find_dry_target() -> Vector3:
+	var guard := 0
+	while guard < 20:
+		var x := randf_range(1.0, float(grid_width - 1))
+		var z := randf_range(1.0, float(grid_depth - 1))
+		if not voxel_world.is_water(int(x), int(z)):
+			return Vector3(x, _ground_y_at(x, z), z)
+		guard += 1
+	return Vector3(grid_width / 2.0, ground_level, grid_depth / 2.0)
+
+
+func _process_seeking_dry_land(delta: float) -> void:
+	var to_target: Vector3 = target_position - global_position
+	to_target.y = 0.0
+	var distance := to_target.length()
+	if distance < 0.15 or not _is_on_water():
+		is_seeking_dry_land = false
+		_start_resting()
+		return
+	_move_toward(to_target, distance, delta)
 
 
 ## --- Repas depuis l'inventaire (faim critique, Sprint 24quater) ---
@@ -601,6 +823,45 @@ func _process_eating(delta: float) -> void:
 		_reset_pose()
 
 
+## --- Boisson depuis l'inventaire (soif critique, Sprint 36) ---
+## Meme principe que le repas ci-dessus (_try_start_eating/_process_eating) :
+## le nain boit directement depuis le stock commun d'"eau" (rempli par la
+## tache "puiser", voir ActionController.gd/TaskQueue.gd), sans se deplacer.
+## Reutilise food_indicator (teinte en bleu) au lieu d'un second indicateur 3D
+## dedie - is_eating et is_drinking ne sont jamais vrais en meme temps.
+
+## Tente de commencer a boire ; interrompt la tache en cours (comme la faim) et
+## lance l'animation depuis l'inventaire. Renvoie false si pas d'eau stockee.
+func _try_start_drinking() -> bool:
+	if not inventory.has_resource("eau", 1):
+		return false
+
+	var indicator_mat: StandardMaterial3D = food_indicator.get_surface_override_material(0)
+	if indicator_mat:
+		indicator_mat.albedo_color = _resource_color("eau")
+	is_drinking = true
+	drink_timer = 0.0
+	dwarf_model.preview_animation = "Manger"  # meme geste mains->bouche, pas d'animation "Boire" dediee
+	if not current_task.is_empty():
+		task_queue.requeue_task(current_task)
+		current_task = {}
+	return true
+
+
+func _process_drinking(delta: float) -> void:
+	drink_timer += delta
+	food_indicator.visible = true
+	food_indicator.position.z = (0.18 - absf(sin(drink_timer * 14.0)) * 0.10) * model_scale
+
+	if drink_timer >= drink_duration:
+		if inventory.remove_resource("eau", 1):
+			thirst = min(thirst + thirst_restore_per_gorgee, thirst_max)
+			print("Le nain boit de l'eau (soif: %d)" % int(thirst))
+		is_drinking = false
+		food_indicator.visible = false
+		_reset_pose()
+
+
 ## Sprint 24septies : valeur de faim restauree par la nourriture "food_id"
 ## (calories propres a chaque fruit/baie, voir TreeSpecies.calories_for /
 ## BerryTypes.calories_for) - retombe sur hunger_restore_per_berry si aucune
@@ -647,6 +908,13 @@ func _complete_task() -> void:
 		var wood_type: String = "bois"
 		if is_instance_valid(tree):
 			wood_type = tree.get_meta("wood_resource", "bois")
+			# Sprint 34 : depuis la refonte perf de Forest.gd, tout le visuel
+			# de l'arbre (tronc/branches/feuillage) vit dans des maillages
+			# partages entre TOUS les arbres, plus comme enfants de "tree" -
+			# il faut donc explicitement les cacher ici, sinon ils restent
+			# visibles pour toujours meme apres tree.queue_free().
+			if forest and forest.has_method("hide_tree_visuals"):
+				forest.hide_tree_visuals(tree)
 			tree.queue_free()
 		var wood_count: int = 2 if _roll_bonus_yield(skill_id) else 1
 		for i in range(wood_count):
@@ -685,6 +953,10 @@ func _complete_task() -> void:
 				if fruits_left > 0 and _roll_bonus_yield(skill_id):
 					_harvest_one_fruit(target, fruits_left)
 					_collect_resource(fruit_resource)
+	elif current_task.get("type") == "puiser":
+		# Sprint 36 : contrairement a "miner", on ne retire rien de VoxelWorld -
+		# l'eau est une ressource renouvelable (voir VoxelWorld.is_water).
+		_collect_resource("eau")
 
 	if skill_id != "":
 		_gain_skill_xp(skill_id, SKILL_XP_PER_TASK)
@@ -712,24 +984,58 @@ func _harvest_one_fruit(target: Node, fruits_left: int) -> int:
 	return new_count
 
 
-## Ajoute la ressource a l'inventaire et fait apparaitre un petit tas au sol
+## Ajoute la ressource a l'inventaire et fait apparaitre/grossir un tas au sol
 ## (Sprint 5 : cube qui sautait puis disparaissait ; Sprint 24septies : la
 ## ressource est deja comptee en inventaire tout de suite comme avant, seul
 ## le visuel change - un petit tas qui reste en place indefiniment, en
 ## attendant un futur systeme de transport vers des zones de stockage).
+## Sprint 37 (backlog Phase 1 items 10/11, "objets de recolte a part entiere"
+## + "piles d'objets") : le tas est desormais une vraie entite (groupe
+## "resource_piles", meta resource_name/count) au lieu d'un simple decor -
+## les recoltes proches du meme type fusionnent dans le meme tas au lieu de
+## creer un nouveau tas a chaque fois, et le compte est affiche au survol
+## (voir ActionController._describe_resource_pile).
+const PILE_MERGE_RADIUS := 1.2
+const PILE_MAX_SCALE := 1.8
+
 func _collect_resource(resource_name: String) -> void:
 	inventory.add_resource(resource_name, 1)
-	_spawn_resource_pile(resource_name, global_position)
+	_add_to_resource_pile(resource_name, global_position)
 	print("Recolte : +1 %s (total %d)" % [resource_name, inventory.get_count(resource_name)])
 
 
-## Petit tas de 3-4 morceaux colores pose au sol a l'endroit de la recolte -
-## purement visuel/repere pour l'instant, ne disparait pas tout seul.
-func _spawn_resource_pile(resource_name: String, pos: Vector3) -> void:
-	var pile := Node3D.new()
+## Cherche un tas existant du meme type de ressource a proximite ; l'agrandit
+## et incremente son compteur si trouve, sinon en cree un nouveau.
+func _add_to_resource_pile(resource_name: String, pos: Vector3) -> void:
+	var pile: Node3D = _find_nearby_pile(resource_name, pos)
+	if pile != null:
+		var count: int = int(pile.get_meta("count")) + 1
+		pile.set_meta("count", count)
+		pile.scale = Vector3.ONE * clampf(1.0 + float(count) * 0.03, 1.0, PILE_MAX_SCALE)
+		return
+	pile = Node3D.new()
 	pile.position = pos
+	pile.add_to_group("resource_piles")
+	pile.set_meta("resource_name", resource_name)
+	pile.set_meta("count", 1)
 	get_parent().add_child(pile)
+	_build_pile_visual(pile, resource_name)
 
+
+func _find_nearby_pile(resource_name: String, pos: Vector3) -> Node3D:
+	for pile in get_tree().get_nodes_in_group("resource_piles"):
+		if String(pile.get_meta("resource_name")) != resource_name:
+			continue
+		if pile.global_position.distance_to(pos) <= PILE_MERGE_RADIUS:
+			return pile
+	return null
+
+
+## Petit tas de 3-4 morceaux colores pose au sol a l'endroit de la recolte -
+## visuel construit une seule fois a la creation du tas (les recoltes
+## suivantes du meme tas se contentent d'agrandir le node, voir
+## _add_to_resource_pile, pour eviter d'accumuler des noeuds a l'infini).
+func _build_pile_visual(pile: Node3D, resource_name: String) -> void:
 	var color := _resource_color(resource_name)
 	var chunk_count := randi_range(3, 4)
 	for i in range(chunk_count):
@@ -757,6 +1063,8 @@ func _resource_color(resource_name: String) -> Color:
 			return Color(0.55, 0.55, 0.55)
 		"terre":
 			return Color(0.35, 0.25, 0.15)
+		"eau":
+			return Color(0.25, 0.55, 0.85)
 		_:
 			# Sprint 23 : metaux/pierres precieuses recoltes en filon - couleur
 			# reprise directement de MetalTypes.gd/GemTypes.gd (via VeinMaterials)
@@ -774,8 +1082,35 @@ func _resource_color(resource_name: String) -> Color:
 			return Color(1, 1, 1)
 
 
-## Choisit une nouvelle case cible aleatoire sur la carte (marge de 1 bloc au bord)
+## Sprint 37 (backlog Phase 1 item 6, "confort thermique") : statut
+## chaud/froid/normal du nain, base sur la temperature ambiante actuelle
+## (TemperatureSystem.gd). Purement informatif pour l'instant (affiche dans la
+## fiche personnage) - aucun effet sur le gameplay, en attendant un futur
+## systeme d'habits qui viendra attenuer cet effet (voir memoire backlog).
+const COLD_THRESHOLD := 0.0
+const HOT_THRESHOLD := 30.0
+
+func temperature_status() -> String:
+	if temperature_system == null:
+		return "Normal"
+	var temp: float = temperature_system.current_temperature()
+	if temp <= COLD_THRESHOLD:
+		return "Froid"
+	elif temp >= HOT_THRESHOLD:
+		return "Chaud"
+	return "Normal"
+
+
+## Choisit une nouvelle case cible aleatoire sur la carte (marge de 1 bloc au bord).
+## Sprint 37 (backlog Phase 1 item 13b) : evite de choisir une case d'eau
+## profonde (>1 niveau) comme destination de balade - les lacs profonds sont
+## donc contournes plutot que traverses (voir VoxelWorld.water_depth_at).
 func _pick_new_target() -> void:
 	var x := randf_range(1.0, float(grid_width - 1))
 	var z := randf_range(1.0, float(grid_depth - 1))
+	var guard := 0
+	while voxel_world.water_depth_at(int(x), int(z)) > 1 and guard < 20:
+		x = randf_range(1.0, float(grid_width - 1))
+		z = randf_range(1.0, float(grid_depth - 1))
+		guard += 1
 	target_position = Vector3(x, ground_level, z)

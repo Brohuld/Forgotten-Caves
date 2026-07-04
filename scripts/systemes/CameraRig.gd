@@ -2,8 +2,8 @@ extends Node3D
 ## Sprint 2 : camera controlable.
 ## - Deplacement (pan) : ZQSD (touches physiques Z/Q/S/D sur clavier francais)
 ## - Rotation : touches A et E (Q est deja pris par le deplacement, donc pas de Q/E)
-## - Zoom : touches + et -
-## - Changement de niveau de profondeur : molette de la souris
+## - Zoom : touches + et -, ou Ctrl+molette (Sprint 35bis, demande explicite)
+## - Changement de niveau de profondeur : molette de la souris (sans Ctrl)
 ## - Angle de vue (pitch + rotation) : maintenir le clic molette (bouton du
 ##   milieu) et glisser la souris (horizontal = rotation, vertical = pitch)
 ## Sprint 23bis : le changement de niveau ne faisait jusqu'ici que deplacer la
@@ -23,9 +23,16 @@ extends Node3D
 @export var max_pitch_deg: float = 85.0
 
 # Doivent correspondre aux constantes de VoxelWorld.gd
-@export var grid_height: int = 30  # Sprint 23 : 10 -> 30 (profondeur agrandie)
+@export var grid_height: int = 50  # 2026-07-03 : 30 -> 50 (map resize)
+# Sprint 37octies (2026-07-04, demande explicite : "les niveaux geres par la
+# molette doivent permettre de monter au dessus de 0, on aura des reliefs dans
+# le futur") - doit correspondre a VoxelWorld.VIEW_LEVEL_MARGIN_ABOVE.
+@export var view_level_margin_above: int = 15
+# Sprint 38 (2026-07-04, reliefs) : doit correspondre a VoxelWorld.hill_amplitude
+# pour que la camera demarre assez haut pour voir le sommet des collines.
+@export var hill_amplitude: float = 3.0
 
-var current_level: int = 29  # sommet de la carte (grid_height - 1)
+var current_level: int = 49  # sommet de la carte (grid_height - 1), ajuste en _ready()
 var camera_distance: float = 16.0
 var pitch_deg: float = 35.0
 var is_middle_dragging: bool = false
@@ -36,6 +43,10 @@ var level_label: Label
 
 
 func _ready() -> void:
+	# Sprint 38 (reliefs) : demarre au-dessus du sommet des collines les plus
+	# hautes, sinon la vue par defaut cache leur sommet (meme logique que
+	# VoxelWorld._ready, qui calcule son view_level de la meme facon).
+	current_level = grid_height - 1 + int(ceil(hill_amplitude))
 	global_position.y = float(current_level)
 	_update_camera_offset()
 	_create_ui()
@@ -75,9 +86,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Rotation : touches A et E (physiques). Q etant deja pris par le
 		# deplacement (ZQSD), on utilise A (a cote) pour eviter le conflit.
 		if event.physical_keycode == KEY_Q:
-			rotate_y(deg_to_rad(rotate_step_deg))
+			_rotate_step(rotate_step_deg)
 		elif event.physical_keycode == KEY_E:
-			rotate_y(deg_to_rad(-rotate_step_deg))
+			_rotate_step(-rotate_step_deg)
 		elif event.physical_keycode == KEY_EQUAL or event.physical_keycode == KEY_KP_ADD:
 			camera_distance = clamp(camera_distance - zoom_speed, min_distance, max_distance)
 			_update_camera_offset()
@@ -86,13 +97,31 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_camera_offset()
 
 	if event is InputEventMouseButton:
-		if event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			current_level = clampi(current_level + 1, 0, grid_height - 1)
+		# Sprint 35bis (2026-07-03) : Ctrl+molette zoome (meme logique que
+		# +/-) au lieu de changer de niveau - demande explicite. Verifie
+		# ctrl_pressed AVANT de traiter la molette comme un changement de
+		# niveau, pour que les deux usages restent bien separes (molette
+		# seule = niveau, Ctrl+molette = zoom).
+		if event.pressed and event.ctrl_pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			camera_distance = clamp(camera_distance - zoom_speed, min_distance, max_distance)
+			_update_camera_offset()
+		elif event.pressed and event.ctrl_pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			camera_distance = clamp(camera_distance + zoom_speed, min_distance, max_distance)
+			_update_camera_offset()
+		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			# Sprint 36bis (2026-07-03) : instrumentation de diagnostic (voir
+			# memoire) a confirme que sur trackpad Mac (defilement "naturel",
+			# reglage par defaut du systeme), scroller vers le BAS envoie
+			# l'evenement WHEEL_UP a Godot, pas WHEEL_DOWN - le code d'origine
+			# (WHEEL_UP = monter) faisait donc l'inverse de ce que l'utilisateur
+			# attendait, et restait bloque a la surface. Les deux branches sont
+			# desormais inversees pour correspondre au ressenti reel du trackpad.
+			current_level = clampi(current_level - 1, 0, grid_height - 1 + view_level_margin_above)
 			global_position.y = float(current_level)
 			_update_label()
 			_update_view_level()
 		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			current_level = clampi(current_level - 1, 0, grid_height - 1)
+			current_level = clampi(current_level + 1, 0, grid_height - 1 + view_level_margin_above)
 			global_position.y = float(current_level)
 			_update_label()
 			_update_view_level()
@@ -103,6 +132,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		pitch_deg = clamp(pitch_deg + event.relative.y * pitch_sensitivity, min_pitch_deg, max_pitch_deg)
 		rotate_y(deg_to_rad(-event.relative.x * yaw_sensitivity))
 		_update_camera_offset()
+
+
+## Sprint 60 (2026-07-04, signale par Francois : "la rotation A/E est trop
+## brusque") : rotate_y() applique un saut de 45° INSTANTANE (aucune
+## interpolation), ressenti comme brutal. Anime desormais la rotation sur une
+## courte duree via un Tween plutot qu'un saut immediat.
+func _rotate_step(delta_deg: float) -> void:
+	var tween := create_tween()
+	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.tween_property(self, "rotation:y", rotation.y + deg_to_rad(delta_deg), 0.25)
 
 
 func _update_camera_offset() -> void:
@@ -133,4 +172,8 @@ func _update_label() -> void:
 			suffix = " (surface)"
 		elif displayed_level < 0:
 			suffix = " (sous-sol)"
+		else:
+			# Sprint 37octies : niveaux au-dessus de la surface actuelle, prets
+			# pour un futur relief (rien n'y est encore genere).
+			suffix = " (relief)"
 		level_label.text = "Niveau : %d%s" % [displayed_level, suffix]

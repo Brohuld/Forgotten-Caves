@@ -72,12 +72,24 @@ var _col_top: Array = []        # float par instance
 var _view_level: int = 999999   # tres haut par defaut = rien de cache tant que CameraRig n'a pas encore appele update_view_level
 
 
+# 2026-07-05 (revue de code, item F016) : _ready() (~58 lignes) decoupe en
+# sous-fonctions - meme contenu qu'avant, rien de fonctionnel ne change.
 func _ready() -> void:
 	if voxel_world == null:
 		return
-	randomize()
+	# 2026-07-05 (correctif revue de code C6, meme cause que C2-C5/I9) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine. Purement decoratif ici (l'ecume n'a pas besoin d'etre
+	# reproductible), mais casse la chaine de determinisme pour tout script
+	# suivant dans Main.tscn - retire pour rester coherent avec le reste.
 	_build_shared_mesh()
+	_spawn_foam_clouds()
+	_finalize_instances()
 
+
+## Cree les 2 petits nuages d'ecume (haut/bas) de chaque colonne de cascade.
+func _spawn_foam_clouds() -> void:
 	# Sprint 81 (suite, 2026-07-04, bug signale par Francois : "aucune ecume
 	# ne s'affiche") : "top"/"pool_surface_y" sont des INDICES de bloc, pas
 	# des positions monde directement utilisables - un bloc d'indice Y occupe
@@ -127,6 +139,9 @@ func _ready() -> void:
 		# Petit nuage clair juste au-dessus du bassin (l'ecume de l'impact).
 		_add_cloud(Vector3(bx, pool_y + 0.13, bz), BOTTOM_FOAM_COLOR, float(col["top"]))
 
+
+## Active les instances du MultiMesh une fois tous les blobs ajoutes.
+func _finalize_instances() -> void:
 	_mmi.multimesh.instance_count = _anchor.size()
 	_update_all_colors(Color.WHITE, 0.0, 0.0)
 	_update_all_transforms()

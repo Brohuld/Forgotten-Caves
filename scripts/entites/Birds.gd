@@ -33,7 +33,12 @@ var _sim_time: float = 0.0
 
 
 func _ready() -> void:
-	randomize()
+	# 2026-07-05 (meme correctif que C2-C6/I9, decouvert incidemment lors de
+	# cette revue - hors perimetre du diff d'origine mais meme cause) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine. Purement decoratif ici, mais casse la chaine de determinisme
+	# pour tout script suivant dans Main.tscn - retire pour rester coherent.
 	for i in range(bird_count):
 		_spawn_bird(i)
 

@@ -72,6 +72,12 @@ extends Node3D
 ## voir ActionController.gd/VoxelWorld.is_water), pas de deplacement jusqu'au
 ## bord de l'eau. Reutilise food_indicator (teinte en bleu) plutot que de
 ## creer un second indicateur 3D - repas et boisson ne sont jamais simultanes.
+## 2026-07-05 (revue de code, dette d'architecture A1) : le systeme de
+## caracteristiques/competences (generation + xp + duree de travail + bonus
+## de recolte) a ete extrait dans DwarfSkills.gd (RefCounted, voir "skills"
+## ci-dessous) - Dwarf.gd garde la propriete des donnees (skill_levels/
+## skill_xp/force/etc.), DwarfSkills.gd ne fait que le calcul. Aucun
+## changement d'API externe (CharacterSheetUI.gd inchange).
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
@@ -86,6 +92,13 @@ const NainNames := preload("res://scripts/data/creatures/nains/NainNames.gd")
 ## est reparti sur les 3 nains ou concentre sur le premier (indice d'un
 ## "rechauffement" ponctuel, ex. compilation de shader au premier usage).
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
+## _ready() ci-dessous (grid_width/grid_depth/ground_level dupliques ci-dessous).
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+## 2026-07-05 (revue de code, dette d'architecture A1) : voir commentaire de
+## classe ci-dessus - systeme de caracteristiques/competences extrait.
+const DwarfSkillsScript := preload("res://scripts/entites/DwarfSkills.gd")
+var skills: DwarfSkillsScript = DwarfSkillsScript.new()
 
 signal build_task_finished(task_id: int, bx: int, bz: int)
 ## Sprint 26 : signal generique emis a la fin de N'IMPORTE QUELLE tache
@@ -163,23 +176,13 @@ const SLOPE_SLOWDOWN_FACTOR := 0.6
 # endroit sans dupliquer le calcul exact du prototype.
 const HEAD_HEIGHT_APPROX := 0.95
 
-# Competences (Sprint 18)
-const SKILL_BUDGET_PER_SKILL := 5      # budget total distribue = nb de competences * cette valeur
-const SKILL_MAX_START_LEVEL := 10      # plafond du tirage aleatoire initial (l'xp peut aller au-dela ensuite)
-const SKILL_XP_PER_TASK := 10.0        # xp gagnee a chaque tache terminee du bon type
-const SKILL_XP_BASE := 20.0            # xp necessaire pour passer du niveau 0 au niveau 1
-const SKILL_XP_PER_LEVEL := 10.0       # xp supplementaire requise par niveau deja atteint
-const SKILL_WORK_SPEED_BONUS := 0.05   # par niveau : -5% de duree de travail
-const SKILL_MIN_DURATION_FACTOR := 0.4 # la duree ne descend jamais sous 40% de la duree de base
-const SKILL_BONUS_YIELD_PER_LEVEL := 0.05  # par niveau : +5% de chance de ressource bonus
-const SKILL_BONUS_YIELD_MAX := 0.6         # plafond de la chance de bonus
-
 var hunger: float = 100.0
 var energy: float = 100.0
 var thirst: float = 100.0
 
 # Caracteristiques de base (Sprint 12) : 1-10 pour les 5 premieres, un
-# pourcentage pour le bonheur. Generees une fois a la creation du nain.
+# pourcentage pour le bonheur. Generees une fois a la creation du nain
+# (voir DwarfSkills.generate_characteristics(), 2026-07-05).
 var force: int = 0
 var agilite: int = 0
 var constitution: int = 0
@@ -188,7 +191,8 @@ var beaute: int = 0
 var bonheur: int = 0
 
 # Competences (Sprint 18) : id (voir SkillDefinitions.gd) -> niveau / xp
-# dans le niveau actuel. Generees a la creation, progressent avec l'usage.
+# dans le niveau actuel. Generees a la creation, progressent avec l'usage
+# (voir DwarfSkills.generate_skills()/gain_xp(), 2026-07-05).
 var skill_levels: Dictionary = {}
 var skill_xp: Dictionary = {}
 var current_work_duration: float = 1.5  # duree effective de la tache en cours (ajustee par la competence)
@@ -242,11 +246,20 @@ var personal_inventory: Dictionary = {
 # Sprint 34 (2026-07-03, perf) : reference a Forest.gd, necessaire pour
 # hide_tree_visuals() avant de couper un arbre - voir _process_work ci-dessous.
 @onready var forest: Node3D = %Forest
+# 2026-07-05 (correctif bug "decoration ne disparait pas au minage") :
+# reference a GroundDecoration.gd, necessaire pour remove_decoration_at()
+# apres avoir mine un bloc - voir _complete_task ci-dessous.
+@onready var ground_decoration: Node3D = %GroundDecoration
 # Sprint 37 (backlog Phase 1 item 6) : confort thermique, voir temperature_status()
 @onready var temperature_system: Node = %TemperatureSystem
 
 
 func _ready() -> void:
+	# 2026-07-05 (revue de code, item F010) : grid_width/grid_depth/ground_level
+	# dupliques en dur (aucune garde-fou automatique auparavant) - avertissement
+	# si desynchronise de VoxelWorld.gd, sans changer le comportement.
+	if grid_width != VoxelWorldScript.WIDTH or grid_depth != VoxelWorldScript.DEPTH or not is_equal_approx(ground_level, float(VoxelWorldScript.HEIGHT)):
+		push_warning("Dwarf.grid_width/grid_depth/ground_level (%d/%d/%.1f) desynchronise de VoxelWorld (%d/%d/%d)" % [grid_width, grid_depth, ground_level, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, VoxelWorldScript.HEIGHT])
 	# Petit decalage aleatoire au demarrage pour eviter que plusieurs nains
 	# ne se superposent exactement au meme endroit (Sprint 11)
 	var jitter_x := randf_range(-1.5, 1.5)
@@ -257,8 +270,19 @@ func _ready() -> void:
 	add_to_group("dwarves")
 	if dwarf_name == "":
 		dwarf_name = NainNames.random_name()
-	_generate_characteristics()
-	_generate_skills()
+	# 2026-07-05 (dette d'architecture A1) : generation deleguee a
+	# DwarfSkills.gd, Dwarf.gd assigne juste le resultat a ses propres champs
+	# (aucun changement de forme des donnees, CharacterSheetUI.gd inchange).
+	var chars: Dictionary = skills.generate_characteristics()
+	force = chars["force"]
+	agilite = chars["agilite"]
+	constitution = chars["constitution"]
+	intelligence = chars["intelligence"]
+	beaute = chars["beaute"]
+	bonheur = chars["bonheur"]
+	var sk: Dictionary = skills.generate_skills()
+	skill_levels = sk["levels"]
+	skill_xp = sk["xp"]
 	var t0: int = Time.get_ticks_msec()
 	_build_appearance()
 	var build_ms: int = Time.get_ticks_msec() - t0
@@ -267,105 +291,12 @@ func _ready() -> void:
 	_pick_new_target()
 
 
-## Genere les caracteristiques de base du nain (Sprint 12). Purement
-## informatif pour l'instant, aucun effet sur le gameplay.
-func _generate_characteristics() -> void:
-	force = randi_range(1, 10)
-	agilite = randi_range(1, 10)
-	constitution = randi_range(1, 10)
-	intelligence = randi_range(1, 10)
-	beaute = randi_range(1, 10)
-	bonheur = randi_range(40, 80)
-
-
-## --- Competences (Sprint 18) ---
-
-## Repartit un niveau de depart aleatoire par competence, a "budget" constant
-## (total = nb de competences * SKILL_BUDGET_PER_SKILL) : un nain fort dans
-## une competence le sera un peu moins dans les autres, plutot que d'avoir
-## des nains generalistes forts partout.
-func _generate_skills() -> void:
-	var defs: Array = SkillDefs.SKILLS
-	var count: int = defs.size()
-	if count == 0:
-		return
-	var budget: int = count * SKILL_BUDGET_PER_SKILL
-	var values: Array = _distribute_skill_points(budget, count, SKILL_MAX_START_LEVEL)
-	for i in range(count):
-		var id: String = defs[i]["id"]
-		skill_levels[id] = values[i]
-		skill_xp[id] = 0.0
-
-
-## Distribue "total_budget" points entre "count" competences au hasard
-## (poids aleatoires normalises), chaque competence plafonnee a
-## "max_per_skill". Le reste eventuel (du a l'arrondi) est distribue un point
-## a la fois, au hasard, parmi les competences pas encore au plafond.
-func _distribute_skill_points(total_budget: int, count: int, max_per_skill: int) -> Array:
-	var weights: Array = []
-	var weight_sum: float = 0.0
-	for i in range(count):
-		var w: float = randf() + 0.1  # + 0.1 pour eviter un poids quasi nul
-		weights.append(w)
-		weight_sum += w
-
-	var values: Array = []
-	var allocated: int = 0
-	for i in range(count):
-		var v: int = int(floor(weights[i] / weight_sum * float(total_budget)))
-		v = clampi(v, 0, max_per_skill)
-		values.append(v)
-		allocated += v
-
-	var remaining: int = total_budget - allocated
-	var guard: int = 0
-	while remaining > 0 and guard < 500:
-		var idx: int = randi_range(0, count - 1)
-		if values[idx] < max_per_skill:
-			values[idx] += 1
-			remaining -= 1
-		guard += 1
-
-	return values
-
-
-## Ajoute de l'xp a une competence et fait passer les niveaux necessaires
-## (l'xp requise augmente a chaque niveau, voir SKILL_XP_BASE/SKILL_XP_PER_LEVEL)
-func _gain_skill_xp(skill_id: String, amount: float) -> void:
-	if skill_id == "" or not skill_levels.has(skill_id):
-		return
-	skill_xp[skill_id] += amount
-	var guard: int = 0
-	while skill_xp[skill_id] >= _xp_needed_for_level(skill_levels[skill_id]) and guard < 100:
-		skill_xp[skill_id] -= _xp_needed_for_level(skill_levels[skill_id])
-		skill_levels[skill_id] += 1
-		print("%s : %s passe niveau %d" % [dwarf_name, SkillDefs.display_name(skill_id), skill_levels[skill_id]])
-		guard += 1
-
-
+## 2026-07-05 (correctif dette A1) : passe-plat conserve pour compatibilite -
+## CharacterSheetUI.gd appelle directement dwarf._xp_needed_for_level(level)
+## (affichage de la barre d'xp), ce nom doit donc rester disponible sur Dwarf.gd
+## meme si le calcul reel vit maintenant dans DwarfSkills.gd.
 func _xp_needed_for_level(level: int) -> float:
-	return SKILL_XP_BASE + float(level) * SKILL_XP_PER_LEVEL
-
-
-## Duree de travail effective pour la tache en cours, reduite selon le
-## niveau de la competence liee (voir SkillDefinitions.skill_for_task)
-func _compute_work_duration() -> float:
-	var skill_id: String = SkillDefs.skill_for_task(current_task.get("type", ""))
-	if skill_id == "" or not skill_levels.has(skill_id):
-		return work_duration
-	var level: int = skill_levels[skill_id]
-	var factor: float = max(1.0 - float(level) * SKILL_WORK_SPEED_BONUS, SKILL_MIN_DURATION_FACTOR)
-	return work_duration * factor
-
-
-## Tire au sort si la recolte donne une ressource bonus, avec une chance qui
-## augmente avec le niveau de competence (plafonnee a SKILL_BONUS_YIELD_MAX)
-func _roll_bonus_yield(skill_id: String) -> bool:
-	if skill_id == "" or not skill_levels.has(skill_id):
-		return false
-	var level: int = skill_levels[skill_id]
-	var chance: float = min(float(level) * SKILL_BONUS_YIELD_PER_LEVEL, SKILL_BONUS_YIELD_MAX)
-	return randf() < chance
+	return skills.xp_needed_for_level(level)
 
 
 ## --- Apparence (Sprint 28decies) : modele 3D procedural, remplace le sprite
@@ -513,7 +444,7 @@ func _hide_tools() -> void:
 func _build_sleep_indicator() -> void:
 	sleep_indicator = Label3D.new()
 	sleep_indicator.text = "Z z z"
-	sleep_indicator.font_size = 48
+	sleep_indicator.font_size = 60
 	sleep_indicator.outline_size = 10
 	sleep_indicator.modulate = Color(0.85, 0.9, 1.0)
 	sleep_indicator.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -606,7 +537,7 @@ func _process(delta: float) -> void:
 		if not current_task.is_empty():
 			is_working = true
 			work_timer = 0.0
-			current_work_duration = _compute_work_duration()
+			current_work_duration = skills.compute_work_duration(skill_levels, current_task, work_duration)
 			_reset_pose()
 			_show_tool_for_task()
 			return
@@ -723,8 +654,19 @@ const TREE_AVOID_RADIUS := 1.3
 const TREE_AVOID_STRENGTH := 1.6
 
 func _tree_avoidance_offset(direction: Vector3) -> Vector3:
+	# 2026-07-05 (correctif bug Couper/Cueillir) : l'arbre vise par la tache en
+	# cours (couper/cueillir) est exclu de l'evitement - sinon le nain ne peut
+	# jamais s'approcher a moins de TREE_AVOID_RADIUS (1.3) de SA PROPRE cible,
+	# et distance < 0.15 (condition de debut de travail, voir _process) n'est
+	# jamais atteinte : le nain "flotte" indefiniment pres de l'arbre sans
+	# jamais commencer a travailler.
+	var target_tree = null
+	if current_task.get("type") in ["couper", "cueillir"]:
+		target_tree = current_task.get("tree")
 	var avoid := Vector3.ZERO
 	for tree in get_tree().get_nodes_in_group("trees"):
+		if tree == target_tree:
+			continue
 		var to_tree: Vector3 = tree.global_position - global_position
 		to_tree.y = 0.0
 		var dist: float = to_tree.length()
@@ -896,9 +838,13 @@ func _complete_task() -> void:
 		var resource_name: String = voxel_world.remove_block(
 			current_task["bx"], current_task["by"], current_task["bz"]
 		)
+		# 2026-07-05 (correctif bug "decoration ne disparait pas au minage") :
+		# retire toute decoration (herbe/fleur/caillou) posee sur cette colonne.
+		if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
+			ground_decoration.remove_decoration_at(current_task["bx"], current_task["bz"])
 		if resource_name != "":
 			_collect_resource(resource_name)
-			if _roll_bonus_yield(skill_id):
+			if skills.roll_bonus_yield(skill_levels, skill_id):
 				_collect_resource(resource_name)
 	elif current_task.get("type") == "couper":
 		var tree = current_task.get("tree")
@@ -916,7 +862,7 @@ func _complete_task() -> void:
 			if forest and forest.has_method("hide_tree_visuals"):
 				forest.hide_tree_visuals(tree)
 			tree.queue_free()
-		var wood_count: int = 2 if _roll_bonus_yield(skill_id) else 1
+		var wood_count: int = 2 if skills.roll_bonus_yield(skill_levels, skill_id) else 1
 		for i in range(wood_count):
 			_collect_resource(wood_type)
 			# Le compteur generique "bois" reste alimente en plus du type
@@ -950,7 +896,7 @@ func _complete_task() -> void:
 				# voir SkillDefinitions.gd) - meme principe que miner/couper,
 				# mais limite aux fruits reellement encore disponibles sur la
 				# cible (pas question de recolter plus qu'il n'y en a).
-				if fruits_left > 0 and _roll_bonus_yield(skill_id):
+				if fruits_left > 0 and skills.roll_bonus_yield(skill_levels, skill_id):
 					_harvest_one_fruit(target, fruits_left)
 					_collect_resource(fruit_resource)
 	elif current_task.get("type") == "puiser":
@@ -959,7 +905,7 @@ func _complete_task() -> void:
 		_collect_resource("eau")
 
 	if skill_id != "":
-		_gain_skill_xp(skill_id, SKILL_XP_PER_TASK)
+		skills.gain_xp(skill_levels, skill_xp, skill_id, DwarfSkillsScript.SKILL_XP_PER_TASK, dwarf_name)
 
 	# Sprint 26 : signale la fin de la tache (quel que soit son type) pour
 	# que ActionController.gd retire l'icone temporaire affichee au moment
@@ -1037,6 +983,9 @@ func _find_nearby_pile(resource_name: String, pos: Vector3) -> Node3D:
 ## _add_to_resource_pile, pour eviter d'accumuler des noeuds a l'infini).
 func _build_pile_visual(pile: Node3D, resource_name: String) -> void:
 	var color := _resource_color(resource_name)
+	if resource_name.begins_with("bois"):
+		_build_wood_bundle_visual(pile, color)
+		return
 	var chunk_count := randi_range(3, 4)
 	for i in range(chunk_count):
 		var chunk := MeshInstance3D.new()
@@ -1053,6 +1002,37 @@ func _build_pile_visual(pile: Node3D, resource_name: String) -> void:
 		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		chunk.set_surface_override_material(0, mat)
 		pile.add_child(chunk)
+
+
+## 2026-07-05 (demande explicite Francois) : le bois recolte est represente
+## par un fagot de rondins (cylindres couches, groupes en botte compacte)
+## plutot que par les petits cubes generiques - plus gros et plus
+## reconnaissable comme "bois coupe" que les autres tas de ressources.
+func _build_wood_bundle_visual(pile: Node3D, color: Color) -> void:
+	var log_count := randi_range(5, 7)
+	var log_radius := 0.09
+	var log_length := 0.55
+	for i in range(log_count):
+		var log_inst := MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = log_radius
+		cyl.bottom_radius = log_radius
+		cyl.height = log_length
+		log_inst.mesh = cyl
+		# Rondins couches (rotation de 90 sur Z : l'axe du cylindre, vertical
+		# par defaut, devient horizontal), alignes cote a cote pour former une
+		# botte compacte, avec une legere variation aleatoire pour un look
+		# naturel (pas parfaitement aligne).
+		var offset_side := (float(i) - float(log_count - 1) / 2.0) * (log_radius * 1.6)
+		var offset_along := randf_range(-0.05, 0.05)
+		var offset_up := randf_range(0.0, 0.05)
+		log_inst.position = Vector3(offset_along, log_radius + offset_up, offset_side)
+		log_inst.rotation = Vector3(randf_range(-0.05, 0.05), randf_range(-0.05, 0.05), PI / 2.0)
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = color * randf_range(0.85, 1.15)
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		log_inst.set_surface_override_material(0, mat)
+		pile.add_child(log_inst)
 
 
 func _resource_color(resource_name: String) -> Color:

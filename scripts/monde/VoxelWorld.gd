@@ -39,6 +39,14 @@ extends Node3D
 const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
 
+# Decoupage VoxelWorld.gd (2026-07-05, revue de code item C1) : tout ce qui
+# concerne les filons/pepites (bruit, placement, MultiMeshInstance3D) a ete
+# deplace dans VoxelVeins.gd - relocalisation pure, voir ce fichier pour le
+# detail. "vein_system" porte desormais lui-meme vein_grid/vein_noises/
+# metal_pepites/gem_pepites (avant : membres directs de VoxelWorld.gd).
+const VoxelVeinsScript := preload("res://scripts/monde/voxel/VoxelVeins.gd")
+var vein_system: VoxelVeinsScript = VoxelVeinsScript.new()
+
 # Dimensions de la carte. 2026-07-03 : 20x20x30 -> 100x100x50 (voir memoire
 # "map resize" - plusieurs autres scripts dupliquent ces valeurs et doivent
 # etre mis a jour en meme temps : CameraRig.grid_height, ActionController.
@@ -51,76 +59,36 @@ const HEIGHT := 50  # axe Y (hauteur totale, y=0 = fond)
 # Nombre de niveaux de terre en surface (le reste en dessous = pierre)
 const DIRT_HEIGHT := 3
 
-# Sprint 23 : seuil de bruit (0..1, plus c'est haut plus c'est rare) au-dela
-# duquel un bloc de pierre devient un filon, par palier de rarete. Valeurs de
-# depart raisonnables, a ajuster apres avoir vu le resultat en jeu.
-const RARITY_THRESHOLDS := {
-	"commun": 0.45,
-	"rare": 0.65,
-	"tres_rare": 0.80,
-}
-
 # Marge au-dessus du terrain pour pouvoir construire des murs en hauteur (Sprint 7)
 const BUILD_CEILING := HEIGHT + 10
 
 enum BlockType { EMPTY, DIRT, STONE, WOOD_WALL, STONE_WALL, WATER }
 
-# Sprint 36 : couleur unie de l'eau (bucket 12, voir rebuild_mesh/_bucket_for)
-# Sprint 37duodecies (2026-07-04, signale par Francois : "l'eau est trop
-# foncee") : eclaircie/plus vive (etait 0.20/0.45/0.80).
-# Sprint 37quaterdecies (2026-07-04, meme plainte persistante) : nouveau
-# passage d'eclaircissement plus marque, combine a la remontee de
-# LIGHT_ENERGY/AMBIENT_ENERGY dans DayNightCycle.gd (voir la pour la cause).
-# Sprint 37septdecies (2026-07-04, meme plainte persistante : "l'eau devrait
-# etre beaucoup plus claire") : nouveau passage d'eclaircissement, plus
-# franc. Si l'eau apparait encore sombre/grise apres ce changement, ce n'est
-# probablement plus cette constante qui est en cause (verifier is_frozen/
-# ICE_COLOR, ou si la zone en question est bien du bucket 12 et pas un trou
-# non decouvert - voir _bucket_for/discovered).
-const WATER_COLOR := Color(0.45, 0.80, 0.98)
+# WATER_COLOR (couleur eau/bucket 12) deplace dans VoxelMeshBuilder.gd
+# (decoupage 2026-07-05) - historique des reglages successifs conserve la-bas.
 
-# Sprint 36 : nombre de lacs generes + rayon (en blocs, avant variation de
-# bruit qui rend le contour moins parfaitement circulaire) + demi-largeur de
-# la riviere (en blocs de part et d'autre du centre du lit).
-const LAKE_COUNT := 2
-const LAKE_RADIUS_MIN := 5.0
-const LAKE_RADIUS_MAX := 9.0
-const RIVER_HALF_WIDTH := 3  # Sprint 43 : elargi (etait 2) pour une courbe de cascade plus douce/large
-
-# Sprint 36bis (2026-07-03, demande explicite) : profondeur des lacs/riviere -
-# nombre de niveaux (depuis la surface HEIGHT-1 vers le bas) remplaces par de
-# l'eau au lieu de terre/pierre. Un lac tire UNE profondeur au hasard dans cet
-# intervalle (uniforme sur tout le lac, pas case par case, pour eviter un fond
-# irregulier en damier) ; la riviere reste a profondeur fixe RIVER_DEPTH.
-# Sprint 37septies (2026-07-04) : la version "colonne entiere jusqu'au fond"
-# (Sprint 37quater) est REVENUE en arriere - Francois a signale que l'eau
-# s'etendait "au dela du niveau -1" en descendant, ce qui n'etait pas voulu.
-# Profondeur a nouveau PLAFONNEE (voir generate_flat_terrain), mais LAKE_DEPTH_MIN
-# et RIVER_DEPTH remontes a 2 (etaient 1) pour garantir qu'on voit toujours de
-# l'eau au niveau -1 (le bug d'origine signale par Francois), sans jamais
-# descendre plus bas que ca.
-const LAKE_DEPTH_MIN := 2
-const LAKE_DEPTH_MAX := 3
-const RIVER_DEPTH := 2
+# LAKE_COUNT/LAKE_RADIUS_MIN/MAX/RIVER_HALF_WIDTH/LAKE_DEPTH_MIN/MAX/
+# RIVER_DEPTH deplaces (dupliques en const, meme convention que WIDTH/DEPTH)
+# dans VoxelHydrology.gd (decoupage 2026-07-05) - historique des reglages
+# successifs et des regles physiques (R1-R3/C1-C5) conserve la-bas.
 
 # Sprint 37 (2026-07-04, backlog Phase 1 items 1-2) : etat climat global (pas
-# par case, voir TemperatureSystem.gd) - couleur de l'eau gelee (glace) et
-# voile de neige applique par-dessus la couleur normale de l'herbe/la pierre.
-const ICE_COLOR := Color(0.78, 0.88, 0.94)
-const SNOW_COLOR := Color(0.95, 0.96, 0.98)
+# par case, voir TemperatureSystem.gd), lu par VoxelMeshBuilder.gd pour la
+# couleur eau/glace (ICE_COLOR/SNOW_COLOR, deplacees la-bas, decoupage
+# 2026-07-05) - reste ici (is_frozen/snow_coverage) car set_climate_state()
+# (API publique appelee par TemperatureSystem.gd) les modifie.
 var is_frozen: bool = false
 var snow_coverage: float = 0.0  # 0..1, pilote par TemperatureSystem.gd
 
 # Grille du monde : cle = Vector3i (position bloc), valeur = BlockType
 var grid: Dictionary = {}
 
-# Sprint 23 : filons. Cle = Vector3i (position bloc, toujours un bloc
-# BlockType.STONE), valeur = id du materiau (voir MetalTypes.gd/GemTypes.gd).
+# Sprint 23 : filons (position -> id materiau). Deplace dans vein_system
+# (VoxelVeins.gd, decoupage 2026-07-05) - voir vein_system.vein_grid.
 # Dictionnaire separe plutot qu'un nouveau BlockType par materiau : evite de
 # faire exploser l'enum BlockType et le systeme de buckets pour chaque metal/
 # pierre precieuse (voir _bucket_for/_vein_color_for : un seul bucket
 # supplementaire, colore par sommet, sert pour tous les materiaux).
-var vein_grid: Dictionary = {}
 
 # Sprint 35 (2026-07-03) : "brouillard de guerre" souterrain - un bloc est
 # "decouvert" (cle presente, valeur toujours true) des qu'on connait deja son
@@ -138,10 +106,8 @@ var vein_grid: Dictionary = {}
 # au fil du minage) est parcouru en detail, voir rebuild_mesh.
 var discovered: Dictionary = {}
 
-# Couleur uniforme des blocs non decouverts (voir "discovered" ci-dessus) -
-# gris neutre, deliberement sans variation/bruit pour ne rien laisser deviner
-# du materiau reel en dessous.
-const UNDISCOVERED_COLOR := Color(0.5, 0.5, 0.5)
+# UNDISCOVERED_COLOR (couleur des blocs jamais decouverts, voir "discovered"
+# ci-dessus) deplace dans VoxelMeshBuilder.gd (decoupage 2026-07-05).
 
 # 6 directions possibles autour d'un bloc (droite/gauche/haut/bas/avant/arriere)
 const DIRECTIONS := [
@@ -200,38 +166,11 @@ var water_noise := FastNoiseLite.new()
 ## case (evite un terrain "en dents de scie", voir _hill_height_at).
 var hill_noise := FastNoiseLite.new()
 
-# Sprint 23ter : couleur de base unique de la pierre (remplace l'ancien
-# damier clair/fonce - voir _stone_color_for/_bucket_for). Un niveau de pierre
-# donne doit avoir un materiau uniforme, les filons etant la seule exception
-## visible (comme demande explicitement : "un materiau uniforme par niveau,
-## avec des exceptions aleatoires" pour les filons).
-const STONE_BASE := Color(0.58, 0.60, 0.66)
+# STONE_BASE (couleur de base de la pierre) deplace dans VoxelMeshBuilder.gd
+# (decoupage 2026-07-05) - voir _stone_color_for la-bas.
 
-# Sprint 23 : un bruit 3D independant par materiau de filon (metal/pierre
-# precieuse), cle = id du materiau. Des seeds differentes evitent que tous
-# les materiaux se superposent aux memes endroits.
-var vein_noises: Dictionary = {}
-
-# Sprint 23sexies : nombre de pepites 3D generees par bloc de filon visible
-# (voir _rebuild_vein_pepites) - densite "beaucoup" choisie explicitement.
-const PEPITE_COUNT_MIN := 6
-const PEPITE_COUNT_MAX := 9
-
-# Sprint 23sexies : rayon de base d'une pepite (unite = 1 bloc), multiplie par
-# un facteur de rarete puis par une petite variation aleatoire par pepite.
-const PEPITE_BASE_RADIUS := 0.09
-const PEPITE_RARITY_SCALE := {
-	"commun": 0.9,
-	"rare": 1.15,
-	"tres_rare": 1.4,
-}
-
-# Sprint 23sexies : les deux MultiMeshInstance3D qui portent toutes les
-# pepites (un pour les metaux, un pour les pierres precieuses) - un seul
-# noeud par categorie, la couleur de chaque pepite est portee par une couleur
-# d'instance (meme principe que la couleur par sommet du reste du terrain).
-var metal_pepites: MultiMeshInstance3D
-var gem_pepites: MultiMeshInstance3D
+# Bruits de filon, pepites (metal_pepites/gem_pepites) et constantes associees
+# (PEPITE_*) deplaces dans vein_system (VoxelVeins.gd, decoupage 2026-07-05).
 
 ## Sprint 49 (2026-07-04, "traits en bleu clair et blanc pour montrer l'eau qui
 ## tombe") : liste des colonnes de cascade calculees a la generation du terrain
@@ -241,15 +180,6 @@ var gem_pepites: MultiMeshInstance3D
 ## get_waterfall_columns() et placer ses traits SANS dupliquer la logique de
 ## generation de riviere.
 var waterfall_columns: Array = []
-
-# Sprint 55 (2026-07-04, bug signale par Francois : le mur plat en cubes
-# d'origine n'a jamais ete supprime - WaterfallShapes.gd n'ajoutait sa forme
-# courbe QUE par-dessus, sans jamais cacher l'ancien mur, qui recouvrait donc
-# la nouvelle forme presque partout). Cle = Vector2i(x,z) d'une colonne de
-# cascade, valeur = Vector3i direction (dx,0,dz) de la face a NE PAS dessiner
-# dans rebuild_mesh (voir plus bas) - cette face precise est remplacee par le
-# quart de cylindre/sphere de WaterfallShapes.gd.
-var waterfall_face_dir: Dictionary = {}
 
 ## Sprint 34bis (2026-07-03) : mesure de duree de generation du monde, pour
 ## savoir combien de temps prend le chargement de la carte 100x100x50 -
@@ -284,6 +214,13 @@ func _ready() -> void:
 	# randi_range() global (pas leur propre generateur), la MEME graine
 	# reproduit donc la carte ENTIERE a l'identique (relief, lacs, riviere,
 	# cascades, arbres, buissons, decorations), pas seulement le terrain.
+	# 2026-07-05 : cette affirmation etait FAUSSE (revue de code, item C2) -
+	# Forest.gd/BerryBushes.gd/GroundDecoration.gd (+ WaterfallFoamClouds.gd/
+	# WaterfallStreaks.gd/Birds.gd/CloudSystem.gd) appelaient chacun leur
+	# propre randomize() en tete de _ready(), qui reinitialisait ce meme
+	# generateur global de facon non deterministe juste apres. Corrige (C2-C6
+	# + I9) : ces randomize() ont ete retires, l'affirmation ci-dessus est
+	# desormais vraie.
 	seed(active_seed)
 	print("Forgotten Caves - graine de la carte utilisee : ", active_seed)
 	terrain_noise.seed = randi()
@@ -298,11 +235,11 @@ func _ready() -> void:
 	# des collines (sinon leur sommet, plus haut que HEIGHT-1, resterait
 	# invisible tant qu'on n'a pas remonte la molette a la main).
 	view_level = HEIGHT - 1 + int(ceil(hill_amplitude))
-	_setup_vein_noises()
+	vein_system.setup_vein_noises()
 	generate_flat_terrain()
 	mesh_instance = MeshInstance3D.new()
 	add_child(mesh_instance)
-	_setup_vein_pepites_nodes()
+	vein_system.setup_pepites_nodes(self)
 	rebuild_mesh()
 
 
@@ -321,79 +258,6 @@ const VIEW_LEVEL_MARGIN_ABOVE := 15
 func set_view_level(level: int) -> void:
 	view_level = clampi(level, 0, HEIGHT - 1 + VIEW_LEVEL_MARGIN_ABOVE)
 	rebuild_mesh()
-
-
-## Cree un bruit 3D par materiau de filon (voir vein_noises). Frequence assez
-## basse pour former des petits amas coherents (des "poches" de quelques
-## blocs) plutot qu'un bruit poivre-et-sel bloc par bloc.
-func _setup_vein_noises() -> void:
-	for entry in VeinMaterials.all():
-		var n := FastNoiseLite.new()
-		n.seed = randi()
-		n.frequency = 0.16
-		vein_noises[entry["id"]] = n
-
-
-## Sprint 23sexies : cree les deux MultiMeshInstance3D qui portent les pepites
-## (metaux/pierres precieuses), avec leur mesh et leur materiau. Appele une
-## seule fois dans _ready() ; le contenu (nombre/position/couleur des pepites)
-## est ensuite recalcule a chaque rebuild_mesh() via _rebuild_vein_pepites().
-func _setup_vein_pepites_nodes() -> void:
-	metal_pepites = MultiMeshInstance3D.new()
-	metal_pepites.multimesh = MultiMesh.new()
-	metal_pepites.multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	metal_pepites.multimesh.use_colors = true
-	metal_pepites.multimesh.mesh = _make_pepite_mesh(true)
-	metal_pepites.material_override = _make_pepite_material(true)
-	add_child(metal_pepites)
-
-	gem_pepites = MultiMeshInstance3D.new()
-	gem_pepites.multimesh = MultiMesh.new()
-	gem_pepites.multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	gem_pepites.multimesh.use_colors = true
-	gem_pepites.multimesh.mesh = _make_pepite_mesh(false)
-	gem_pepites.material_override = _make_pepite_material(false)
-	add_child(gem_pepites)
-
-
-## Sprint 23sexies : mesh d'une pepite - une SphereMesh integree au moteur,
-## avec peu de segments pour les pierres precieuses (aspect a facettes, comme
-## une pierre taillee) et beaucoup de segments pour les metaux (aspect rond/
-## lisse, comme une pepite brute). Le rayon reel est applique par instance via
-## l'echelle de la transform (voir _rebuild_vein_pepites), donc rayon=1 ici.
-func _make_pepite_mesh(is_metal: bool) -> SphereMesh:
-	var mesh := SphereMesh.new()
-	mesh.radius = 1.0
-	mesh.height = 2.0
-	if is_metal:
-		mesh.radial_segments = 10
-		mesh.rings = 6
-	else:
-		mesh.radial_segments = 5
-		mesh.rings = 3
-	return mesh
-
-
-## Sprint 23sexies : materiau des pepites - couleur par instance (comme la
-## couleur par sommet du reste du terrain), mais cette fois avec un vrai
-## eclairage (pas "unshaded") pour que metallic/roughness/emission aient un
-## effet visible. Metaux : reflets metalliques. Pierres precieuses : surface
-## lisse/brillante + leger scintillement (emission) independant de la couleur.
-func _make_pepite_material(is_metal: bool) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.albedo_color = Color.WHITE
-	mat.cull_mode = BaseMaterial3D.CULL_BACK
-	if is_metal:
-		mat.metallic = 0.85
-		mat.roughness = 0.25
-	else:
-		mat.metallic = 0.0
-		mat.roughness = 0.05
-		mat.emission_enabled = true
-		mat.emission = Color(1.0, 0.97, 0.85)
-		mat.emission_energy_multiplier = 0.15
-	return mat
 
 
 ## Sprint 38 (2026-07-04) : hauteur de colline (en blocs, 0..hill_amplitude)
@@ -497,8 +361,8 @@ func get_block_info(x: int, z: int) -> Dictionary:
 	var pos := Vector3i(x, y, z)
 	var type: int = get_block(pos)
 	var materiau: String = ""
-	if type == BlockType.STONE and vein_grid.has(pos):
-		materiau = vein_grid[pos]
+	if type == BlockType.STONE and vein_system.vein_grid.has(pos):
+		materiau = vein_system.vein_grid[pos]
 	var type_id: String
 	match type:
 		BlockType.DIRT:
@@ -551,25 +415,22 @@ func remove_block(x: int, y: int, z: int) -> String:
 	var type: int = grid[pos]
 	grid.erase(pos)
 	var vein_id: String = ""
-	if vein_grid.has(pos):
-		vein_id = vein_grid[pos]
-		vein_grid.erase(pos)
+	if vein_system.vein_grid.has(pos):
+		vein_id = vein_system.vein_grid[pos]
+		vein_system.vein_grid.erase(pos)
 	# Sprint 35 : miner ce bloc expose ses voisins encore pleins - ils
 	# deviennent "decouverts" (voir "discovered"), meme s'ils n'ont jamais ete
 	# vus au niveau de coupe courant. C'est cette mise a jour incrementale
 	# (seulement 6 voisins, jamais toute la carte) qui remplace le recalcul
 	# complet a chaque minage.
-	var newly_discovered: int = 0
 	for dir in DIRECTIONS:
 		var neighbor_pos: Vector3i = pos + dir
-		if grid.has(neighbor_pos) and not discovered.has(neighbor_pos):
-			newly_discovered += 1
 		if grid.has(neighbor_pos):
 			discovered[neighbor_pos] = true
-	# Sprint 35 : instrumentation temporaire (diagnostic "le trou n'apparait
-	# pas") - confirme que le bloc est bien retire de la grille et que ses
-	# voisins passent bien en "decouvert".
-	print("[Perf][Voxel] remove_block a %s (type %d), view_level=%d, %d voisin(s) nouvellement decouvert(s)" % [pos, type, view_level, newly_discovered])
+	# 2026-07-05 (revue de code, item F008) : le print() de diagnostic Sprint 35
+	# et son compteur "newly_discovered" (qui ne servait qu'a ce print) sont
+	# retires - role diagnostique termine, il ne servait plus qu'a spammer la
+	# console et generait un avertissement "variable inutilisee".
 	rebuild_mesh()
 	if vein_id != "":
 		return vein_id
@@ -651,7 +512,7 @@ func generate_flat_terrain() -> void:
 				var pos := Vector3i(x, y, z)
 				grid[pos] = type
 				if type == BlockType.STONE:
-					_maybe_place_vein(pos, veins)
+					vein_system.maybe_place_vein(pos, veins)
 				# Sprint 35 : "decouvert" des le depart pour la surface (dessus
 				# expose au ciel, Sprint 38 : surface_y au lieu de HEIGHT-1 fixe)
 				# et pour les colonnes en bordure de carte (paroi exterieure deja
@@ -703,15 +564,9 @@ func generate_flat_terrain() -> void:
 			"dz": int(wf.get("dz", 0)),
 			"pool_surface_y": int(wf.get("pool_surface_y", wf["bottom"])),
 		})
-	# Sprint 55 : construit le lookup "face a ne pas dessiner" (voir declaration
-	# de "waterfall_face_dir" plus haut + son usage dans rebuild_mesh).
-	waterfall_face_dir.clear()
-	for pos2d in waterfalls:
-		var wf: Dictionary = waterfalls[pos2d]
-		var dx: int = int(wf.get("dx", 0))
-		var dz: int = int(wf.get("dz", 0))
-		if dx != 0 or dz != 0:
-			waterfall_face_dir[pos2d] = Vector3i(dx, 0, dz)
+	# 2026-07-05 (revue de code, item F007) : le lookup "waterfall_face_dir"
+	# construit ici a ete supprime - code mort confirme (Sprint 86), plus
+	# aucune lecture ailleurs dans le projet.
 
 
 ## Sprint 49 : liste des colonnes de cascade de la carte courante, chaque entree
@@ -730,742 +585,37 @@ func get_waterfall_columns() -> Array:
 ## "hill_overrides" (decalage de relief FORCE pour ces colonnes - lacs aplatis
 ## a 0, riviere en paliers hauts/bas), "waterfalls" (colonnes de cascade, cle =
 ## Vector2i, valeur = {"top": y, "bottom": y} - segment vertical rempli d'eau
-## en plus du remplissage normal, voir generate_flat_terrain).
+
+# Decoupage VoxelWorld.gd (2026-07-05, revue de code item C1) : generation
+# lacs/riviere/cascades (_place_lakes/_place_river) deplacee dans
+# VoxelHydrology.gd - relocalisation pure, voir ce fichier pour le detail.
+# _compute_water_columns() reste ici comme facade fine : generate_flat_terrain()
+# (qui l'appelle) n'a donc pas eu besoin de changer.
+const VoxelHydrologyScript := preload("res://scripts/monde/voxel/VoxelHydrology.gd")
+var hydrology: VoxelHydrologyScript = VoxelHydrologyScript.new()
+
+
 func _compute_water_columns() -> Dictionary:
-	var cols: Dictionary = {}
-	var hill_overrides: Dictionary = {}
-	var waterfalls: Dictionary = {}
-	# Meme sprint (suite, 2026-07-04, application des 5 regles physiques
-	# donnees par Francois - voir memoire "regles riviere/cascade") : dict
-	# separe pour les colonnes de BERGE a reveler (pas de l'eau, juste du
-	# terrain solide) le long d'une cascade - voir _place_river plus bas.
-	var bank_faces: Dictionary = {}
-	_place_lakes(cols, hill_overrides)
-	_place_river(cols, hill_overrides, waterfalls, bank_faces)
-	return {"cols": cols, "hill_overrides": hill_overrides, "waterfalls": waterfalls, "bank_faces": bank_faces}
+	return hydrology.compute_water_columns(water_noise, Callable(self, "_hill_height_at"))
 
 
-## Sprint 36 : place LAKE_COUNT lacs a des centres aleatoires (marge de 12
-## blocs par rapport aux bords, pour eviter un lac coupe net par le bord de la
-## carte), contour legerement irregulier via water_noise (sinon un cercle
-## parfait, trop artificiel). Sprint 36bis : chaque lac tire une profondeur
-## (LAKE_DEPTH_MIN..LAKE_DEPTH_MAX) une seule fois, appliquee a toutes ses
-## cases - voir generate_flat_terrain pour comment la profondeur devient des
-## niveaux d'eau reels. Sprint 38 : le relief est aplati (hill_overrides=0) sur
-## tout le rectangle englobant du lac (pas seulement le cercle d'eau) - un lac
-## a une surface plate par nature, meme entoure de collines ; simplification
-## assumee pour cette premiere version du relief (pas de vraie berge en pente).
-func _place_lakes(cols: Dictionary, hill_overrides: Dictionary) -> void:
-	for i in range(LAKE_COUNT):
-		var cx := randi_range(12, WIDTH - 12)
-		var cz := randi_range(12, DEPTH - 12)
-		var radius := randf_range(LAKE_RADIUS_MIN, LAKE_RADIUS_MAX)
-		var depth := randi_range(LAKE_DEPTH_MIN, LAKE_DEPTH_MAX)
-		var margin := int(radius) + 3
-		var min_x := maxi(0, cx - margin)
-		var max_x := mini(WIDTH - 1, cx + margin)
-		var min_z := maxi(0, cz - margin)
-		var max_z := mini(DEPTH - 1, cz + margin)
-		for x in range(min_x, max_x + 1):
-			for z in range(min_z, max_z + 1):
-				hill_overrides[Vector2i(x, z)] = 0
-				var d: float = Vector2(x - cx, z - cz).length()
-				var n: float = water_noise.get_noise_2d(float(x), float(z))  # -1..1
-				if d + n * 3.0 < radius:
-					var pos := Vector2i(x, z)
-					# Si un lac precedent ou la riviere couvre deja cette case,
-					# on garde la profondeur la plus grande (pas d'ecrasement).
-					cols[pos] = maxi(int(cols.get(pos, 0)), depth)
-
-
-## Sprint 36 : une riviere qui traverse la carte d'un bord a l'autre, au hasard
-## en X (ouest-est) ou en Z (nord-sud), avec une legere ondulation (sinus)
-## plutot qu'une ligne parfaitement droite. RIVER_HALF_WIDTH blocs de part et
-## d'autre du centre du lit a chaque "tranche" traversee. Sprint 36bis :
-## profondeur fixe RIVER_DEPTH (demande explicite, moins profonde qu'un lac).
-##
-## Sprint 75 (2026-07-04, reecriture complete demandee par Francois) : bug
-## identifie ou l'eau du trace pouvait se retrouver plus haute que le relief
-## naturel environnant, faute de verifier ce relief le long du trajet.
-##
-## Sprint 78 (2026-07-04, demande explicite de Francois : "cascade alignee et
-## pas avec des blocs qui avancent comme maintenant") : le Sprint 77 (relief
-## independant par bande de largeur) provoquait des cascades en escalier
-## decalees d'une bande a l'autre (visible sur capture d'ecran - plusieurs
-## quarts de cylindre a des rangees differentes). Retour a UNE seule rupture
-## de niveau par rangee, valable pour TOUTE la largeur du lit a la fois - donc
-## une cascade toujours alignee, jamais en escalier.
-## Algorithme (3 etapes demandees par Francois) :
-## 1. tracer le centre du lit, rangee par rangee, sans cascade.
-## 2. reperer les ruptures de niveau le long du trajet (relief le plus bas
-##    sur la largeur totale + berges, palier en escalier depuis la source).
-## 3. pour chaque rangee du haut (juste avant une rupture), tracer UNE
-##    colonne de cascade valable pour toute la largeur du lit ce jour-la.
-##
-## Meme sprint (suite, 2026-07-04, bug signale par Francois via capture
-## d'ecran : un bloc d'eau sans berge a cote de la cascade) : regle physique
-## rappelee par Francois - un bloc d'eau ne peut JAMAIS se retrouver sans
-## berge (mur) de chaque cote. Le sondage du relief ne portait QUE sur la
-## largeur exacte de la riviere, jamais au-dela - rien ne garantissait donc
-## que le terrain juste a l'exterieur de cette largeur (la future berge)
-## soit bien plus haut que le niveau d'eau choisi. Fix : le sondage du
-## relief (pour decider le palier de chaque rangee) regarde maintenant
-## aussi 1 case de plus de chaque cote de la largeur du lit (BANK_MARGIN=1)
-## - le niveau d'eau choisi ne peut donc plus jamais depasser le terrain de
-## la berge elle-meme. Seul le sondage est elargi ; la largeur d'eau posee
-## reste exactement RIVER_HALF_WIDTH comme avant.
-##
-## Meme sprint (suite, 2026-07-04, bug signale par Francois via capture
-## d'ecran : une cascade isolee qui ne tombe d'aucune riviere) : l'ancienne
-## version cherchait une "source" comme le point le plus haut de TOUT le
-## trajet (recherche globale), puis descendait en escalier dans les 2 sens a
-## partir de ce point - un point interne pouvait ainsi etre choisi comme
-## source sans etre reellement rattache a un ecoulement coherent, produisant
-## une cascade "orpheline". Fix, conforme a la demande explicite de
-## Francois ("calculer le point de cascade pour chaque case de riviere en
-## haut, une par une") : le calcul se fait maintenant en UN SEUL SENS, du
-## bout du trajet le plus haut vers l'autre bout, rangee par rangee, chaque
-## palier ne dependant que de la rangee immediatement precedente (jamais
-## d'un point milieu). Le trajet entier est donc toujours connecte d'un
-## bout a l'autre, plus aucune cascade ne peut apparaitre sans riviere
-## continue juste en amont.
-##
-## Meme sprint (suite, 2026-07-04, "mur gris" puis "cascade sans eau au-
-## dessus" reapparus - Francois a reconstruit ma comprehension pas a pas
-## jusqu'a la vraie root cause, memoire "regles riviere/cascade" reorganisee
-## en R1-R3 (rivieres) et C1-C5 (cascades)) : la largeur de CHAQUE rangee
-## etait recalculee independamment a partir de SON PROPRE centre (ondulation
-## sinusoidale, R3) - a la rangee de cascade specifiquement, ce nouveau
-## centre n'est presque jamais parfaitement aligne avec celui de la rangee
-## du dessus, violant C2 (case d'eau du haut sans case en dessous) sur un
-## bord de la largeur ET le corollaire C3 (cascade sans eau au-dessus) sur
-## l'autre bord. Francois a explicitement rejete l'idee de "faire
-## correspondre les centres" - le concept meme de centre recalcule par
-## rangee est le probleme a la transition.
-## Vrai correctif : les colonnes cross de CHAQUE rangee sont desormais
-## calculees UNE SEULE FOIS (row_columns[i], Etape 1) a partir du centre de
-## cette rangee - utilisees telles quelles pour une rangee normale (R3 :
-## l'ondulation reste OK sans changement de niveau). Mais a une rangee de
-## cascade, on n'utilise PLUS row_columns[i] : on reprend LITTERALEMENT
-## row_columns[upstream_i], les colonnes REELLES de la rangee du dessus,
-## une par une - jamais un nouveau centre pour cette rangee-la. Ca garantit
-## par construction C2/C3/C5 : impossible d'avoir de l'eau sans cascade en
-## dessous, ou une cascade sans eau au-dessus.
-func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dictionary, bank_faces: Dictionary) -> void:
-	var horizontal: bool = randf() < 0.5
-	var length: int = WIDTH if horizontal else DEPTH
-	var cross_size: int = DEPTH if horizontal else WIDTH
-	var start: float = randf_range(cross_size * 0.25, cross_size * 0.75)
-	var end: float = randf_range(cross_size * 0.25, cross_size * 0.75)
-	const BANK_MARGIN: int = RIVER_HALF_WIDTH
-
-	# Etape 1 : centre du lit, rangee par rangee (meme sinusoide qu'avant,
-	# purement visuelle, R3) - et pour CHAQUE rangee, la liste REELLE des
-	# colonnes cross qu'elle couvre (row_columns[i]) : c'est cette liste,
-	# pas le centre, qui servira de reference a l'Etape 3 pour une rangee de
-	# cascade (voir commentaire principal ci-dessus). Le sondage de relief
-	# (natural_ground) regarde en plus BANK_MARGIN cases de chaque cote de
-	# la largeur (la future berge, R1), pour qu'un palier commun ne depasse
-	# jamais le terrain de la berge.
-	var natural_ground: Array = []
-	var row_columns: Array = []  # Array[Array[int]] : colonnes cross reelles de chaque rangee
-	for i in range(length):
-		var t: float = float(i) / float(length - 1)
-		var center: float = lerp(start, end, t) + sin(t * PI * 3.0) * (cross_size * 0.08)
-
-		var columns: Array = []
-		for offset in range(-RIVER_HALF_WIDTH, RIVER_HALF_WIDTH + 1):
-			var cross: int = int(round(center)) + offset
-			if cross < 0 or cross >= cross_size:
-				continue
-			columns.append(cross)
-		row_columns.append(columns)
-
-		var lowest_here: int = 999
-		for offset in range(-RIVER_HALF_WIDTH - BANK_MARGIN, RIVER_HALF_WIDTH + BANK_MARGIN + 1):
-			var cross2: int = int(round(center)) + offset
-			if cross2 < 0 or cross2 >= cross_size:
-				continue
-			var hx: int = i if horizontal else cross2
-			var hz: int = cross2 if horizontal else i
-			# Sprint 76 : priorite a hill_overrides (deja pose par
-			# _place_lakes) sur le relief brut, sinon une zone de lac deja
-			# aplatie fausserait le relief "naturel" sonde ici.
-			var ground_here: int = int(hill_overrides.get(Vector2i(hx, hz), _hill_height_at(hx, hz)))
-			lowest_here = mini(lowest_here, ground_here)
-		natural_ground.append(lowest_here)
-
-	# Etape 2 : le "haut" du trajet = l'extremite (bord de carte) dont le
-	# relief naturel est le plus haut - jamais un point milieu (R2). On
-	# descend en escalier en UN SEUL SENS depuis ce bout vers l'autre,
-	# rangee par rangee, chaque palier = min(palier de la rangee precedente,
-	# relief naturel de cette rangee) - jamais au-dessus du relief, et
-	# toujours connecte a la rangee juste avant.
-	var starts_at_zero: bool = natural_ground[0] >= natural_ground[length - 1]
-	var shelf: Array = []
-	shelf.resize(length)
-	if starts_at_zero:
-		shelf[0] = natural_ground[0]
-		for i in range(1, length):
-			shelf[i] = mini(shelf[i - 1], natural_ground[i])
-	else:
-		shelf[length - 1] = natural_ground[length - 1]
-		for i in range(length - 2, -1, -1):
-			shelf[i] = mini(shelf[i + 1], natural_ground[i])
-
-	# Direction de l'ecoulement : constante sur tout le trajet (R2 - on
-	# descend toujours du bout "haut" vers le bout "bas").
-	var downstream_dx: int = 0
-	var downstream_dz: int = 0
-	if starts_at_zero:
-		if horizontal: downstream_dx = 1
-		else: downstream_dz = 1
-	else:
-		if horizontal: downstream_dx = -1
-		else: downstream_dz = -1
-
-	# Etape 3 : pour chaque rangee, EN SUIVANT L'ECOULEMENT une par une
-	# depuis le haut, si le palier vient de baisser par rapport a la rangee
-	# juste en amont (immediatement precedente dans ce sens), c'est une
-	# cascade.
-	#
-	# Sprint 86 (2026-07-04, bug signale par Francois via capture d'ecran -
-	# case sans eau sous une cascade, verifie C2 quand meme viole) : quand
-	# DEUX rangees de cascade se suivent immediatement (le relief descend
-	# de plusieurs petits paliers d'affilee), la 2e cascade reprenait
-	# "row_columns[upstream_i]" - la liste THEORIQUE de la rangee du dessus
-	# (calculee une seule fois a l'Etape 1, jamais mise a jour) - au lieu
-	# des colonnes REELLEMENT posees a cette rangee (qui avaient elles-
-	# memes ete empruntees a SA PROPRE rangee amont, puisqu'elle est aussi
-	# une rangee de cascade). Les deux listes peuvent differer d'une case,
-	# recreant exactement le bug C2/C3 vise par le premier correctif, un
-	# cran plus loin. Confirme par simulation (300 cartes generees en
-	# dehors du jeu, avec le meme algorithme) : 2 violations trouvees.
-	# Corrige : "used_columns[i]" retient desormais les colonnes REELLEMENT
-	# posees a chaque rangee (empruntees ou non), rangee par rangee, DANS
-	# L'ORDRE REEL DU COURANT (voir "order" ci-dessous - necessaire car,
-	# quand le courant va du bout haut vers l'indice 0, la rangee amont a
-	# un indice PLUS GRAND, qui doit donc etre traitee AVANT). Une rangee
-	# de cascade reprend desormais "used_columns[upstream_i]" (ce qui a
-	# reellement ete pose) au lieu de "row_columns[upstream_i]" (la liste
-	# jamais mise a jour). Reteste par simulation (2000 cartes) : 0
-	# violation apres ce correctif.
-	var order: Array = range(length) if starts_at_zero else range(length - 1, -1, -1)
-	var used_columns: Array = []
-	used_columns.resize(length)
-
-	for i in order:
-		var upstream_i: int = i - 1 if starts_at_zero else i + 1
-
-		var is_falls_row: bool = false
-		var upper_shelf: int = shelf[i]
-		if upstream_i >= 0 and upstream_i < length and shelf[i] < shelf[upstream_i]:
-			is_falls_row = true
-			upper_shelf = shelf[upstream_i]
-
-		var upper_surface_y: int = HEIGHT - 1 + upper_shelf
-		var lower_surface_y: int = HEIGHT - 1 + shelf[i]
-
-		var columns: Array = used_columns[upstream_i] if is_falls_row else row_columns[i]
-
-		for cross in columns:
-			var pos: Vector2i = Vector2i(i, cross) if horizontal else Vector2i(cross, i)
-			cols[pos] = maxi(int(cols.get(pos, 0)), RIVER_DEPTH)
-			hill_overrides[pos] = shelf[i]
-			if is_falls_row:
-				waterfalls[pos] = {
-					"top": upper_surface_y,
-					"bottom": lower_surface_y - RIVER_DEPTH + 1,
-					"dx": downstream_dx,
-					"dz": downstream_dz,
-					"pool_surface_y": lower_surface_y,
-				}
-
-		# Meme sprint (suite, C1) : les colonnes de berge juste a cote du
-		# lit REELLEMENT utilise a cette rangee (min/max de "columns" ci-
-		# dessus, PAS un centre) sont reperees pour etre revelees sur la
-		# meme hauteur que la chute d'eau - la berge redevient une falaise
-		# visible plutot qu'un mur gris enigmatique sous le brouillard de
-		# guerre.
-		if is_falls_row and not columns.is_empty():
-			var min_cross: int = columns[0]
-			var max_cross: int = columns[columns.size() - 1]
-			for m in range(1, BANK_MARGIN + 1):
-				for bcross in [min_cross - m, max_cross + m]:
-					if bcross < 0 or bcross >= cross_size:
-						continue
-					var bpos: Vector2i = Vector2i(i, bcross) if horizontal else Vector2i(bcross, i)
-					bank_faces[bpos] = {
-						"top": upper_surface_y,
-						"bottom": lower_surface_y - RIVER_DEPTH + 1,
-					}
-
-		# Sprint 86 : retient ce qui a ete REELLEMENT pose a cette rangee,
-		# pour que la PROCHAINE rangee en aval (si elle est elle-meme une
-		# rangee de cascade) emprunte cette liste reelle - jamais la liste
-		# theorique "row_columns[i]" (voir commentaire principal ci-dessus).
-		used_columns[i] = columns
-
-
-## Tire au sort si la case de pierre "pos" devient un filon. Parcourt les
-## materiaux du plus rare au plus commun et s'arrete au premier qui "matche"
-## (evite qu'un materiau commun ne prenne la place d'un materiau rare sur le
-## meme bloc, chacun ayant son propre bruit independant).
-func _maybe_place_vein(pos: Vector3i, veins: Array) -> void:
-	for entry in veins:
-		var id: String = entry["id"]
-		var threshold: float = RARITY_THRESHOLDS.get(entry["rarete"], 0.7)
-		var noise: FastNoiseLite = vein_noises[id]
-		var n: float = noise.get_noise_3d(float(pos.x), float(pos.y), float(pos.z))  # -1..1
-		if n > threshold:
-			vein_grid[pos] = id
-			return
-
-
-## Renvoie le type de bloc a une position, EMPTY si hors de la carte
 func get_block(pos: Vector3i) -> int:
 	return grid.get(pos, BlockType.EMPTY)
 
 
-## Sprint 23bis : une face est exposee (donc dessinee) si la case voisine est
-## soit reellement vide (comportement d'origine), soit au-dessus du niveau de
-## coupe visible (view_level) - dans ce cas elle n'est pas dessinee non plus,
-## donc pour ce qu'on affiche, elle "n'existe pas" et la face doit apparaitre.
-## C'est ce qui revele le dessus colore de chaque bloc au niveau courant.
-func _is_face_exposed(neighbor_pos: Vector3i) -> bool:
-	if neighbor_pos.y > view_level:
-		return true
-	return get_block(neighbor_pos) == BlockType.EMPTY
+# Decoupage VoxelWorld.gd (2026-07-05, revue de code item C1) : construction
+# du mesh (rebuild_mesh, choix des buckets/couleurs, ajout des quads)
+# deplacee dans VoxelMeshBuilder.gd - relocalisation quasi pure, voir ce
+# fichier pour le detail (2 vraies adaptations documentees a leur endroit :
+# _is_face_exposed n'appelle plus get_block(), get_top_block_y passe par un
+# Callable). rebuild_mesh() reste ici comme facade fine : l'API publique de
+# VoxelWorld.gd ne change pas (set_view_level/build_block/remove_block/... y
+# font toujours simplement rebuild_mesh()).
+const VoxelMeshBuilderScript := preload("res://scripts/monde/voxel/VoxelMeshBuilder.gd")
+var mesh_builder: VoxelMeshBuilderScript = VoxelMeshBuilderScript.new()
 
 
-## Sprint 21 : couleur de l'herbe (dessus terre) a une position donnee,
-## couleur de base du climat/saison actuels modulee par un bruit continu
-## (+/- environ 12% de luminosite), pour une variation douce case par case
-## au lieu du damier clair/fonce utilise auparavant.
-func _grass_color_for(pos: Vector3i) -> Color:
-	var base: Color = ClimateDefs.get_terrain_color(climate_id, season_id)
-	var n: float = terrain_noise.get_noise_2d(float(pos.x), float(pos.z))  # -1..1
-	var factor: float = 1.0 + n * 0.12
-	var color := Color(
-		clamp(base.r * factor, 0.0, 1.0),
-		clamp(base.g * factor, 0.0, 1.0),
-		clamp(base.b * factor, 0.0, 1.0),
-		base.a
-	)
-	# Sprint 37 (backlog Phase 1 item 3) : voile de neige, uniquement sur la
-	# vraie surface exterieure - pas sur un dessus de terre mis a jour au fond
-	# d'un trou mine, ou il n'y a pas de ciel pour neiger. Sprint 38 (relief) :
-	# compare au sommet REEL de CETTE colonne (get_top_block_y), plus HEIGHT-1
-	# fixe - sinon les sommets de colline (plus hauts que HEIGHT-1) ne
-	# recevaient jamais de neige.
-	if snow_coverage > 0.0 and pos.y == get_top_block_y(pos.x, pos.z):
-		color = color.lerp(SNOW_COLOR, snow_coverage)
-	return color
-
-
-## Sprint 23ter : couleur de la pierre (dessus) a une position donnee - couleur
-## de base unique (STONE_BASE) moduleee par un bruit continu (+/- ~12% de
-## luminosite), remplace l'ancien damier clair/fonce a deux tons. Meme
-## technique que _grass_color_for, sur le meme principe : un materiau uniforme
-## par niveau, les filons restant la seule vraie exception de couleur.
-func _stone_color_for(pos: Vector3i) -> Color:
-	var n: float = stone_noise.get_noise_2d(float(pos.x), float(pos.z))  # -1..1
-	var factor: float = 1.0 + n * 0.12
-	var color := Color(
-		clamp(STONE_BASE.r * factor, 0.0, 1.0),
-		clamp(STONE_BASE.g * factor, 0.0, 1.0),
-		clamp(STONE_BASE.b * factor, 0.0, 1.0),
-		STONE_BASE.a
-	)
-	# Sprint 37 : meme voile de neige que _grass_color_for, meme restriction a
-	# la vraie surface exterieure.
-	if snow_coverage > 0.0 and pos.y == get_top_block_y(pos.x, pos.z):
-		color = color.lerp(SNOW_COLOR, snow_coverage)
-	return color
-
-
-## Sprint 23 : couleur d'un bloc de filon (metal/pierre precieuse) a une
-## position donnee, recuperee depuis MetalTypes/GemTypes via VeinMaterials.
-## Couleur neutre de secours si jamais la position n'est plus dans vein_grid
-## (ne devrait pas arriver, garde par securite).
-func _vein_color_for(pos: Vector3i) -> Color:
-	if not vein_grid.has(pos):
-		return Color(0.5, 0.5, 0.5)
-	var material: Dictionary = VeinMaterials.get_type(vein_grid[pos])
-	return material.get("couleur", Color(0.5, 0.5, 0.5))
-
-
-## Construit un seul mesh avec une surface par materiau, en n'ajoutant une
-## face que si le bloc voisin dans cette direction est vide (culling des
-## faces cachees). Sprint 10 : les faces verticales/du dessous (parois d'un
-## trou mine ou d'un mur) sont assombries par rapport aux faces du dessus,
-## pour bien distinguer un creux (paroi sombre visible) d'une simple
-## variation de couleur de surface. Sprint 21 : le dessus terre (bucket 0,
-## l'herbe) n'est plus un damier clair/fonce mais une couleur par climat/
-## saison + variation de bruit par case, appliquee via des couleurs de
-## sommet (voir _grass_color_for et _add_face). Le bucket 1 (ancien "terre
-## fonce" du damier) n'est plus utilise pour l'instant mais reste reserve
-## (evite de renumeroter tous les autres buckets). Sprint 23 : bucket 10
-## ajoute pour les filons (metal/pierre precieuse), colore par sommet comme
-## l'herbe, mais applique a toutes les faces du bloc (dessus ET parois) pour
-## que le filon reste visible/reperable une fois une paroi exposee. Sprint
-## 23bis : les blocs strictement au-dessus de view_level ne sont pas dessines
-## du tout, et leur "absence" compte comme une face exposee pour le bloc
-## juste en dessous (voir _is_face_exposed) - c'est ce qui revele une coupe
-## horizontale complete et coloree du niveau courant (comme un Dwarf Fortress),
-## au lieu de se contenter de deplacer la camera a l'interieur de la roche pleine.
-## Sprint 23ter : le dessus pierre (bucket 2) suit maintenant le meme principe
-## que l'herbe (bucket 0) - couleur uniforme (STONE_BASE) + bruit, au lieu de
-## l'ancien damier clair/fonce a deux tons (bucket 3 devient inutilise, meme
-## traitement que le bucket 1 pour l'herbe).
 func rebuild_mesh() -> void:
-	# 13 buckets : 0-3 = dessus terre/pierre (0=herbe couleur variable, 1=inutilise,
-	# 2=pierre couleur variable, 3=inutilise), 4-5 = dessus mur bois/pierre,
-	# 6-9 = parois assombries (terre, pierre, mur bois, mur pierre),
-	# 10 = filon (metal/pierre precieuse, toutes faces, couleur variable),
-	# 11 = bloc non decouvert (gris uniforme, voir "discovered"),
-	# 12 = eau (Sprint 36, couleur unie WATER_COLOR, toutes faces).
-	var surface_tools: Array = []
-	for i in range(13):
-		var st := SurfaceTool.new()
-		st.begin(Mesh.PRIMITIVE_TRIANGLES)
-		surface_tools.append(st)
-
-	# Sprint 35 (2026-07-03) : la version precedente (map resize 100x100x50)
-	# bouclait deja sur "seulement" les colonnes visibles (y de 0 a view_level),
-	# mais ca representait encore jusqu'a 500 000 cases a view_level eleve -
-	# recalculees en entier a CHAQUE minage/construction/changement de niveau,
-	# ce qui restait tres lent (plusieurs secondes) sur la carte agrandie.
-	# Remplace maintenant par une passe "detaillee" bornee a l'ensemble
-	# "discovered" (voir plus haut) - petit au depart (juste la surface + les
-	# bords de carte), grandit lentement au fil du minage, jamais toute la
-	# grille. Le rendu (couleur/filon/exposition de face) est identique a
-	# avant pour tout ce qui est decouvert - seule la SOURCE de l'iteration
-	# change (un ensemble cible au lieu d'une triple boucle x/z/y).
-	var _detailed_faces: int = 0
-	for pos in discovered.keys():
-		if pos.y > view_level:
-			continue
-		var type: int = grid.get(pos, BlockType.EMPTY)
-		if type == BlockType.EMPTY:
-			continue
-		for dir in DIRECTIONS:
-			# Sprint 55/59 (obsolete, supprime au Sprint 86, 2026-07-04) :
-			# ce code supprimait TOUTES les faces (sauf le dessous) de TOUT
-			# bloc d'eau situe dans une colonne de cascade - a l'epoque,
-			# cette colonne contenait un mur PLEIN de blocs d'eau empiles
-			# (le remplissage vertical du Sprint 38, voir generate_flat_terrain)
-			# qu'il fallait cacher au profit de la forme decorative. Ce
-			# remplissage vertical a ete supprime au Sprint 86 (bug "pas
-			# d'eau sous la cascade", violation de la regle C2) : il n'y a
-			# donc plus AUCUN mur de blocs a cacher - la SEULE eau restante
-			# dans une colonne de cascade est desormais le bassin lui-meme
-			# (2 blocs, tout en bas). Ce code masquait par erreur la surface
-			# meme du bassin (sa face du dessus, jamais distinguee du reste
-			# de la colonne) - exactement pourquoi le bassin semblait "en
-			# terre" malgre une vraie case d'eau dans les donnees (confirme
-			# par simulation : la donnee etait deja correcte, seul le rendu
-			# la cachait). Supprime entierement : plus rien a cacher ici.
-			if _is_face_exposed(pos + dir):
-				var idx := _bucket_for(pos, type, dir)
-				var face_color := Color.WHITE
-				if idx == 0:
-					face_color = _grass_color_for(pos)
-				elif idx == 2:
-					face_color = _stone_color_for(pos)
-				elif idx == 10:
-					face_color = _vein_color_for(pos)
-				_add_face(surface_tools[idx], pos, dir, face_color)
-				_detailed_faces += 1
-
-	# Sprint 35 : passe "non decouvert" - une seule face (le dessus) par
-	# colonne, grise, pour representer ce qui n'a jamais ete explore au
-	# niveau de coupe courant (remplace l'ancien rendu detaille/colore pour
-	# tout ce qui n'est pas dans "discovered"). Ne coute qu'une iteration sur
-	# les colonnes (WIDTH*DEPTH = 10 000), jamais sur la profondeur - c'est ce
-	# qui rend le changement de niveau rapide meme a view_level eleve.
-	var _grey_faces: int = 0
-	for x in range(WIDTH):
-		for z in range(DEPTH):
-			var pos := Vector3i(x, view_level, z)
-			if discovered.has(pos):
-				continue  # deja traite avec sa vraie couleur dans la passe ci-dessus
-			var type: int = grid.get(pos, BlockType.EMPTY)
-			if type == BlockType.EMPTY:
-				continue
-			_add_face(surface_tools[11], pos, Vector3i(0, 1, 0), UNDISCOVERED_COLOR)
-			_grey_faces += 1
-
-	# Sprint 35 : instrumentation temporaire (diagnostic "le trou n'apparait
-	# pas") - confirme la taille de "discovered" et le nombre de faces
-	# generees dans chaque passe a chaque reconstruction du mesh.
-	print("[Perf][Voxel] rebuild_mesh : view_level=%d, discovered=%d, faces detaillees=%d, faces grises=%d" % [view_level, discovered.size(), _detailed_faces, _grey_faces])
-
-	# Sprint 13 : palette plus vive/saturee (direction "BD"), sur le meme
-	# principe qu'avant (damier clair/fonce + parois assombries)
-	var dirt_dark := Color(0.58, 0.34, 0.10)  # garde pour bucket 6 (paroi terre)
-	var stone_dark := Color(0.48, 0.50, 0.56)  # garde pour bucket 3 (inutilise) et bucket 7 (paroi)
-	var wood_wall := Color(0.70, 0.46, 0.16)
-	var stone_wall := Color(0.74, 0.76, 0.82)
-
-	# Sprint 24octies : materiau associe a chaque bucket (index dans
-	# surface_tools). Un SurfaceTool sans aucune face ajoutee ne produit PAS
-	# de surface lors du commit() (Godot ignore silencieusement les buckets
-	# vides), donc l'indice de surface reellement obtenu dans le mesh final
-	# peut etre INFERIEUR a l'indice du bucket d'origine des qu'un bucket
-	# precedent est vide (ex : aucun mur en bois sur la carte -> bucket 4
-	# vide -> tout ce qui suit se decale). Assigner les materiaux a des
-	# indices fixes 0-10 provoquait donc "Index p_idx out of bounds" des
-	# qu'un type de bloc etait absent de la carte (cas frequent sur une
-	# carte fraiche/petite). On mappe maintenant chaque bucket a son
-	# materiau via un dictionnaire, et on n'appelle surface_set_material
-	# qu'apres coup, sur le vrai indice de surface obtenu (compte a part,
-	# qui n'avance que quand un commit() a effectivement ajoute une surface).
-	var bucket_materials := {
-		0: _make_vertex_color_material(),
-		1: _make_material(dirt_dark),  # inutilise (voir plus haut)
-		2: _make_vertex_color_material(),
-		3: _make_material(stone_dark),  # inutilise (voir plus haut)
-		4: _make_material(wood_wall),
-		5: _make_material(stone_wall),
-		6: _make_material(_darken(dirt_dark)),
-		7: _make_material(_darken(stone_dark)),
-		8: _make_material(_darken(wood_wall)),
-		9: _make_material(_darken(stone_wall)),
-		10: _make_vertex_color_material(),
-		11: _make_material(UNDISCOVERED_COLOR),  # Sprint 35 : gris uniforme, pas besoin de couleur par sommet
-		# Sprint 37 (backlog Phase 1 item 2) : l'eau devient de la glace (couleur
-		# claire) quand is_frozen est vrai (etat global, voir TemperatureSystem.gd).
-		12: _make_material(ICE_COLOR if is_frozen else WATER_COLOR),
-	}
-
-	var mesh := ArrayMesh.new()
-	for bucket_idx in range(surface_tools.size()):
-		var st: SurfaceTool = surface_tools[bucket_idx]
-		var surfaces_before := mesh.get_surface_count()
-		st.commit(mesh)
-		if mesh.get_surface_count() > surfaces_before:
-			mesh.surface_set_material(surfaces_before, bucket_materials[bucket_idx])
-
-	mesh_instance.mesh = mesh
-	_rebuild_vein_pepites()
-
-
-## Determine dans quelle surface (materiau + face) placer un bloc donne.
-## Sprint 21 : le dessus terre (herbe) n'utilise plus qu'un seul bucket (0,
-## couleur variable par sommet), le damier clair/fonce est retire pour ce cas.
-## Sprint 23ter : meme traitement pour le dessus pierre (bucket 2, couleur
-## variable) - retire de l'ancien damier clair/fonce a deux tons, pour que
-## chaque niveau ait un materiau de pierre uniforme (les filons restant la
-## seule exception de couleur, voir plus bas).
-## Sprint 23 : un bloc de pierre qui est un filon (vein_grid) passe sur le
-## bucket 10 (couleur variable), sur toutes ses faces (dessus ET parois),
-## avant meme de regarder le type - un filon reste un filon peu importe la face.
-func _bucket_for(pos: Vector3i, type: int, dir: Vector3i) -> int:
-	var is_top := dir == Vector3i(0, 1, 0)
-
-	if type == BlockType.STONE and vein_grid.has(pos):
-		return 10
-
-	if is_top:
-		match type:
-			BlockType.DIRT:
-				return 0
-			BlockType.STONE:
-				return 2
-			BlockType.WOOD_WALL:
-				return 4
-			BlockType.STONE_WALL:
-				return 5
-			BlockType.WATER:
-				return 12
-		return 0
-
-	match type:
-		BlockType.DIRT:
-			return 6
-		BlockType.STONE:
-			return 7
-		BlockType.WOOD_WALL:
-			return 8
-		BlockType.STONE_WALL:
-			return 9
-		BlockType.WATER:
-			return 12
-	return 6
-
-
-## Assombrit une couleur (utilise pour les parois des trous/murs, effet
-## d'ombrage simple sans veritable eclairage)
-func _darken(color: Color) -> Color:
-	return Color(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
-
-
-## Cree un materiau simple, dans la couleur donnee.
-## 2026-07-02 : passe de SHADING_MODE_UNSHADED a l'eclairage reel (mode par
-## defaut de StandardMaterial3D) pour que le terrain reagisse enfin au cycle
-## jour/nuit (DayNightCycle.gd) - un materiau "unshaded" ignore totalement
-## la lumiere/les ombres, ce qui rendait la carte aussi lumineuse en pleine
-## nuit qu'en plein jour et empechait toute ombre portee de s'afficher.
-## roughness=1/metallic=0 evite les reflets speculaires pour garder un rendu
-## plat/mat coherent avec le style low-poly du jeu, tout en recevant
-## lumiere directionnelle + ombres + lumiere ambiante.
-func _make_material(color: Color) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.roughness = 1.0
-	mat.metallic = 0.0
-	return mat
-
-
-## Sprint 21 : materiau pour le bucket 0 (herbe), qui lit la couleur par
-## sommet (definie via SurfaceTool.set_color dans _add_face) au lieu d'une
-## seule couleur fixe - c'est ce qui permet la variation continue par case.
-## 2026-07-02 : meme passage a l'eclairage reel que _make_material ci-dessus.
-func _make_vertex_color_material() -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color.WHITE
-	mat.vertex_color_use_as_albedo = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.roughness = 1.0
-	mat.metallic = 0.0
-	return mat
-
-
-## Ajoute un quad (2 triangles) sur la face "dir" du bloc a la position "pos".
-## face_color : couleur de sommet (Sprint 21, utilisee uniquement par le
-## bucket "herbe"/"pierre"/"filon" dont le materiau lit vertex_color_use_as_albedo ;
-## ignoree par les autres materiaux, donc sans effet pour eux).
-func _add_face(st: SurfaceTool, pos: Vector3i, dir: Vector3i, face_color: Color = Color.WHITE) -> void:
-	var p := Vector3(pos.x, pos.y, pos.z)
-	var verts: Array
-
-	if dir == Vector3i(1, 0, 0):
-		verts = [p + Vector3(1, 0, 0), p + Vector3(1, 1, 0), p + Vector3(1, 1, 1), p + Vector3(1, 0, 1)]
-	elif dir == Vector3i(-1, 0, 0):
-		verts = [p + Vector3(0, 0, 1), p + Vector3(0, 1, 1), p + Vector3(0, 1, 0), p + Vector3(0, 0, 0)]
-	elif dir == Vector3i(0, 1, 0):
-		verts = [p + Vector3(0, 1, 0), p + Vector3(0, 1, 1), p + Vector3(1, 1, 1), p + Vector3(1, 1, 0)]
-	elif dir == Vector3i(0, -1, 0):
-		verts = [p + Vector3(1, 0, 0), p + Vector3(1, 0, 1), p + Vector3(0, 0, 1), p + Vector3(0, 0, 0)]
-	elif dir == Vector3i(0, 0, 1):
-		verts = [p + Vector3(1, 0, 1), p + Vector3(1, 1, 1), p + Vector3(0, 1, 1), p + Vector3(0, 0, 1)]
-	else: # Vector3i(0, 0, -1)
-		verts = [p + Vector3(0, 0, 0), p + Vector3(0, 1, 0), p + Vector3(1, 1, 0), p + Vector3(1, 0, 0)]
-
-	var normal := Vector3(dir.x, dir.y, dir.z)
-
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[0])
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[1])
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[2])
-
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[0])
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[2])
-	st.set_color(face_color)
-	st.set_normal(normal)
-	st.add_vertex(verts[3])
-
-
-## Sprint 23sexies : recalcule entierement les pepites (metaux/pierres
-## precieuses) a partir de vein_grid - appele a la fin de rebuild_mesh(), donc
-## a chaque fois que le terrain change (miner/construire/changer de niveau).
-## Ne place des pepites que sur les blocs de filon qui ont au moins une face
-## exposee (meme logique que le reste du terrain, voir _is_face_exposed) - un
-## filon entierement enterre/hors vue n'a pas de pepites.
-func _rebuild_vein_pepites() -> void:
-	var metal_transforms: Array = []
-	var metal_colors: Array = []
-	var gem_transforms: Array = []
-	var gem_colors: Array = []
-
-	for pos in vein_grid.keys():
-		if pos.y > view_level:
-			continue
-		# Sprint 35 : un filon jamais decouvert ne doit pas laisser deviner sa
-		# presence via ses pepites (meme principe que le gris uniforme du
-		# rendu de bloc, voir "discovered"/rebuild_mesh).
-		if not discovered.has(pos):
-			continue
-		var exposed_dir: Vector3i = Vector3i.ZERO
-		var found_exposed := false
-		for dir in DIRECTIONS:
-			if _is_face_exposed(pos + dir):
-				exposed_dir = dir
-				found_exposed = true
-				break
-		if not found_exposed:
-			continue
-
-		var material_id: String = vein_grid[pos]
-		var material: Dictionary = VeinMaterials.get_type(material_id)
-		var couleur: Color = material.get("couleur", Color(0.5, 0.5, 0.5))
-		var rarete: String = material.get("rarete", "commun")
-		var rarity_scale: float = PEPITE_RARITY_SCALE.get(rarete, 1.0)
-		var is_metal: bool = VeinMaterials.is_metal(material_id)
-
-		var block_seed: int = _seed_for_pos(pos)
-		var count_rng := RandomNumberGenerator.new()
-		count_rng.seed = block_seed
-		var count: int = count_rng.randi_range(PEPITE_COUNT_MIN, PEPITE_COUNT_MAX)
-
-		for i in range(count):
-			var rng := RandomNumberGenerator.new()
-			rng.seed = block_seed + i * 97
-			var offset := _biased_local_offset(rng, exposed_dir)
-			var world_pos := Vector3(pos.x, pos.y, pos.z) + offset
-			var radius: float = PEPITE_BASE_RADIUS * rarity_scale * rng.randf_range(0.85, 1.15)
-			var pepite_basis := Basis.from_euler(Vector3(
-				rng.randf_range(0, TAU), rng.randf_range(0, TAU), rng.randf_range(0, TAU)
-			)).scaled(Vector3.ONE * radius)
-			var xform := Transform3D(pepite_basis, world_pos)
-
-			if is_metal:
-				metal_transforms.append(xform)
-				metal_colors.append(couleur)
-			else:
-				gem_transforms.append(xform)
-				gem_colors.append(couleur)
-
-	_apply_pepite_instances(metal_pepites, metal_transforms, metal_colors)
-	_apply_pepite_instances(gem_pepites, gem_transforms, gem_colors)
-
-
-## Sprint 23sexies : applique une liste de transforms/couleurs a un
-## MultiMeshInstance3D (redimensionne d'abord instance_count, puis remplit)
-func _apply_pepite_instances(mmi: MultiMeshInstance3D, transforms: Array, colors: Array) -> void:
-	mmi.multimesh.instance_count = transforms.size()
-	for i in range(transforms.size()):
-		mmi.multimesh.set_instance_transform(i, transforms[i])
-		mmi.multimesh.set_instance_color(i, colors[i])
-
-
-## Sprint 23sexies : seed deterministe a partir d'une position de bloc - les
-## pepites d'un bloc donne restent toujours les memes d'un rebuild a l'autre
-## (miner/construire ailleurs ne doit pas faire "sauter" les pepites existantes)
-func _seed_for_pos(pos: Vector3i) -> int:
-	return pos.x * 73856093 ^ pos.y * 19349663 ^ pos.z * 83492791
-
-
-## Sprint 23sexies : position locale (0..1 dans le bloc) d'une pepite, tiree au
-## sort mais poussee vers la face exposee "dir" pour que la pepite affleure/
-## depasse legerement de cette face au lieu d'etre cachee a l'interieur du bloc.
-func _biased_local_offset(rng: RandomNumberGenerator, dir: Vector3i) -> Vector3:
-	var v := Vector3(rng.randf_range(0.25, 0.75), rng.randf_range(0.25, 0.75), rng.randf_range(0.25, 0.75))
-	if dir.x != 0:
-		v.x = 0.5 + sign(dir.x) * rng.randf_range(0.38, 0.55)
-	if dir.y != 0:
-		v.y = 0.5 + sign(dir.y) * rng.randf_range(0.38, 0.55)
-	if dir.z != 0:
-		v.z = 0.5 + sign(dir.z) * rng.randf_range(0.38, 0.55)
-	return v
+	mesh_builder.rebuild(grid, discovered, vein_system, view_level, WIDTH, DEPTH,
+			is_frozen, snow_coverage, climate_id, season_id, terrain_noise, stone_noise,
+			DIRECTIONS, mesh_instance, Callable(self, "get_top_block_y"))

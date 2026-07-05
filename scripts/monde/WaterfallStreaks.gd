@@ -65,7 +65,11 @@ var _streak_materials: Array = []
 func _ready() -> void:
 	if voxel_world == null:
 		return
-	randomize()
+	# 2026-07-05 (correctif revue de code I9, meme cause que C2-C6) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine. Purement decoratif ici, mais casse la chaine de determinisme
+	# pour tout script suivant dans Main.tscn - retire pour rester coherent.
 	_build_streak_materials()
 	var columns: Array = voxel_world.get_waterfall_columns()
 	for col in columns:

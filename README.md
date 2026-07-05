@@ -57,6 +57,8 @@ Terrain en blocs (grille 3D, culling des faces cachées), navigation caméra (pa
 
 **Notes utiles** : `Input.is_physical_key_pressed`/`event.physical_keycode` (position physique de la touche, pas le caractère affiché) pour que ZQSD/A/E fonctionnent en AZERTY. Le mur "fantôme" pendant la construction est un `MeshInstance3D` semi-transparent ajouté directement dans la scène 3D. Chaque tâche de construction a un id unique, le nain émet un signal à la fin (succès ou échec) pour que l'UI retire le bon fantôme sans dépendre du rendu du terrain.
 
+**Écran de démarrage & graine reproductible (Sprint 80-83)** : avant `Main.tscn`, un premier écran (`StartMenu.gd`, scène de démarrage désignée dans `project.godot`) propose de saisir une graine (seed) de génération de carte — la même graine tapée deux fois reproduit exactement la même carte (relief/lacs/rivière/cascades), utile pour rejouer un bug précis pendant les tests. Champ laissé vide = carte aléatoire comme avant. La dernière graine utilisée est sauvegardée (`user://last_seed.txt`) et reproposée par défaut au lancement suivant.
+
 ### 2. Colonie & profils des nains
 
 Passage à 3 nains simultanés (groupe Godot `"dwarves"`, plus de référence unique `%Dwarf`), chacun avec 6 caractéristiques aléatoires (Force/Agilité/Constitution/Intelligence/Beauté/Bonheur) purement informatives, 3 compétences (Minage/Bûcheronnage/Construction, table `SkillDefinitions.gd`) qui réduisent la durée de travail et augmentent la chance de ressource bonus, accessoires d'action (outil en main pendant le travail, "Z z z" flottant au repos, baie approchée de la bouche au repas).
@@ -129,7 +131,7 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 
 ## État actuel du projet
 
-**Phase 1 (nains de base et environnement) n'est pas refermée.** Beaucoup de sprints des paquets 6 à 9 restent à retester en jeu après cette réorganisation, en particulier les 3 correctifs de cascade et la disparition par niveau des décorations/arbres/buissons du 2026-07-04. Ne pas commencer la Phase 2 avant confirmation explicite.
+**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Reste un bug ouvert sur les actions Couper/Cueillir (aucune icône de tâche, arbre jamais abattu — voir paquet 1, non diagnostiqué) à corriger avant de considérer la Phase 1 close. Ne pas commencer la Phase 2 avant confirmation explicite.
 
 **Phase 2 (à venir) — Ateliers & artisanat** : ateliers de production, qualité/usure des objets, champs & agriculture, stockage, et l'équipement réel (habits/armures/armes fabricables et utilisables, pas seulement l'apparence du modèle 3D — décision du 2026-07-02, traité avec les ateliers plutôt qu'en sprint isolé).
 

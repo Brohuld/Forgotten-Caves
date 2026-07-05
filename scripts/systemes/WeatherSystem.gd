@@ -81,6 +81,10 @@ var _time_left: float = 0.0
 var _fog_extra: float = 0.0
 var _light_mult: float = 1.0
 var _sky_tint_strength: float = 0.0
+## 2026-07-05 (diagnostic temporaire, bug signale par Francois : "chene/
+## bouleau deviennent vert sombre tout a coup, peut-etre lie au brouillard") -
+## a retirer une fois la cause identifiee.
+var _debug_timer: float = 0.0
 
 @onready var _world_environment: WorldEnvironment = %WorldEnvironment
 @onready var _light: DirectionalLight3D = %DirectionalLight3D
@@ -122,6 +126,20 @@ func _process(delta: float) -> void:
 
 	_world_environment.environment.fog_density = BASE_FOG_DENSITY + _fog_extra
 	_light.light_energy *= _light_mult
+
+	# 2026-07-05 (diagnostic temporaire) : un instantane toutes les 2 secondes,
+	# pour capturer les valeurs reelles au moment ou le bug "arbres tout a
+	# coup vert sombre" se reproduit - a retirer une fois la cause trouvee.
+	_debug_timer += delta
+	if _debug_timer >= 2.0:
+		_debug_timer = 0.0
+		print("[DEBUG Lumiere] meteo=%s light_mult=%.3f light_energy=%.3f ambient_energy=%.3f fog_density=%.4f" % [
+			Weather.keys()[current_weather],
+			_light_mult,
+			_light.light_energy,
+			_world_environment.environment.ambient_light_energy,
+			_world_environment.environment.fog_density,
+		])
 
 	# Sprint 41 : teinte le ciel (deja colore par DayNightCycle ce meme frame,
 	# voir commentaire de SKY_TINT_COLOR) vers un gris selon la meteo courante.

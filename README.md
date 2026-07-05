@@ -59,6 +59,8 @@ Terrain en blocs (grille 3D, culling des faces cachées), navigation caméra (pa
 
 **Écran de démarrage & graine reproductible (Sprint 80-83)** : avant `Main.tscn`, un premier écran (`StartMenu.gd`, scène de démarrage désignée dans `project.godot`) propose de saisir une graine (seed) de génération de carte — la même graine tapée deux fois reproduit exactement la même carte (relief/lacs/rivière/cascades), utile pour rejouer un bug précis pendant les tests. Champ laissé vide = carte aléatoire comme avant. La dernière graine utilisée est sauvegardée (`user://last_seed.txt`) et reproposée par défaut au lancement suivant.
 
+**Bug Couper/Cueillir (RÉSOLU 2026-07-05)** : aucune icône de tâche n'apparaissait et l'arbre/buisson désigné n'était jamais réellement récolté. Cause réelle : l'évitement d'arbres pendant le déplacement du nain (`Dwarf.gd`) excluait mal la cible elle-même de ce calcul, l'empêchant de jamais l'atteindre physiquement.
+
 ### 2. Colonie & profils des nains
 
 Passage à 3 nains simultanés (groupe Godot `"dwarves"`, plus de référence unique `%Dwarf`), chacun avec 6 caractéristiques aléatoires (Force/Agilité/Constitution/Intelligence/Beauté/Bonheur) purement informatives, 3 compétences (Minage/Bûcheronnage/Construction, table `SkillDefinitions.gd`) qui réduisent la durée de travail et augmentent la chance de ressource bonus, accessoires d'action (outil en main pendant le travail, "Z z z" flottant au repos, baie approchée de la bouche au repas).
@@ -85,11 +87,15 @@ Menu de construction en sous-menu matériau, fiche personnage progressive (PV/Fa
 
 **Note** : toute icône/marqueur généré à l'exécution doit être dessiné via `Image.create`/`set_pixel` en mémoire plutôt que chargé depuis un fichier — convention adoptée après un bug de rendu (textures de filons, voir paquet 6) jamais totalement élucidé.
 
+**Icônes de tâche retracées + tailles de police (2026-07-05, à confirmer en jeu)** : les icônes hache/pioche ont été entièrement retracées suite à un bug de rendu identifié (l'ancien traçage de trait épais "en tampon circulaire" recouvrait complètement les petites formes voisines sur un canevas de 40x40 — remplacé par un traçage en polygones via `_stroke_segment`/`_fill_quad`). Toutes les tailles de police de l'interface ont été augmentées : un `Theme` Godot global (`themes/DefaultTheme.tres`, référencé dans `project.godot`) fixe la taille par défaut pour tout élément sans taille explicite, en complément des tailles explicites déjà présentes (relevées elles aussi). Le dessin des icônes a été extrait d'`ActionController.gd` vers `IconRenderer.gd` (voir dette d'architecture A1, `Forgotten_Caves_Sprints.xlsx`).
+
 ### 5. Végétation, cueillette & décor
 
 Arbres par espèce (chêne/sapin/bouleau, silhouettes distinctes, bois différencié), décor de sol (herbe/fleurs/cailloux, densité et couleur liées au climat), arbres fruitiers (pommier/oranger/cerisier) et 5 types de buissons à baies (groseille/myrtille/fraise/framboise/cassis, avec un visuel distinct "buisson" vs "plante basse"), action **Cueillir** dédiée (récolte sans détruire la plante), repousse progressive (nouveaux arbres si la densité baisse, baies qui repoussent une par une), compétence Agriculture (vitesse + bonus de rendement), calories différenciées par aliment, tas de ressources visuels au sol à chaque récolte (remplace l'ancien item flottant animé).
 
 **Refonte perf (Sprint 34)** : arbres/buissons/décor ne sont plus des dizaines de milliers de nœuds individuels mais partagent des `MultiMeshInstance3D` par type de pièce — chaque objet est construit une fois (temporairement), "récolté" (transform + couleur capturés dans un tableau qui reste en mémoire) puis ses nœuds temporaires libérés. Un arbre coupé ne peut donc plus disparaître par simple `queue_free()` : `hide_tree_visuals()` met à l'échelle zéro les seules instances qui lui appartiennent.
+
+**Ajustements chêne/sapin/buissons (2026-07-05, à confirmer en jeu)** : chêne agrandi de 20% en hauteur/largeur (échelle globale de l'arbre) et feuillage encore élargi de 30% en plus (rayon des boules de feuillage, indépendant du tronc), tronc assombri. Sapin : hauteur totale +30% sans changer le diamètre du feuillage (le rayon des cônes ne dépend pas de la hauteur totale), espace tronc visible/bas du feuillage réduit, tronc assombri. Buissons ("myrtille"/"groseille"/"cassis") : baies rétrécies, comptées séparément des plantes basses via `BUISSON_BERRIES_COUNT` (10, vs 4 pour fraise/framboise), réparties aléatoirement à 360° en hauteur et en angle autour du corps du buisson (avant : plage d'élévation biaisée, baies visibles seulement d'un côté).
 
 ### 6. Sous-sol : filons, niveaux & brouillard de guerre
 
@@ -127,11 +133,27 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 
 **Leçon de méthode** : avant d'annoncer un correctif de génération de terrain comme suffisant, simuler le pipeline complet (données ET logique de rendu/face-culling) hors du jeu, pas seulement relire le code.
 
+### 10. Végétation saisonnière
+
+**Implémenté le 2026-07-05, NON VÉRIFIÉ EN JEU** (pas de rendu Godot possible côté agent — à confirmer par François). Complément visuel au paquet 8 (cycle des saisons) et au paquet 5 (végétation) : chaque saison change l'aspect de la végétation existante, sans regénérer la carte.
+
+- **Printemps** : herbe et buissons plus clairs, feuillage de TOUS les arbres (sapin inclus) plus clair, ~40% de fleurs de décoration en plus (fleurs "bonus" taguées à la génération, cachées les autres saisons).
+- **Été** : couleurs des arbres = référence (aucun changement, saison neutre), herbe légèrement plus jaune, ~30% des décorations (herbe/fleurs/cailloux) masquées.
+- **Automne** : teinte rouge/orange sur les feuilles des arbres ET sur les buissons, sauf les sapins.
+- **Hiver** : feuilles des arbres quasi disparues (sauf sapins, qui restent verts) ; buissons teinte grise ; fruits des arbres fruitiers, plantes et buissons totalement indisponibles (`fruits_left` mis à 0, restauré au dégel) — aucune récolte possible.
+
+**Détails techniques** :
+- `Forest.gd` : la teinte de saison est désormais séparée en deux tables — `SEASON_FOLIAGE_TINT` (chêne/bouleau/arbres fruitiers) et `SEASON_CONE_TINT` (sapin uniquement, jamais rougi ni éclairci en hiver). La "chute des feuilles" en hiver passe par le canal alpha de la teinte (transparence activée sur les matériaux des boules de feuillage/petites feuilles) plutôt que par une manipulation de transform, pour ne pas entrer en conflit avec `update_view_level()`/`hide_tree_visuals()` (qui restaurent en permanence la transform d'origine indépendamment de la saison).
+- `BerryBushes.gd` : `apply_season_tint()` ne teinte que le corps du buisson (`PartType.BUSH_BODY`), jamais les plantes basses (fraise/framboise).
+- `GroundDecoration.gd` : toute la décoration est générée UNE fois au démarrage (jamais de vraie régénération dynamique) — "plus de fleurs" au printemps et "-30% en été" sont obtenus en taguant chaque décoration à sa création avec deux booléens indépendants, combinés avec le masquage par niveau de vue/minage déjà existant.
+- Disparition des fruits en hiver : logique générique dans `SeasonSystem.gd`, sur le groupe `"cueillette"` (arbres fruitiers + buissons + plantes). Limite connue acceptée : un arbre/buisson qui repousse en plein hiver n'est remis en mode hiver qu'au prochain changement de saison (cas jugé rare).
+- `SeasonSystem` a été déplacé après `BerryBushes`/`GroundDecoration` dans `Main.tscn` (l'ordre des `_ready()` de nœuds frères suit l'ordre de déclaration) — nécessaire pour que leurs `MultiMeshInstance3D`/décorations existent avant le premier appel de reteinte.
+
 ---
 
 ## État actuel du projet
 
-**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Reste un bug ouvert sur les actions Couper/Cueillir (aucune icône de tâche, arbre jamais abattu — voir paquet 1, non diagnostiqué) à corriger avant de considérer la Phase 1 close. Ne pas commencer la Phase 2 avant confirmation explicite.
+**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Le bug Couper/Cueillir est résolu (voir paquet 1). Reste à confirmer en jeu par François : les ajustements chêne/sapin/buissons et l'interface (paquets 4-5) et le nouveau cycle de végétation saisonnière (paquet 10). Dette d'architecture A1 en cours (ActionValidator.gd/DwarfSkills.gd/IconRenderer.gd extraits, ActionController.gd/Dwarf.gd restent volumineux — voir `Forgotten_Caves_Sprints.xlsx`, onglet Revue de code). Ne pas commencer la Phase 2 avant confirmation explicite.
 
 **Phase 2 (à venir) — Ateliers & artisanat** : ateliers de production, qualité/usure des objets, champs & agriculture, stockage, et l'équipement réel (habits/armures/armes fabricables et utilisables, pas seulement l'apparence du modèle 3D — décision du 2026-07-02, traité avec les ateliers plutôt qu'en sprint isolé).
 

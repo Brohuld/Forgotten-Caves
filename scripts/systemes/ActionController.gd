@@ -63,6 +63,25 @@ const SeasonSystemScript := preload("res://scripts/systemes/SeasonSystem.gd")
 ## Sprint 37 (backlog Phase 1 item 8) : pour lire/ecrire DayNightCycleScript.game_speed
 ## (pause/x1/x2/x4).
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
+## _ready() ci-dessous (GRID_WIDTH/GRID_DEPTH dupliques en dur ci-dessous).
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+## 2026-07-05 (revue de code, dette d'architecture A1 : separation
+## presentation/regles) : validation des cases cibles (Construire/Miner/
+## Puiser) extraite dans ActionValidator.gd - voir _valid_rect_cells/
+## _valid_mine_rect_cells/_valid_puiser_rect_cells ci-dessous, desormais de
+## simples delegations (aucun changement de comportement/API interne).
+const ActionValidatorScript := preload("res://scripts/systemes/ActionValidator.gd")
+var action_validator: ActionValidatorScript = ActionValidatorScript.new()
+
+## 2026-07-05 (revue de code, dette d'architecture A1, etape suivante) : tout
+## le dessin pixel par pixel des icones (marqueurs de tache, climat,
+## pause/vitesse, boutons d'action) extrait dans IconRenderer.gd - voir
+## _get_icon_texture/_get_time_icon_texture/_make_sun_moon_icon/
+## _make_weather_icon/_make_square_icon ci-dessous, desormais de simples
+## delegations (aucun changement de comportement/API interne).
+const IconRendererScript := preload("res://scripts/systemes/IconRenderer.gd")
+var icon_renderer: IconRendererScript = IconRendererScript.new()
 
 enum Mode { NONE, MINER, COUPER, CONSTRUIRE, CUEILLIR, PUISER }
 var current_mode: int = Mode.NONE
@@ -79,7 +98,13 @@ const GROUND_LEVEL := 50.0  # 2026-07-03 : map resize (etait 30.0)
 
 # Sprint 26bis : taille (en pixels) des icones d'outil dessinees a l'execution
 # pour les marqueurs de tache (voir _get_icon_texture)
-const ICON_SIZE := 20
+# 2026-07-05 (demande explicite Francois, icones jugees "moches et pas
+# lisibles") : agrandie (20 -> 40) et le glyphe (pioche/hache/panier) est
+# maintenant dessine plus petit qu'avant (voir ICON_GLYPH_SIZE) puis incruste
+# au centre d'un badge rond jaune, pour un meilleur contraste sur n'importe
+# quel decor et une forme reconnaissable de loin.
+const ICON_SIZE := 40
+const ICON_GLYPH_SIZE := 24
 
 ## Sprint 37quindecies (2026-07-04, demande explicite : "remplacer les boutons
 ## pause x1 x2 x4 par des icones") : taille/couleur des icones de controle du
@@ -169,6 +194,14 @@ var _btn_speed1: Button
 var _btn_speed2: Button
 var _btn_speed4: Button
 
+# 2026-07-05 (demande explicite Francois : "la barre d'espace met en pause,
+# il faudrait qu'elle puisse aussi faire repartir a la vitesse qui etait
+# selectionnee avant la pause") : memorise la derniere vitesse active (1/2/4)
+# juste avant une mise en pause par Espace, pour que Espace fasse desormais
+# basculer pause <-> reprise (au lieu de forcer 0.0 a chaque appui) - voir
+# _toggle_pause.
+var _speed_before_pause: float = 1.0
+
 # Sprint 29 : selection multiple de nains par rectangle (Mode.NONE
 # uniquement). Distinct du systeme de glisser du mode CONSTRUIRE ci-dessus
 # (is_dragging/drag_start/drag_end, qui travaille en cases de grille, pas en
@@ -194,16 +227,16 @@ var pending_columns: Dictionary = {}   # Vector2i(x,z) -> true
 # Couper/Cueillir, retirees des que Dwarf.task_finished signale la fin de
 # la tache correspondante (voir _spawn_task_marker/_on_task_finished)
 var queued_markers: Dictionary = {}    # task_id -> MeshInstance3D
-
-# Sprint 26bis : cache des icones d'outil deja dessinees ("kind|couleur" ->
-# ImageTexture), pour ne pas redessiner pixel par pixel a chaque tache
-var _icon_texture_cache: Dictionary = {}
-
-# Sprint 37quindecies : cache des icones pause/vitesse (kind -> ImageTexture)
-var _time_icon_cache: Dictionary = {}
+# 2026-07-05 (dette A1) : cache des textures d'icones deplace dans
+# IconRenderer.gd (_icon_texture_cache/_time_icon_cache).
 
 
 func _ready() -> void:
+	# 2026-07-05 (revue de code, item F010) : GRID_WIDTH/GRID_DEPTH dupliques
+	# en dur (aucune garde-fou automatique auparavant) - avertissement si
+	# desynchronise de VoxelWorld.gd, sans changer le comportement.
+	if GRID_WIDTH != VoxelWorldScript.WIDTH or GRID_DEPTH != VoxelWorldScript.DEPTH:
+		push_warning("ActionController.GRID_WIDTH/GRID_DEPTH (%d/%d) desynchronise de VoxelWorld.WIDTH/DEPTH (%d/%d)" % [GRID_WIDTH, GRID_DEPTH, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH])
 	btn_miner.pressed.connect(_on_miner_pressed)
 	btn_couper.pressed.connect(_on_couper_pressed)
 	btn_construire.pressed.connect(_on_construire_pressed)
@@ -212,6 +245,11 @@ func _ready() -> void:
 	btn_bois.pressed.connect(_on_material_pressed.bind("bois"))
 	btn_pierre.pressed.connect(_on_material_pressed.bind("pierre"))
 	btn_terre.pressed.connect(_on_material_pressed.bind("terre"))
+	# 2026-07-05 (meme correctif que _make_time_button) : evite que ces
+	# boutons gardent le focus clavier et soient reactives par megarde par
+	# Espace/Entree ("ui_accept").
+	for b in [btn_miner, btn_couper, btn_construire, btn_cueillir, btn_puiser, btn_bois, btn_pierre, btn_terre]:
+		b.focus_mode = Control.FOCUS_NONE
 	for d in get_tree().get_nodes_in_group("dwarves"):
 		d.build_task_finished.connect(_on_build_task_finished)
 		d.task_finished.connect(_on_task_finished)
@@ -335,7 +373,7 @@ func _setup_season_labels(parent: Control) -> void:
 		var label := Label.new()
 		label.text = season_id.capitalize()
 		label.add_theme_color_override("font_color", SEASON_TEXT_COLORS.get(season_id, Color.BLACK))
-		label.add_theme_font_size_override("font_size", 20)
+		label.add_theme_font_size_override("font_size", 25)
 		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		label.position = Vector2(seg_width * i, 0.0)
@@ -452,14 +490,14 @@ func _build_hour_gradient_texture(sunrise_frac: float, sunset_frac: float) -> Gr
 	var last_offset := -1.0
 	var first := true
 	for point in points:
-		var offset: float = maxf(point[0], last_offset + 0.001)
+		var point_offset: float = maxf(point[0], last_offset + 0.001)
 		if first:
-			gradient.set_offset(0, offset)
+			gradient.set_offset(0, point_offset)
 			gradient.set_color(0, point[1])
 			first = false
 		else:
-			gradient.add_point(offset, point[1])
-		last_offset = offset
+			gradient.add_point(point_offset, point[1])
+		last_offset = point_offset
 
 	var texture := GradientTexture2D.new()
 	texture.gradient = gradient
@@ -511,89 +549,9 @@ func _build_season_gradient_texture() -> GradientTexture2D:
 	return texture
 
 
-## Sprint 37nonies : remplit un disque plein dans une Image - technique deja
-## utilisee sans souci pour les icones de marqueur de tache (_get_icon_texture),
-## reutilisee ici pour l'icone soleil/lune et l'icone meteo (pas de risque de
-## reproduire le bug de blocs blancs d'une texture d'atlas, voir memoire).
-func _fill_circle(img: Image, cx: float, cy: float, r: float, color: Color) -> void:
-	var ir := int(ceil(r))
-	for dx in range(-ir, ir + 1):
-		for dy in range(-ir, ir + 1):
-			if dx * dx + dy * dy <= r * r:
-				var x: int = int(cx) + dx
-				var y: int = int(cy) + dy
-				if x >= 0 and x < img.get_width() and y >= 0 and y < img.get_height():
-					img.set_pixel(x, y, color)
-
-
-## Sprint 37nonies (2026-07-04) : icone "passage du soleil" (jour) ou lune
-## (nuit) affichee dans le bandeau heure, se deplaçant avec l'heure courante
-## (voir _process). Sprint 37decies : dessinee directement a la taille
-## d'affichage (SUN_MOON_ICON_SIZE, x2 par rapport a la version initiale) pour
-## rester nette une fois agrandie, au lieu d'etirer une petite image floue.
-func _make_sun_moon_icon(is_day: bool) -> ImageTexture:
-	var size := int(SUN_MOON_ICON_SIZE)
-	var center := SUN_MOON_ICON_SIZE * 0.5
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	if is_day:
-		_fill_circle(img, center, center, 11.0, Color(1.0, 0.85, 0.3))
-	else:
-		_fill_circle(img, center, center, 11.0, Color(0.85, 0.87, 0.95))
-		_fill_circle(img, center + 4.0, center - 4.0, 9.0, Color(0, 0, 0, 0))  # decoupe un croissant
-	return ImageTexture.create_from_image(img)
-
-
-## Sprint 37nonies : icone meteo dessinee (soleil/brouillard/pluie/neige),
-## reconstruite uniquement quand weather_label change (voir _process/
-## _weather_icon_cache). Sprint 37decies : dessinee a une resolution x2 (44px
-## au lieu de 22) pour rester nette a la nouvelle taille d'affichage
-## (CLIMATE_ICON_SIZE, egalement x2). Sprint 47 (2026-07-04, "agrandir l'icone
-## de climat") : dessinee directement a CLIMATE_ICON_SIZE (au lieu d'un 44px
-## fixe agrandi par etirement, qui aurait rendu flou) - toutes les coordonnees
-## ci-dessous (dessinees a l'origine sur un canevas 44px) sont mises a
-## l'echelle via "s" pour garder les memes proportions a la nouvelle taille.
-func _make_weather_icon(weather_label: String) -> ImageTexture:
-	var size := CLIMATE_ICON_SIZE
-	var s: float = float(size) / 44.0
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	match weather_label:
-		"Pluie":
-			_fill_circle(img, 22 * s, 18 * s, 13.0 * s, Color(0.75, 0.78, 0.82))
-			for i in range(3):
-				var x: int = int((12 + i * 10) * s)
-				for y in range(int(30 * s), int(38 * s)):
-					img.set_pixel(x, y, Color(0.35, 0.5, 0.85))
-					img.set_pixel(x + 1, y, Color(0.35, 0.5, 0.85))
-		"Neige":
-			_fill_circle(img, 22 * s, 18 * s, 13.0 * s, Color(0.85, 0.87, 0.9))
-			for i in range(3):
-				var x: int = int((12 + i * 10) * s)
-				var step: int = int(2 * s)
-				for dy in range(2):
-					var y: int = int(32 * s) + dy * step
-					img.set_pixel(x, y, Color(1, 1, 1))
-					img.set_pixel(x - step, y, Color(1, 1, 1))
-					img.set_pixel(x + step, y, Color(1, 1, 1))
-					img.set_pixel(x, y - step, Color(1, 1, 1))
-					img.set_pixel(x, y + step, Color(1, 1, 1))
-		"Brouillard":
-			for i in range(3):
-				var y: int = int((14 + i * 8) * s)
-				for x in range(int(6 * s), int(38 * s)):
-					img.set_pixel(x, y, Color(0.75, 0.78, 0.8, 0.9))
-					img.set_pixel(x, y + 1, Color(0.75, 0.78, 0.8, 0.9))
-		_:  # "Ciel degage"
-			_fill_circle(img, 22 * s, 22 * s, 11.0 * s, Color(1.0, 0.85, 0.3))
-			for ray in range(8):
-				var angle: float = ray * TAU / 8.0
-				var dir := Vector2(cos(angle), sin(angle))
-				var p1 := Vector2(22 * s, 22 * s) + dir * (15.0 * s)
-				var p2 := Vector2(22 * s, 22 * s) + dir * (19.0 * s)
-				_fill_circle(img, p1.x, p1.y, 1.2 * s, Color(1.0, 0.85, 0.3))
-				_fill_circle(img, p2.x, p2.y, 1.2 * s, Color(1.0, 0.85, 0.3))
-	return ImageTexture.create_from_image(img)
+## 2026-07-05 (dette A1) : _fill_circle/_make_sun_moon_icon/_make_weather_icon
+## deplaces dans IconRenderer.gd (make_sun_moon_icon/make_weather_icon,
+## appeles depuis _process ci-dessous).
 
 
 ## Sprint 37 (backlog Phase 1 item 8) : boutons Pause/x1/x2/x4, pilotent
@@ -615,7 +573,7 @@ func _setup_time_controls() -> void:
 	box.add_theme_constant_override("separation", 6)
 	add_child(box)
 
-	_btn_pause = _make_time_button(box, "pause", "Pause (Espace)")
+	_btn_pause = _make_time_button(box, "pause", "Pause / Reprise (Espace)")
 	_btn_speed1 = _make_time_button(box, "vitesse1", "Vitesse normale (F1)")
 	_btn_speed2 = _make_time_button(box, "vitesse2", "Accéléré (F2)")
 	_btn_speed4 = _make_time_button(box, "vitesse4", "Rapide (F3)")
@@ -632,11 +590,17 @@ func _setup_time_controls() -> void:
 ## clavier associe (voir _unhandled_input).
 func _make_time_button(parent: HBoxContainer, icon_kind: String, tooltip: String) -> Button:
 	var btn := Button.new()
-	btn.icon = _get_time_icon_texture(icon_kind)
+	btn.icon = icon_renderer.get_time_icon_texture(icon_kind, TIME_ICON_SIZE, TIME_ICON_COLOR)
 	btn.toggle_mode = true
 	btn.custom_minimum_size = Vector2(44, 40)
 	btn.tooltip_text = tooltip
 	btn.expand_icon = true
+	# 2026-07-05 (correctif bug "Espace remet en pause tout de suite") : sans
+	# ceci, le bouton Pause peut garder le focus clavier apres un clic - Espace
+	# est mappe par defaut sur l'action "ui_accept", qui reactiverait alors CE
+	# bouton en plus de notre propre gestion KEY_SPACE (_toggle_pause), pour
+	# un aller-retour pause/reprise quasi instantane (1 seule frame ecoulee).
+	btn.focus_mode = Control.FOCUS_NONE
 	parent.add_child(btn)
 	return btn
 
@@ -644,6 +608,19 @@ func _make_time_button(parent: HBoxContainer, icon_kind: String, tooltip: String
 func _on_time_speed_pressed(speed: float) -> void:
 	DayNightCycleScript.game_speed = speed
 	_update_time_buttons()
+
+
+## 2026-07-05 (demande explicite, voir _speed_before_pause) : bascule pause/
+## reprise au lieu de toujours forcer 0.0 - si le jeu tourne, memorise la
+## vitesse courante puis met en pause ; si le jeu est deja en pause, reprend
+## a la derniere vitesse memorisee (1.0 par defaut si Espace est le tout
+## premier appui, avant toute selection explicite de vitesse).
+func _toggle_pause() -> void:
+	if is_equal_approx(DayNightCycleScript.game_speed, 0.0):
+		_on_time_speed_pressed(_speed_before_pause)
+	else:
+		_speed_before_pause = DayNightCycleScript.game_speed
+		_on_time_speed_pressed(0.0)
 
 
 func _update_time_buttons() -> void:
@@ -657,20 +634,17 @@ func _update_time_buttons() -> void:
 ## Sprint 9 : petites icones de couleur (formes simples) sur chaque bouton,
 ## en attendant de vraies illustrations (style BD du brief)
 func _setup_icons() -> void:
-	btn_miner.icon = _make_square_icon(Color(0.5, 0.5, 0.5), 18)
-	btn_couper.icon = _make_square_icon(Color(0.25, 0.55, 0.15), 18)
-	btn_construire.icon = _make_square_icon(Color(0.85, 0.65, 0.13), 18)
-	btn_cueillir.icon = _make_square_icon(Color(0.85, 0.25, 0.25), 18)
-	btn_puiser.icon = _make_square_icon(_material_color("eau"), 18)
-	btn_bois.icon = _make_square_icon(_material_color("bois"), 18)
-	btn_pierre.icon = _make_square_icon(_material_color("pierre"), 18)
-	btn_terre.icon = _make_square_icon(_material_color("terre"), 18)
+	btn_miner.icon = icon_renderer.make_square_icon(Color(0.5, 0.5, 0.5), 18)
+	btn_couper.icon = icon_renderer.make_square_icon(Color(0.25, 0.55, 0.15), 18)
+	btn_construire.icon = icon_renderer.make_square_icon(Color(0.85, 0.65, 0.13), 18)
+	btn_cueillir.icon = icon_renderer.make_square_icon(Color(0.85, 0.25, 0.25), 18)
+	btn_puiser.icon = icon_renderer.make_square_icon(_material_color("eau"), 18)
+	btn_bois.icon = icon_renderer.make_square_icon(_material_color("bois"), 18)
+	btn_pierre.icon = icon_renderer.make_square_icon(_material_color("pierre"), 18)
+	btn_terre.icon = icon_renderer.make_square_icon(_material_color("terre"), 18)
 
 
-func _make_square_icon(color: Color, size: int) -> ImageTexture:
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	img.fill(color)
-	return ImageTexture.create_from_image(img)
+## 2026-07-05 (dette A1) : deplace dans IconRenderer.gd (make_square_icon).
 
 
 func _material_color(material: String) -> Color:
@@ -698,12 +672,22 @@ func _process(_delta: float) -> void:
 		inventory.get_count("bois_sapin"),
 		inventory.get_count("bois_bouleau"),
 	]
+	# 2026-07-05 (demande explicite Francois) : "Taches en attente" doit
+	# compter toute tache designee tant qu'elle n'est pas VRAIMENT terminee,
+	# pas seulement celles encore non-affectees dans TaskQueue - un nain qui a
+	# deja pris une tache (current_task) mais ne l'a pas encore finie compte
+	# donc aussi. task_queue.task_count() seul retombe a 0 des qu'un nain
+	# libre recupere la tache, meme avant d'etre arrive dessus.
+	var active_task_count: int = task_queue.task_count()
+	for d in get_tree().get_nodes_in_group("dwarves"):
+		if not d.current_task.is_empty():
+			active_task_count += 1
 	stats_label.text = "Bois : %d (%s)    Pierre : %d    Terre : %d    Taches en attente : %d" % [
 		inventory.get_count("bois"),
 		wood_detail,
 		inventory.get_count("pierre"),
 		inventory.get_count("terre"),
-		task_queue.task_count(),
+		active_task_count,
 	]
 
 	# Sprint 33 : horloge/calendrier - jour courant (DayNightCycle.day_count),
@@ -720,6 +704,9 @@ func _process(_delta: float) -> void:
 	var minutes: int = int(fmod(total_minutes, 60.0))
 	var days_per_season: int = SeasonSystemScript.DAYS_PER_MONTH * SeasonSystemScript.MONTHS_PER_SEASON
 	var day_in_season: int = (day_night_cycle.day_count - 1) % days_per_season
+	# Division entiere volontaire (indice de mois = division entiere + 1, pas
+	# un calcul decimal) - avertissement Godot desactive explicitement ici.
+	@warning_ignore("integer_division")
 	var month_in_season: int = (day_in_season / SeasonSystemScript.DAYS_PER_MONTH) + 1
 	var day_in_month: int = (day_in_season % SeasonSystemScript.DAYS_PER_MONTH) + 1
 	# Sprint 37 (backlog Phase 1 item 1/5) : temperature + episode climatique
@@ -758,7 +745,7 @@ func _process(_delta: float) -> void:
 		if not _sun_moon_icon_built or is_daylight != _sun_moon_is_day_cache:
 			_sun_moon_is_day_cache = is_daylight
 			_sun_moon_icon_built = true
-			_sun_moon_icon.texture = _make_sun_moon_icon(is_daylight)
+			_sun_moon_icon.texture = icon_renderer.make_sun_moon_icon(is_daylight, SUN_MOON_ICON_SIZE)
 		_sun_moon_icon.position = Vector2(
 			hour_x - _sun_moon_icon.custom_minimum_size.x * 0.5,
 			(HOUR_BAND_SIZE.y - _sun_moon_icon.custom_minimum_size.y) * 0.5
@@ -781,7 +768,7 @@ func _process(_delta: float) -> void:
 		var weather_label: String = weather_system.current_weather_label()
 		if weather_label != _weather_icon_cache:
 			_weather_icon_cache = weather_label
-			_weather_icon_rect.texture = _make_weather_icon(weather_label)
+			_weather_icon_rect.texture = icon_renderer.make_weather_icon(weather_label, CLIMATE_ICON_SIZE)
 		_weather_icon_rect.tooltip_text = weather_label
 
 	# Sprint 37 (backlog Phase 1 item 12) : panneau d'inspection permanent, mis
@@ -851,7 +838,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_SPACE:
-				_on_time_speed_pressed(0.0)
+				_toggle_pause()
 				get_viewport().set_input_as_handled()
 				return
 			KEY_F1:
@@ -1064,7 +1051,7 @@ func _targets_in_screen_rect(a: Vector2, b: Vector2, group: String) -> Array:
 func _finalize_chop_selection(a: Vector2, b: Vector2) -> void:
 	for target in _targets_in_screen_rect(a, b, "trees"):
 		var task_id: int = task_queue.add_chop_task(target)
-		var marker_pos: Vector3 = target.global_position + Vector3(0, 1.9, 0)
+		var marker_pos: Vector3 = target.global_position + Vector3(0, _marker_height_for(target), 0)
 		queued_markers[task_id] = _spawn_task_marker(marker_pos, "hache", Color(0.25, 0.55, 0.15))
 
 
@@ -1074,8 +1061,7 @@ func _finalize_chop_selection(a: Vector2, b: Vector2) -> void:
 ## proche du clic.
 func _finalize_gather_selection(a: Vector2, b: Vector2) -> void:
 	for target in _targets_in_screen_rect(a, b, "cueillette"):
-		var height_offset := 1.2 if target.is_in_group("trees") else 0.6
-		var marker_pos: Vector3 = target.global_position + Vector3(0, height_offset, 0)
+		var marker_pos: Vector3 = target.global_position + Vector3(0, _marker_height_for(target), 0)
 		var task_id: int = task_queue.add_gather_task(target)
 		queued_markers[task_id] = _spawn_task_marker(marker_pos, "panier", Color(0.85, 0.25, 0.25))
 
@@ -1116,23 +1102,10 @@ func _cell_from_hit(hit: Vector3) -> Vector2i:
 
 
 ## Toutes les cases valides (dans la carte, constructibles, pas deja en
-## attente de construction) du rectangle defini par deux coins
+## attente de construction) du rectangle defini par deux coins.
+## 2026-07-05 (dette d'architecture A1) : delegue a ActionValidator.gd.
 func _valid_rect_cells(a: Vector2i, b: Vector2i) -> Array:
-	var min_x := mini(a.x, b.x)
-	var max_x := maxi(a.x, b.x)
-	var min_z := mini(a.y, b.y)
-	var max_z := maxi(a.y, b.y)
-	var cells: Array = []
-	for x in range(min_x, max_x + 1):
-		for z in range(min_z, max_z + 1):
-			if x < 0 or x >= GRID_WIDTH or z < 0 or z >= GRID_DEPTH:
-				continue
-			if not voxel_world.can_build(x, z):
-				continue
-			if pending_columns.has(Vector2i(x, z)):
-				continue
-			cells.append(Vector2i(x, z))
-	return cells
+	return action_validator.valid_rect_cells(a, b, GRID_WIDTH, GRID_DEPTH, voxel_world, pending_columns)
 
 
 func _update_drag_preview() -> void:
@@ -1148,22 +1121,9 @@ func _update_drag_preview() -> void:
 ## _valid_rect_cells (Construire) mais sans le filtre "constructible" ; pas de
 ## suivi de cases "en attente" non plus, pour rester fidele au comportement
 ## du clic simple d'origine (qui ne verifiait deja pas les doublons).
+## 2026-07-05 (dette d'architecture A1) : delegue a ActionValidator.gd.
 func _valid_mine_rect_cells(a: Vector2i, b: Vector2i) -> Array:
-	var min_x := mini(a.x, b.x)
-	var max_x := maxi(a.x, b.x)
-	var min_z := mini(a.y, b.y)
-	var max_z := maxi(a.y, b.y)
-	var cells: Array = []
-	for x in range(min_x, max_x + 1):
-		for z in range(min_z, max_z + 1):
-			if x < 0 or x >= GRID_WIDTH or z < 0 or z >= GRID_DEPTH:
-				continue
-			if voxel_world.get_top_block_y(x, z) < 0:
-				continue  # rien a miner sur cette colonne
-			if voxel_world.is_water(x, z):
-				continue  # Sprint 36 : l'eau se puise (bouton Puiser), ne se mine pas
-			cells.append(Vector2i(x, z))
-	return cells
+	return action_validator.valid_mine_rect_cells(a, b, GRID_WIDTH, GRID_DEPTH, voxel_world)
 
 
 ## Sprint 35ter : fantomes gris (voir _material_color("gris_minage")) sur
@@ -1194,24 +1154,9 @@ func _finalize_mine_selection() -> void:
 ## _valid_mine_rect_cells, mais ne garde que les colonnes d'eau (voir
 ## VoxelWorld.is_water). Pas de suivi de cases "en attente" : l'eau est une
 ## ressource renouvelable, on peut la puiser autant de fois qu'on veut.
+## 2026-07-05 (dette d'architecture A1) : delegue a ActionValidator.gd.
 func _valid_puiser_rect_cells(a: Vector2i, b: Vector2i) -> Array:
-	# Sprint 37 (backlog Phase 1 item 2) : l'eau gelee (glace) ne se puise
-	# plus - etat global, voir VoxelWorld.is_frozen/TemperatureSystem.gd.
-	if voxel_world.is_frozen:
-		return []
-	var min_x := mini(a.x, b.x)
-	var max_x := maxi(a.x, b.x)
-	var min_z := mini(a.y, b.y)
-	var max_z := maxi(a.y, b.y)
-	var cells: Array = []
-	for x in range(min_x, max_x + 1):
-		for z in range(min_z, max_z + 1):
-			if x < 0 or x >= GRID_WIDTH or z < 0 or z >= GRID_DEPTH:
-				continue
-			if not voxel_world.is_water(x, z):
-				continue
-			cells.append(Vector2i(x, z))
-	return cells
+	return action_validator.valid_puiser_rect_cells(a, b, GRID_WIDTH, GRID_DEPTH, voxel_world)
 
 
 ## Sprint 36 : fantomes bleus (voir _material_color("eau")) sur chaque case
@@ -1314,7 +1259,7 @@ func _spawn_task_marker(pos: Vector3, kind: String, color: Color) -> MeshInstanc
 	mesh_inst.mesh = quad
 
 	var mat := StandardMaterial3D.new()
-	mat.albedo_texture = _get_icon_texture(kind, color)
+	mat.albedo_texture = icon_renderer.get_icon_texture(kind, color, ICON_SIZE, ICON_GLYPH_SIZE)
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -1327,227 +1272,58 @@ func _spawn_task_marker(pos: Vector3, kind: String, color: Color) -> MeshInstanc
 	return mesh_inst
 
 
-func _get_icon_texture(kind: String, color: Color) -> ImageTexture:
-	var key := "%s|%s" % [kind, color]
-	if _icon_texture_cache.has(key):
-		return _icon_texture_cache[key]
-	var img := Image.create(ICON_SIZE, ICON_SIZE, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))  # fond transparent
-	match kind:
-		"pioche":
-			_draw_pickaxe_icon(img, color)
-		"hache":
-			_draw_axe_icon(img, color)
-		"panier":
-			_draw_basket_icon(img, color)
-	var tex := ImageTexture.create_from_image(img)
-	_icon_texture_cache[key] = tex
-	return tex
+## 2026-07-05 (dette A1) : _get_icon_texture/_draw_pickaxe_icon/_draw_axe_icon/
+## _draw_basket_icon/_get_time_icon_texture/_draw_pause_icon/_draw_speed_icon
+## + tous les helpers de dessin pixel par pixel (_fill_quad/_stroke_segment/
+## _fill_rect_px/_draw_thick_line/_plot_blob/_fill_triangle/
+## _point_in_triangle/_triangle_sign/_set_pixel_safe) deplaces dans
+## IconRenderer.gd (get_icon_texture/get_time_icon_texture, appeles depuis
+## _spawn_task_marker/_make_time_button ci-dessus).
 
 
-## Pioche : manche diagonal + tete en "chevron" (deux branches courbes de
-## part et d'autre du sommet du manche, evoque le double pic incurve)
-func _draw_pickaxe_icon(img: Image, color: Color) -> void:
-	var s := float(ICON_SIZE)
-	_draw_thick_line(img, Vector2(s * 0.25, s * 0.88), Vector2(s * 0.55, s * 0.32), color)
-	_draw_thick_line(img, Vector2(s * 0.55, s * 0.32), Vector2(s * 0.85, s * 0.15), color)
-	_draw_thick_line(img, Vector2(s * 0.85, s * 0.15), Vector2(s * 0.95, s * 0.35), color)
-	_draw_thick_line(img, Vector2(s * 0.55, s * 0.32), Vector2(s * 0.28, s * 0.12), color)
-	_draw_thick_line(img, Vector2(s * 0.28, s * 0.12), Vector2(s * 0.13, s * 0.24), color)
-
-
-## Hache : manche vertical + lame triangulaire pleine sur le cote
-func _draw_axe_icon(img: Image, color: Color) -> void:
-	var s := float(ICON_SIZE)
-	_draw_thick_line(img, Vector2(s * 0.58, s * 0.90), Vector2(s * 0.58, s * 0.35), color)
-	var blade_top := Vector2(s * 0.58, s * 0.10)
-	var blade_bottom := Vector2(s * 0.58, s * 0.48)
-	var blade_tip := Vector2(s * 0.14, s * 0.26)
-	_fill_triangle(img, blade_top, blade_bottom, blade_tip, color)
-
-
-## Panier : corps trapezoidal (plus large en haut) + anse courbe au-dessus
-func _draw_basket_icon(img: Image, color: Color) -> void:
-	var s := float(ICON_SIZE)
-	var body_top := s * 0.45
-	var body_bottom := s * 0.85
-	var top_half_width := s * 0.32
-	var bottom_half_width := s * 0.18
-	var center_x := s * 0.5
-
-	var y := int(body_top)
-	while y <= int(body_bottom):
-		var t: float = (float(y) - body_top) / (body_bottom - body_top)
-		var half_width: float = lerp(top_half_width, bottom_half_width, t)
-		var x_start := int(round(center_x - half_width))
-		var x_end := int(round(center_x + half_width))
-		for x in range(x_start, x_end + 1):
-			_set_pixel_safe(img, x, y, color)
-		y += 1
-
-	var handle_top := s * 0.12
-	var handle_span := s * 0.22
-	var steps := 24
-	for i in range(steps + 1):
-		var t2 := float(i) / float(steps)
-		var x2: float = center_x - handle_span + t2 * (handle_span * 2.0)
-		var arc: float = sin(t2 * PI)  # 0 aux extremites, 1 au sommet de l'anse
-		var y2: float = body_top - (body_top - handle_top) * arc
-		_plot_blob(img, Vector2(x2, y2), 1, color)
-
-
-## Sprint 37quindecies : icones pause/vitesse pour les boutons de controle du
-## temps (voir _make_time_button). Meme principe de cache que
-## _get_icon_texture (kind -> ImageTexture), mais taille/couleur fixes
-## (TIME_ICON_SIZE/TIME_ICON_COLOR) donc pas besoin de cle composite.
-func _get_time_icon_texture(kind: String) -> ImageTexture:
-	if _time_icon_cache.has(kind):
-		return _time_icon_cache[kind]
-	var img := Image.create(TIME_ICON_SIZE, TIME_ICON_SIZE, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))  # fond transparent
-	match kind:
-		"pause":
-			_draw_pause_icon(img, TIME_ICON_COLOR)
-		"vitesse1":
-			_draw_speed_icon(img, TIME_ICON_COLOR, 1)
-		"vitesse2":
-			_draw_speed_icon(img, TIME_ICON_COLOR, 2)
-		"vitesse4":
-			_draw_speed_icon(img, TIME_ICON_COLOR, 4)
-	var tex := ImageTexture.create_from_image(img)
-	_time_icon_cache[kind] = tex
-	return tex
-
-
-## Pause : deux barres verticales pleines, cote a cote (symbole standard).
-func _draw_pause_icon(img: Image, color: Color) -> void:
-	var s := float(TIME_ICON_SIZE)
-	var bar_w := s * 0.16
-	var top := s * 0.18
-	var bottom := s * 0.82
-	_fill_rect_px(img, s * 0.28 - bar_w * 0.5, top, bar_w, bottom - top, color)
-	_fill_rect_px(img, s * 0.72 - bar_w * 0.5, top, bar_w, bottom - top, color)
-
-
-## Vitesse : "count" triangles pleins pointant vers la droite, cote a cote
-## (1 = normal, 2/4 = avance rapide - meme convention que les lecteurs video
-## "»" repetes).
-func _draw_speed_icon(img: Image, color: Color, count: int) -> void:
-	var s := float(TIME_ICON_SIZE)
-	var tri_w := s * 0.22
-	var tri_h := s * 0.5
-	var spacing := s * 0.10
-	var total_w: float = count * tri_w + float(count - 1) * spacing
-	var start_x: float = (s - total_w) * 0.5
-	var top := (s - tri_h) * 0.5
-	for i in range(count):
-		var x0: float = start_x + float(i) * (tri_w + spacing)
-		var a := Vector2(x0, top)
-		var b := Vector2(x0, top + tri_h)
-		var c := Vector2(x0 + tri_w, top + tri_h * 0.5)
-		_fill_triangle(img, a, b, c, color)
-
-
-## Remplit un rectangle plein (coordonnees flottantes, utilise pour l'icone
-## pause) - meme principe que _fill_triangle mais pour un rectangle simple.
-func _fill_rect_px(img: Image, x: float, y: float, w: float, h: float, color: Color) -> void:
-	var x0 := int(round(x))
-	var y0 := int(round(y))
-	var x1 := int(round(x + w))
-	var y1 := int(round(y + h))
-	for py in range(y0, y1):
-		for px in range(x0, x1):
-			_set_pixel_safe(img, px, py, color)
-
-
-## Trace un trait epais entre deux points (utilise pour les manches d'outils)
-func _draw_thick_line(img: Image, from: Vector2, to: Vector2, color: Color) -> void:
-	var dist := from.distance_to(to)
-	var steps := int(dist) * 2 + 1
-	for i in range(steps + 1):
-		var t := float(i) / float(steps)
-		var p := from.lerp(to, t)
-		_plot_blob(img, p, 1, color)
-
-
-## Peint un petit disque de pixels autour de "center" (rayon en pixels)
-func _plot_blob(img: Image, center: Vector2, radius: int, color: Color) -> void:
-	var cx := int(round(center.x))
-	var cy := int(round(center.y))
-	for dx in range(-radius, radius + 1):
-		for dy in range(-radius, radius + 1):
-			if dx * dx + dy * dy <= radius * radius:
-				_set_pixel_safe(img, cx + dx, cy + dy, color)
-
-
-## Remplit un triangle plein (utilise pour la lame de la hache)
-func _fill_triangle(img: Image, a: Vector2, b: Vector2, c: Vector2, color: Color) -> void:
-	var min_x := int(floor(min(a.x, min(b.x, c.x))))
-	var max_x := int(ceil(max(a.x, max(b.x, c.x))))
-	var min_y := int(floor(min(a.y, min(b.y, c.y))))
-	var max_y := int(ceil(max(a.y, max(b.y, c.y))))
-	for y in range(min_y, max_y + 1):
-		for x in range(min_x, max_x + 1):
-			var p := Vector2(x + 0.5, y + 0.5)
-			if _point_in_triangle(p, a, b, c):
-				_set_pixel_safe(img, x, y, color)
-
-
-func _point_in_triangle(p: Vector2, a: Vector2, b: Vector2, c: Vector2) -> bool:
-	var d1 := _triangle_sign(p, a, b)
-	var d2 := _triangle_sign(p, b, c)
-	var d3 := _triangle_sign(p, c, a)
-	var has_neg := (d1 < 0) or (d2 < 0) or (d3 < 0)
-	var has_pos := (d1 > 0) or (d2 > 0) or (d3 > 0)
-	return not (has_neg and has_pos)
-
-
-func _triangle_sign(p1: Vector2, p2: Vector2, p3: Vector2) -> float:
-	return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y)
-
-
-## set_pixel securise (ignore silencieusement les coordonnees hors image)
-func _set_pixel_safe(img: Image, x: int, y: int, color: Color) -> void:
-	if x < 0 or x >= img.get_width() or y < 0 or y >= img.get_height():
-		return
-	img.set_pixel(x, y, color)
-
-
+## 2026-07-05 (dette d'architecture A1, etape 2) : recherche de la cible la
+## plus proche deleguee a ActionValidator.gd (logique pure, voir sa doc) -
+## seuls le marqueur visuel et l'ajout a la queue de taches restent ici.
 func _handle_chop_click(hit: Vector3) -> void:
-	var closest_tree: Node3D = null
-	var closest_dist := 2.0  # rayon de detection autour du clic
-
-	for tree in get_tree().get_nodes_in_group("trees"):
-		var d: float = Vector2(tree.global_position.x - hit.x, tree.global_position.z - hit.z).length()
-		if d < closest_dist:
-			closest_dist = d
-			closest_tree = tree
+	var closest_tree: Node3D = action_validator.closest_in_group(hit, "trees", get_tree(), 2.0)
 
 	if closest_tree:
 		var task_id: int = task_queue.add_chop_task(closest_tree)
-		var marker_pos: Vector3 = closest_tree.global_position + Vector3(0, 1.9, 0)
+		var marker_pos: Vector3 = closest_tree.global_position + Vector3(0, _marker_height_for(closest_tree), 0)
 		queued_markers[task_id] = _spawn_task_marker(marker_pos, "hache", Color(0.25, 0.55, 0.15))
+
+
+## 2026-07-05 (correctif bug icone invisible Couper/Cueillir) : les arbres
+## (Forest.gd) et buissons (BerryBushes.gd) sont mis a l'echelle aleatoirement
+## a la creation (jusqu'a environ x1.5 pour les arbres selon espece/jitter,
+## voir Forest.gd/scale_jitter) - un decalage de hauteur FIXE (comme avant)
+## placait le marqueur a l'interieur du feuillage des arbres plus grands que
+## la moyenne, le rendant invisible (cache par la couronne). La hauteur suit
+## donc maintenant l'echelle reelle de la cible.
+## 2026-07-05 (2e correctif, meme jour, "icone hache cachee dans l'arbre") :
+## le coefficient 2.3 avait ete choisi sans calculer la hauteur reelle de la
+## couronne - verifie via TreeSpecies.gd/Forest.gd : le chene (le plus haut
+## des arbres "normaux" cibles par Couper, forme "touffu", hauteur=1.3) a une
+## couronne qui monte jusqu'a 0.22+1.3+0.65+0.55=2.72 (top_y + y_max des blobs
+## + leur rayon max, voir _build_foliage_touffu). Comme le marqueur ET la
+## couronne sont mis a l'echelle par le meme facteur (tree.scale), 2.3 etait
+## insuffisant quelle que soit l'echelle - remonte a 2.9 (2.72 + marge) pour
+## rester nettement au-dessus de la couronne la plus haute.
+func _marker_height_for(target: Node3D) -> float:
+	if target.is_in_group("trees"):
+		return 2.9 * target.scale.y
+	return 1.0
 
 
 ## Sprint 24ter : detection au clic pour "Cueillir" - cible le groupe
 ## "cueillette" (arbres fruitiers + buissons a baies, voir Forest.gd/
 ## BerryBushes.gd), independant du groupe "trees" utilise par "Couper"
 func _handle_gather_click(hit: Vector3) -> void:
-	var closest_target: Node3D = null
-	var closest_dist := 2.0  # rayon de detection autour du clic
-
-	for target in get_tree().get_nodes_in_group("cueillette"):
-		var d: float = Vector2(target.global_position.x - hit.x, target.global_position.z - hit.z).length()
-		if d < closest_dist:
-			closest_dist = d
-			closest_target = target
+	var closest_target: Node3D = action_validator.closest_in_group(hit, "cueillette", get_tree(), 2.0)
 
 	if closest_target:
 		var task_id: int = task_queue.add_gather_task(closest_target)
-		# Sprint 26 : hauteur du marqueur plus basse pour un buisson/plante
-		# (bas, pas dans le groupe "trees") que pour un arbre fruitier
-		var height_offset := 1.2 if closest_target.is_in_group("trees") else 0.6
-		var marker_pos: Vector3 = closest_target.global_position + Vector3(0, height_offset, 0)
+		var marker_pos: Vector3 = closest_target.global_position + Vector3(0, _marker_height_for(closest_target), 0)
 		queued_markers[task_id] = _spawn_task_marker(marker_pos, "panier", Color(0.85, 0.25, 0.25))
 
 

@@ -54,7 +54,11 @@ const CLIMATES := {
 			Color(0.70, 0.35, 0.80),  # violet
 		],
 		"terrain_par_saison": {
-			"ete": Color(0.17, 0.36, 0.13),
+			# 2026-07-05 (cycle des saisons, demande explicite de Francois :
+			# "herbe un peu plus jaune" en ete) : R/G legerement remontes, B
+			# baisse - decale le ratio vers le jaune sans changer la luminosite
+			# globale (etait Color(0.17, 0.36, 0.13)).
+			"ete": Color(0.23, 0.39, 0.09),
 			# 2026-07-02 (Sprint 33) : les 3 saisons manquantes sont remplies -
 			# SeasonSystem.gd fait desormais vraiment tourner les 4 saisons.
 			# Sprint 37duodecies : eclaircies dans la meme proportion que "ete"
@@ -66,7 +70,9 @@ const CLIMATES := {
 			# realiste, differente par nature), l'hiver reste blanchi (neige).
 			"automne": Color(0.62, 0.48, 0.24),
 			"hiver": Color(0.90, 0.92, 0.94),
-			"printemps": Color(0.20, 0.42, 0.16),
+			# 2026-07-05 (cycle des saisons, "herbe plus claire" au printemps) :
+			# tous les canaux remontes d'environ 50% (etait Color(0.20, 0.42, 0.16)).
+			"printemps": Color(0.30, 0.54, 0.24),
 		},
 	},
 	# Exemple pour ajouter un futur climat (non utilise pour l'instant) :

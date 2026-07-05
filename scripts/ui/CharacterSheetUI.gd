@@ -47,9 +47,9 @@ const NAME_LABEL_GAP := 8  # espace entre le texte du nom et l'icone
 # visibles d'un coup dans la barre d'onglets, sans fleches de defilement.
 const PANEL_WIDTH := 640
 const PANEL_HEIGHT := 460
-const FONT_TITLE := 30       # nom du nain, en haut de la fiche
-const FONT_SECTION := 20     # titres d'onglets + police des labels de contenu
-const FONT_BODY := 20        # texte courant (stats, competences, tache en cours)
+const FONT_TITLE := 38       # nom du nain, en haut de la fiche
+const FONT_SECTION := 25     # titres d'onglets + police des labels de contenu
+const FONT_BODY := 25        # texte courant (stats, competences, tache en cours)
 const BAR_HEIGHT := 26        # hauteur des barres PV/Faim/Energie/Soif
 
 # Portrait 3D : taille de rendu du SubViewport (plus grand que l'icone
@@ -217,7 +217,7 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	name_label.text = dwarf.dwarf_name
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	name_label.add_theme_font_size_override("font_size", 18)
+	name_label.add_theme_font_size_override("font_size", 22)
 	name_label.add_theme_color_override("font_color", Color(1, 1, 1))
 	name_label.clip_text = true
 	name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS  # filet de securite si un nom depasse quand meme NAME_LABEL_WIDTH

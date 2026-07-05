@@ -105,10 +105,6 @@ script = ExtResource("5")
 [node name="Birds" type="Node3D" parent="."]
 script = ExtResource("18")
 
-[node name="SeasonSystem" type="Node" parent="."]
-unique_name_in_owner = true
-script = ExtResource("14")
-
 [node name="TemperatureSystem" type="Node" parent="."]
 unique_name_in_owner = true
 script = ExtResource("16")
@@ -120,6 +116,10 @@ script = ExtResource("8")
 [node name="GroundDecoration" type="Node3D" parent="."]
 unique_name_in_owner = true
 script = ExtResource("11")
+
+[node name="SeasonSystem" type="Node" parent="."]
+unique_name_in_owner = true
+script = ExtResource("14")
 
 [node name="TaskQueue" type="Node" parent="."]
 unique_name_in_owner = true
@@ -177,7 +177,7 @@ offset_top = 16.0
 offset_right = 230.0
 offset_bottom = 46.0
 horizontal_alignment = 1
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 22
 text = "Jour 1 (Mois 1) - 00h00 - Ete"
 
 [node name="StatsLabel" type="Label" parent="ActionUI"]
@@ -188,7 +188,7 @@ offset_top = -140.0
 offset_right = 620.0
 offset_bottom = -110.0
 grow_vertical = 0
-theme_override_font_sizes/font_size = 18
+theme_override_font_sizes/font_size = 22
 text = "Bois : 0    Pierre : 0    Terre : 0    Taches en attente : 0"
 
 [node name="MaterialBox" type="HBoxContainer" parent="ActionUI"]
@@ -202,17 +202,17 @@ grow_vertical = 0
 theme_override_constants/separation = 12
 
 [node name="BoisButton" type="Button" parent="ActionUI/MaterialBox"]
-custom_minimum_size = Vector2(90, 32)
+custom_minimum_size = Vector2(100, 40)
 toggle_mode = true
 text = "Bois"
 
 [node name="PierreButton" type="Button" parent="ActionUI/MaterialBox"]
-custom_minimum_size = Vector2(90, 32)
+custom_minimum_size = Vector2(100, 40)
 toggle_mode = true
 text = "Pierre"
 
 [node name="TerreButton" type="Button" parent="ActionUI/MaterialBox"]
-custom_minimum_size = Vector2(90, 32)
+custom_minimum_size = Vector2(100, 40)
 toggle_mode = true
 text = "Terre"
 
@@ -227,27 +227,27 @@ grow_vertical = 0
 theme_override_constants/separation = 12
 
 [node name="MinerButton" type="Button" parent="ActionUI/HBox"]
-custom_minimum_size = Vector2(100, 36)
+custom_minimum_size = Vector2(112, 44)
 toggle_mode = true
 text = "Miner"
 
 [node name="CouperButton" type="Button" parent="ActionUI/HBox"]
-custom_minimum_size = Vector2(100, 36)
+custom_minimum_size = Vector2(112, 44)
 toggle_mode = true
 text = "Couper"
 
 [node name="CueillirButton" type="Button" parent="ActionUI/HBox"]
-custom_minimum_size = Vector2(100, 36)
+custom_minimum_size = Vector2(112, 44)
 toggle_mode = true
 text = "Cueillir"
 
 [node name="ConstruireButton" type="Button" parent="ActionUI/HBox"]
-custom_minimum_size = Vector2(110, 36)
+custom_minimum_size = Vector2(126, 44)
 toggle_mode = true
 text = "Construire"
 
 [node name="PuiserButton" type="Button" parent="ActionUI/HBox"]
-custom_minimum_size = Vector2(100, 36)
+custom_minimum_size = Vector2(112, 44)
 toggle_mode = true
 text = "Puiser"
 
@@ -268,12 +268,12 @@ grow_vertical = 0
 theme_override_constants/separation = 4
 
 [node name="InfoLabel" type="Label" parent="ActionUI/InfoPanel/VBox"]
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 20
 text = "..."
 autowrap_mode = 2
 
 [node name="CloseButton" type="Button" parent="ActionUI/InfoPanel/VBox"]
-custom_minimum_size = Vector2(0, 24)
+custom_minimum_size = Vector2(0, 30)
 text = "Fermer"
 
 [node name="CharacterSheetUI" type="CanvasLayer" parent="."]

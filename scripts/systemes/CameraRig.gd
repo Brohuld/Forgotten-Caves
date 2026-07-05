@@ -12,6 +12,11 @@ extends Node3D
 ## demande maintenant a VoxelWorld de reveler une coupe horizontale complete
 ## du niveau vise (voir VoxelWorld.set_view_level).
 
+## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
+## _ready() ci-dessous (grid_height doit rester synchronise avec
+## VoxelWorldScript.HEIGHT, duplique ici en dur pour l'@export ci-dessous).
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+
 @export var move_speed: float = 12.0
 @export var rotate_step_deg: float = 45.0
 @export var zoom_speed: float = 3.0
@@ -55,6 +60,12 @@ var level_label: Label
 
 
 func _ready() -> void:
+	# 2026-07-05 (revue de code, item F010) : grid_height est duplique en dur
+	# (aucune garde-fou automatique auparavant si VoxelWorld.HEIGHT changeait
+	# sans repercuter partout) - avertissement si desynchronise, sans changer
+	# le comportement (grid_height reste la valeur utilisee ci-dessous).
+	if grid_height != VoxelWorldScript.HEIGHT:
+		push_warning("CameraRig.grid_height (%d) desynchronise de VoxelWorld.HEIGHT (%d)" % [grid_height, VoxelWorldScript.HEIGHT])
 	# Sprint 38 (reliefs) : demarre au-dessus du sommet des collines les plus
 	# hautes, sinon la vue par defaut cache leur sommet (meme logique que
 	# VoxelWorld._ready, qui calcule son view_level de la meme facon).
@@ -71,7 +82,7 @@ func _create_ui() -> void:
 	add_child(canvas)
 	level_label = Label.new()
 	level_label.position = Vector2(16, 16)
-	level_label.add_theme_font_size_override("font_size", 22)
+	level_label.add_theme_font_size_override("font_size", 28)
 	canvas.add_child(level_label)
 
 
@@ -173,18 +184,17 @@ func _update_view_level() -> void:
 	# Sprint 85 : meme notification pour les arbres/buissons/cascades (voir
 	# Forest.gd/BerryBushes.gd/WaterfallShapes.gd/WaterfallStreaks.gd/
 	# WaterfallFoamClouds.gd/update_view_level).
-	if forest != null and forest.has_method("update_view_level"):
-		forest.update_view_level(current_level)
-	if berry_bushes != null and berry_bushes.has_method("update_view_level"):
-		berry_bushes.update_view_level(current_level)
-	if waterfall_shapes != null and waterfall_shapes.has_method("update_view_level"):
-		waterfall_shapes.update_view_level(current_level)
-	if waterfall_streaks != null and waterfall_streaks.has_method("update_view_level"):
-		waterfall_streaks.update_view_level(current_level)
-	if waterfall_foam_clouds != null and waterfall_foam_clouds.has_method("update_view_level"):
-		waterfall_foam_clouds.update_view_level(current_level)
-	if ground_decoration != null and ground_decoration.has_method("update_view_level"):
-		ground_decoration.update_view_level(current_level)
+	# 2026-07-05 (revue de code, item F028) : les 6 blocs "if X != null and
+	# X.has_method(...): X.update_view_level(...)" quasi identiques sont
+	# remplaces par une boucle sur ce tableau - meme comportement exact, mais
+	# un seul endroit a modifier si un 7e noeud decoratif doit s'y ajouter.
+	var view_level_nodes: Array = [
+		forest, berry_bushes, waterfall_shapes, waterfall_streaks,
+		waterfall_foam_clouds, ground_decoration,
+	]
+	for node in view_level_nodes:
+		if node != null and node.has_method("update_view_level"):
+			node.update_view_level(current_level)
 
 
 ## current_level est stocke en interne comme la coordonnee Y reelle de la

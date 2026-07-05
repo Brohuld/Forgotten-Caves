@@ -24,21 +24,45 @@ const SPECIES := [
 		"wood_resource": "bois_chene",
 		"forme": "touffu",
 		"hauteur": 1.3,
-		"tronc_color": Color(0.42, 0.28, 0.16),
+		# 2026-07-05 (Francois : "augmenter de 20% les chenes en hauteur et
+		# largeur") : multiplie tree.scale (voir Forest.gd/_spawn_tree) - grandit
+		# tronc/feuilles/branches/racines proportionnellement, meme mecanisme
+		# que le size_multiplier global existant (voir son commentaire).
+		"echelle_base": 1.2,
+		# 2026-07-05 (Francois : "augmente la taille du feuillage" du chene,
+		# demande decomposee separement de l'echelle globale ci-dessus) :
+		# facteur applique UNIQUEMENT aux blobs de feuillage (voir Forest.gd/
+		# _build_foliage_touffu) - n'affecte pas les arbres fruitiers, qui
+		# utilisent la meme forme "touffu" mais n'ont pas ce champ (defaut 1.0).
+		"feuillage_echelle": 1.3,
+		# 2026-07-05 (Francois : "assombrir les troncs des chenes") : etait
+		# (0.42, 0.28, 0.16).
+		"tronc_color": Color(0.28, 0.18, 0.10),
 		"branche_color": Color(0.36, 0.24, 0.14),
 		"racine_color": Color(0.30, 0.20, 0.12),
-		"feuillage_colors": [Color(0.14, 0.36, 0.12), Color(0.18, 0.40, 0.15)],  # Sprint 37unvicies : assombri (chene trop clair)
+		# 2026-07-05 (2e ajustement du gradient, meme jour - Francois : "les
+		# chenes doivent etre de la couleur des sapins actuels") : reprend
+		# exactement l'ancienne couleur du sapin (avant qu'il soit encore
+		# assombri ci-dessous), pour que chene > sapin dans le gradient.
+		"feuillage_colors": [Color(0.04, 0.16, 0.06), Color(0.05, 0.19, 0.08)],
 	},
 	{
 		"id": "sapin",
 		"nom": "Sapin",
 		"wood_resource": "bois_sapin",
 		"forme": "conique",
-		"hauteur": 1.85,  # Sprint 27 : remonte encore (etait 1.6, "arbres trop petits") -
-		# le tronc visuel restant une fraction fixe de cette valeur (25%, voir
+		# 2026-07-05 (Francois : "augmenter de 30% la hauteur des sapins, mais
+		# pas le diametre total des feuilles") : etait 1.85. Le rayon des cones
+		# (voir _build_foliage_conique, lerp(0.48, 0.10, t)) ne depend pas de
+		# cette valeur - seul le span vertical grandit, le diametre max des
+		# feuilles reste 0.48 quelle que soit la hauteur.
+		"hauteur": 2.405,  # Sprint 27 : remonte encore (etait 1.6, "arbres trop petits") -
+		# le tronc visuel restant une fraction fixe de cette valeur (voir
 		# _build_trunk), l'augmentation se voit surtout dans le feuillage conique
 		# (plus haut), pas dans un tronc qui redeviendrait long.
-		"tronc_color": Color(0.35, 0.22, 0.13),
+		# 2026-07-05 (Francois : "assombrir les troncs des sapins") : etait
+		# (0.35, 0.22, 0.13).
+		"tronc_color": Color(0.22, 0.14, 0.08),
 		"branche_color": Color(0.30, 0.19, 0.11),
 		"racine_color": Color(0.26, 0.17, 0.10),
 		# Sprint 37octodecies (2026-07-04, "pas assez fonce pour les sapins",
@@ -48,7 +72,11 @@ const SPECIES := [
 		# DayNightCycle.LIGHT_ENERGY/AMBIENT_ENERGY) - contrairement au sol/
 		# a l'eau (faces plates), donc leur albedo doit rester sombre en
 		# valeur absolue pour paraitre "vert fonce" a l'ecran. Assombri.
-		"feuillage_colors": [Color(0.05, 0.20, 0.08), Color(0.07, 0.24, 0.10)],
+		# 2026-07-05 (2e ajustement, meme jour - "les sapins peuvent etre tres
+		# fonces") : le chene reprenant maintenant l'ancienne couleur du
+		# sapin (voir ci-dessus), le sapin est encore assombri pour rester
+		# nettement le plus sombre des 6 especes.
+		"feuillage_colors": [Color(0.02, 0.09, 0.03), Color(0.03, 0.11, 0.04)],
 	},
 	{
 		"id": "bouleau",
@@ -80,13 +108,26 @@ const FRUIT_SPECIES := [
 		"wood_resource": "bois_pommier",
 		"forme": "touffu",
 		"hauteur": 0.9,
-		"tronc_color": Color(0.40, 0.27, 0.15),
+		# 2026-07-05 (signale par Francois, "couleurs de troncs differentes pour
+		# les 3 fruitiers" - les 3 bruns etaient trop proches) : brun chaud,
+		# le plus "classique", pour le pommier.
+		"tronc_color": Color(0.44, 0.29, 0.15),
 		"branche_color": Color(0.34, 0.23, 0.13),
 		"racine_color": Color(0.28, 0.19, 0.11),
-		"feuillage_colors": [Color(0.24, 0.52, 0.20), Color(0.30, 0.58, 0.24)],
+		# 2026-07-05 (gradient clair->fonce demande : bouleau > pommier >
+		# cerisier > oranger > chene > sapin) : juste sous le bouleau.
+		"feuillage_colors": [Color(0.18, 0.42, 0.14), Color(0.22, 0.46, 0.16)],
 		"fruit_resource": "pomme",
 		"fruit_color": Color(0.75, 0.10, 0.12),
-		"fruit_count": 5,
+		# 2026-07-05 (2e passe, meme jour - "les fruits ne sont visibles que
+		# d'un cote") : chaque fruit a une direction aleatoire independante
+		# sur son blob, donc statistiquement seule la moitie des fruits fait
+		# face a la camera a un instant donne (l'autre moitie est cachee par
+		# le feuillage du cote oppose) - ce n'est pas un bug de repartition,
+		# juste un effet d'occlusion normal. Augmente encore le nombre total
+		# pour qu'il en reste suffisamment de visibles cote camera (9 -> 14 -> 22).
+		"fruit_count": 22,
+		"fruit_radius": 0.10,
 		"calories": 35.0,
 	},
 	{
@@ -94,14 +135,22 @@ const FRUIT_SPECIES := [
 		"nom": "Oranger",
 		"wood_resource": "bois_oranger",
 		"forme": "touffu",
-		"hauteur": 0.95,
-		"tronc_color": Color(0.38, 0.25, 0.14),
-		"branche_color": Color(0.32, 0.21, 0.12),
-		"racine_color": Color(0.27, 0.18, 0.10),
-		"feuillage_colors": [Color(0.18, 0.46, 0.20), Color(0.22, 0.52, 0.24)],
+		# 2026-07-05 (signale par Francois, "les orangers doivent etre plus
+		# petits que les autres fruitiers") : etait la plus haute des 3 (0.95),
+		# desormais nettement la plus basse.
+		"hauteur": 0.72,
+		# Ecorce plus claire/grisee (agrumes), pour se distinguer du pommier/
+		# cerisier.
+		"tronc_color": Color(0.58, 0.50, 0.35),
+		"branche_color": Color(0.48, 0.41, 0.28),
+		"racine_color": Color(0.40, 0.34, 0.23),
+		# 2026-07-05 (gradient clair->fonce demande) : plus fonce que le
+		# cerisier, plus clair que le chene.
+		"feuillage_colors": [Color(0.13, 0.32, 0.13), Color(0.16, 0.35, 0.15)],
 		"fruit_resource": "orange",
 		"fruit_color": Color(0.95, 0.55, 0.10),
-		"fruit_count": 5,
+		"fruit_count": 22,  # 2026-07-05 (2e passe) : voir commentaire pommier ci-dessus
+		"fruit_radius": 0.10,
 		"calories": 30.0,
 	},
 	{
@@ -110,13 +159,25 @@ const FRUIT_SPECIES := [
 		"wood_resource": "bois_cerisier",
 		"forme": "touffu",
 		"hauteur": 0.85,
-		"tronc_color": Color(0.36, 0.22, 0.14),
-		"branche_color": Color(0.30, 0.19, 0.12),
-		"racine_color": Color(0.25, 0.16, 0.10),
-		"feuillage_colors": [Color(0.26, 0.54, 0.22), Color(0.32, 0.60, 0.26)],
+		# Ecorce plus sombre/rougeatre (cerisier), pour se distinguer du
+		# pommier/oranger.
+		"tronc_color": Color(0.30, 0.15, 0.13),
+		"branche_color": Color(0.26, 0.13, 0.11),
+		"racine_color": Color(0.22, 0.12, 0.10),
+		# 2026-07-05 (gradient clair->fonce demande) : plus fonce que le
+		# pommier, plus clair que l'oranger.
+		"feuillage_colors": [Color(0.18, 0.37, 0.13), Color(0.21, 0.40, 0.15)],
 		"fruit_resource": "cerise",
 		"fruit_color": Color(0.55, 0.05, 0.12),
-		"fruit_count": 6,
+		# 2026-07-05 (signale par Francois, "cerises beaucoup trop grosses" +
+		# "il faut plus de cerises") : rayon reduit (une cerise reste petite,
+		# contrairement a la pomme/l'orange) et compte augmente nettement -
+		# un cerisier porte en vrai beaucoup de petits fruits.
+		# 2026-07-05 (2e passe, meme jour) : voir commentaire pommier plus
+		# haut (occlusion normale, environ moitie des fruits visibles a la
+		# fois cote camera) - encore augmente (16 -> 26).
+		"fruit_count": 26,
+		"fruit_radius": 0.06,
 		"calories": 22.0,  # petit fruit, moins nourrissant malgre un arbre plus "genereux" en fruits
 	},
 ]

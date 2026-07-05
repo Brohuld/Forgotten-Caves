@@ -69,6 +69,9 @@ extends Node3D
 
 const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
+## _ready() ci-dessous (grid_width/grid_depth dupliques ci-dessous).
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
 ## Sprint 37bis (2026-07-03, correction bug signale par Francois : "il faut
 ## empecher les arbres et buissons dans l'eau") - reference a VoxelWorld pour
@@ -116,16 +119,48 @@ var _foliage_base_colors: Dictionary = {}  # PartType -> Array[Color]
 # par saison. "ete" = neutre (couleurs d'origine, aucun changement). Valeurs
 # choisies pour rester lisibles avec le rendu plat/mat du jeu (pas de vraie
 # simulation de chute de feuilles, juste un changement de teinte).
-const SEASON_FOLIAGE_TINT := {
+# 2026-07-05 (cycle des saisons, demande explicite de Francois - automne :
+# "les feuilles des arbres prennent une teinte rouge en plus de la couleur de
+# base - SAUF pour les sapins" ; hiver : "les arbres perdent presque toutes
+# leurs feuilles, SAUF les sapins" ; printemps : "TOUS les arbres ont des
+# feuilles plus claires") : deux tables desormais, une pour BLOB/LEAF (chene/
+# bouleau/arbres fruitiers - tous "sauf les sapins") et une pour CONE (sapin
+# uniquement) qui reste vert toute l'annee sauf au printemps (seule saison ou
+# "tous les arbres" sont concernes, sapin inclus). Le canal alpha de
+# SEASON_FOLIAGE_TINT["hiver"] (0.12, tres faible) fait "tomber les feuilles"
+# via la transparence du materiau (voir _build_shared_meshes, transparency
+# active UNIQUEMENT sur BLOB/LEAF) plutot qu'en cachant des instances via leur
+# transform - ce qui aurait entre en conflit avec update_view_level()/
+# hide_tree_visuals(), qui remettent en permanence les transforms d'origine
+# independamment de la saison (voir leurs docstrings).
+const SEASON_FOLIAGE_TINT := {  # BLOB + LEAF (chene/bouleau/arbres fruitiers)
+	"ete": Color(1.0, 1.0, 1.0, 1.0),
+	"automne": Color(1.35, 0.85, 0.45, 1.0),
+	"hiver": Color(0.55, 0.5, 0.48, 0.12),
+	"printemps": Color(1.15, 1.2, 1.05, 1.0),
+}
+const SEASON_CONE_TINT := {  # CONE (sapin uniquement) - jamais rougi/transparent
 	"ete": Color(1.0, 1.0, 1.0),
-	"automne": Color(1.35, 0.85, 0.45),
-	"hiver": Color(0.5, 0.5, 0.55),
-	"printemps": Color(0.9, 1.15, 0.85),
+	"automne": Color(1.0, 1.0, 1.0),
+	"hiver": Color(1.0, 1.0, 1.0),
+	"printemps": Color(1.08, 1.12, 1.05),
 }
 
 
 func _ready() -> void:
-	randomize()
+	# 2026-07-05 (revue de code, item F010) : grid_width/grid_depth/ground_level
+	# dupliques en dur (aucune garde-fou automatique auparavant) - avertissement
+	# si desynchronise de VoxelWorld.gd, sans changer le comportement.
+	if grid_width != VoxelWorldScript.WIDTH or grid_depth != VoxelWorldScript.DEPTH or not is_equal_approx(ground_level, float(VoxelWorldScript.HEIGHT)):
+		push_warning("Forest.grid_width/grid_depth/ground_level (%d/%d/%.1f) desynchronise de VoxelWorld (%d/%d/%d)" % [grid_width, grid_depth, ground_level, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, VoxelWorldScript.HEIGHT])
+	# 2026-07-05 (correctif revue de code C3, meme cause que C2/C4-C6/I9) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine (seed(active_seed)) pour toute la carte. Forest.gd est declare
+	# apres VoxelWorld dans Main.tscn : le generateur global est deja
+	# correctement initialise ici, pas besoin de le reinitialiser - c'est
+	# justement ce qui rend desormais la position des arbres reproductible
+	# par graine (voir menu de demarrage/StartMenu.gd).
 	_build_shared_meshes()
 	var tile_count: float = float(grid_width * grid_depth)
 	var tree_count: int = int(round(tree_density_per_1000_tiles * tile_count / 1000.0))
@@ -212,6 +247,16 @@ func _build_shared_meshes() -> void:
 	_mmi[PartType.CONE] = _make_mmi(_make_cylinder_mesh(0.0, 1.0, 1.0))
 	_mmi[PartType.BLOB] = _make_mmi(_make_sphere_mesh(1.0))
 	_mmi[PartType.LEAF] = _make_mmi(_make_box_mesh(Vector3.ONE))
+	# 2026-07-05 (cycle des saisons, hiver : "les arbres perdent presque toutes
+	# leurs feuilles, sauf les sapins") : transparence activee UNIQUEMENT sur
+	# les materiaux BLOB/LEAF (chacun un materiau distinct, voir _make_mmi) -
+	# jamais sur CONE (sapin) ni sur les autres pieces. L'alpha de la teinte
+	# hiver (SEASON_FOLIAGE_TINT, tres faible) rendra ces feuilles quasiment
+	# invisibles sans toucher a leur transform - voir sa doc plus haut pour la
+	# raison (conflit evite avec update_view_level()/hide_tree_visuals()).
+	for part_type in [PartType.BLOB, PartType.LEAF]:
+		var mat: StandardMaterial3D = _mmi[part_type].material_override
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	for key in _mmi.keys():
 		_pending_xforms[key] = []
 		_pending_colors[key] = []
@@ -294,7 +339,11 @@ func _spawn_tree(species: Dictionary) -> void:
 	# deux arbres de la meme espece ne soient jamais des clones parfaits.
 	# size_multiplier applique en plus une taille de base plus grande a TOUS
 	# les arbres (2026-07-02, demande explicite : arbres agrandis de 30%).
-	var scale_jitter: float = randf_range(0.85, 1.15) * size_multiplier
+	# 2026-07-05 (Francois : "augmenter de 20% les chenes en hauteur et
+	# largeur") : echelle_base est un multiplicateur PAR ESPECE (1.0 si absent,
+	# voir TreeSpecies.gd) applique en plus - grandit tronc/feuilles/branches/
+	# racines proportionnellement pour cette espece uniquement.
+	var scale_jitter: float = randf_range(0.85, 1.15) * size_multiplier * species.get("echelle_base", 1.0)
 	var tint_jitter: float = randf_range(0.9, 1.1)
 
 	var tree := Node3D.new()
@@ -315,7 +364,13 @@ func _spawn_tree(species: Dictionary) -> void:
 	_build_roots(tree, species, tint_jitter)
 	var trunk_visual_height: float = _build_trunk(tree, species, trunk_height, tint_jitter)
 	_build_branches(tree, species, trunk_height, tint_jitter)
-	_build_foliage(tree, species, trunk_height, trunk_visual_height, tint_jitter)
+	# 2026-07-05 (signale par Francois : fruits mal repartis / suspendus dans
+	# le vide) : _build_foliage renvoie desormais la liste des blobs de
+	# feuillage reellement crees (position + rayon), pour que _build_fruits
+	# puisse ancrer chaque fruit a la surface d'un blob existant plutot qu'a
+	# une position theorique qui pouvait tomber hors du feuillage reel
+	# (arrangement des blobs asymetrique/aleatoire).
+	var blob_data: Array = _build_foliage(tree, species, trunk_height, trunk_visual_height, tint_jitter)
 
 	# Sprint 24ter : arbre fruitier - ajoute les fruits + rend l'arbre
 	# recoltable via l'action "Cueillir" (groupe/metadonnees partages avec
@@ -327,7 +382,7 @@ func _spawn_tree(species: Dictionary) -> void:
 		tree.add_to_group("cueillette")
 		tree.set_meta("fruit_resource", species["fruit_resource"])
 		tree.set_meta("fruits_left", fruit_count)
-		_build_fruits(tree, species, trunk_height, fruit_count)
+		_build_fruits(tree, species, trunk_height, fruit_count, blob_data)
 
 	# Sprint 34 : toute la geometrie decorative (racines/tronc/branches/
 	# feuillage) vient d'etre construite comme des noeuds TEMPORAIRES sous
@@ -364,7 +419,12 @@ func _build_roots(tree: Node3D, species: Dictionary, tint: float) -> void:
 func _build_trunk(tree: Node3D, species: Dictionary, trunk_height: float, tint: float) -> float:
 	var visual_height: float = trunk_height
 	if species.get("forme", "touffu") == "conique":
-		visual_height = max(trunk_height * 0.25, 0.18)
+		# 2026-07-05 (Francois : "diminuer l'espace entre la racine des sapins
+		# et le bas des feuilles") : fraction de tronc visible reduite (etait
+		# 0.25) - le feuillage conique demarre juste au-dessus (voir
+		# _build_foliage, start_y = 0.22 + trunk_visual_height), donc un tronc
+		# visuel plus court rapproche le bas des feuilles des racines.
+		visual_height = max(trunk_height * 0.12, 0.18)
 
 	var trunk := MeshInstance3D.new()
 	trunk.name = "Trunk"
@@ -430,7 +490,11 @@ func _build_branches(tree: Node3D, species: Dictionary, trunk_height: float, tin
 
 
 ## Aiguille le bon type de feuillage selon la "forme" de l'espece
-func _build_foliage(tree: Node3D, species: Dictionary, trunk_height: float, trunk_visual_height: float, tint: float) -> void:
+## Renvoie la liste des blobs de feuillage crees (Array de {"position":
+## Vector3, "radius": float}, coordonnees locales a "tree") - vide pour le
+## feuillage conique (sapin, jamais un arbre fruitier). Utilise par
+## _build_fruits pour ancrer les fruits a de vrais blobs (voir plus bas).
+func _build_foliage(tree: Node3D, species: Dictionary, trunk_height: float, trunk_visual_height: float, tint: float) -> Array:
 	var top_y: float = 0.22 + trunk_height
 	match species.get("forme", "touffu"):
 		"conique":
@@ -438,10 +502,11 @@ func _build_foliage(tree: Node3D, species: Dictionary, trunk_height: float, trun
 			# visuel, pas du sommet de la hauteur totale de l'arbre - il occupe
 			# donc presque toute la silhouette, comme un vrai sapin.
 			_build_foliage_conique(tree, species, 0.22 + trunk_visual_height, top_y, tint)
+			return []
 		"fin":
-			_build_foliage_fin(tree, species, top_y, tint)
+			return _build_foliage_fin(tree, species, top_y, tint)
 		_:
-			_build_foliage_touffu(tree, species, top_y, tint)
+			return _build_foliage_touffu(tree, species, top_y, tint)
 
 
 ## Feuillage touffu (chene, arbres fruitiers) : plusieurs spheres qui se
@@ -454,25 +519,15 @@ func _build_foliage(tree: Node3D, species: Dictionary, trunk_height: float, trun
 ## (0.05-0.35 -> 0.05-0.65) pour une couronne plus haute et plus fournie,
 ## sans changer "top_y" (donc sans changer le tronc). Grappes de feuilles
 ## agrandies (5-8 -> 7-10).
-func _build_foliage_touffu(tree: Node3D, species: Dictionary, top_y: float, tint: float) -> void:
-	var colors: Array = species["feuillage_colors"]
-	var cluster_count: int = randi_range(4, 6)
-	for i in range(cluster_count):
-		var blob := MeshInstance3D.new()
-		var mesh := SphereMesh.new()
-		mesh.radius = randf_range(0.38, 0.55)
-		mesh.height = mesh.radius * 2.0
-		blob.mesh = mesh
-		blob.position = Vector3(
-			randf_range(-0.26, 0.26),
-			top_y + randf_range(0.05, 0.65),
-			randf_range(-0.26, 0.26)
-		)
-		var blob_color: Color = colors[randi_range(0, colors.size() - 1)] * tint
-		blob.set_surface_override_material(0, _flat_material(blob_color))
-		_tag_part(blob, PartType.BLOB, blob_color, Vector3.ONE * mesh.radius)
-		tree.add_child(blob)
-		_build_leaf_cluster(blob, colors, tint, randi_range(7, 10), mesh.radius * 0.8)
+func _build_foliage_touffu(tree: Node3D, species: Dictionary, top_y: float, tint: float) -> Array:
+	# 2026-07-05 (Francois : "augmente la taille du feuillage" du chene) :
+	# facteur par espece (voir TreeSpecies.gd/feuillage_echelle, 1.0 par defaut
+	# donc AUCUN changement pour les arbres fruitiers, qui partagent cette
+	# meme fonction) applique aux rayons des blobs et a leur etalement
+	# horizontal (xz_spread) - pas a la plage verticale (y_min/y_max), qui
+	# reste fixee par rapport a "top_y" (sommet du tronc, inchange).
+	var echelle: float = species.get("feuillage_echelle", 1.0)
+	return _build_blob_foliage(tree, species, top_y, tint, 4, 6, 0.38 * echelle, 0.55 * echelle, 0.26 * echelle, 0.05, 0.65, 7, 10)
 
 
 ## Feuillage conique (sapin) : Sprint 24quinquies - 4-5 cones empiles qui
@@ -514,25 +569,41 @@ func _build_foliage_conique(tree: Node3D, species: Dictionary, start_y: float, t
 ## Sprint 27 : blobs plus gros (0.20-0.28 -> 0.26-0.38) et un peu plus
 ## nombreux (2-3 -> 3-5), etales plus haut au-dessus du tronc (0.0-0.28 ->
 ## 0.0-0.55), grappes de feuilles agrandies (4-6 -> 6-8)
-func _build_foliage_fin(tree: Node3D, species: Dictionary, top_y: float, tint: float) -> void:
+func _build_foliage_fin(tree: Node3D, species: Dictionary, top_y: float, tint: float) -> Array:
+	return _build_blob_foliage(tree, species, top_y, tint, 3, 5, 0.26, 0.38, 0.22, 0.0, 0.55, 6, 8)
+
+
+## 2026-07-05 (revue de code, item F022) : logique commune a
+## _build_foliage_touffu (chene/arbres fruitiers) et _build_foliage_fin
+## (bouleau) - meme construction (blobs spheriques + grappes de feuilles a
+## leur surface), seuls les nombres/tailles/plages different par espece.
+## Meme comportement qu'avant.
+func _build_blob_foliage(tree: Node3D, species: Dictionary, top_y: float, tint: float,
+		cluster_count_min: int, cluster_count_max: int,
+		radius_min: float, radius_max: float,
+		xz_spread: float, y_min: float, y_max: float,
+		leaf_count_min: int, leaf_count_max: int) -> Array:
 	var colors: Array = species["feuillage_colors"]
-	var cluster_count: int = randi_range(3, 5)
+	var cluster_count: int = randi_range(cluster_count_min, cluster_count_max)
+	var blob_data: Array = []
 	for i in range(cluster_count):
 		var blob := MeshInstance3D.new()
 		var mesh := SphereMesh.new()
-		mesh.radius = randf_range(0.26, 0.38)
+		mesh.radius = randf_range(radius_min, radius_max)
 		mesh.height = mesh.radius * 2.0
 		blob.mesh = mesh
 		blob.position = Vector3(
-			randf_range(-0.22, 0.22),
-			top_y + randf_range(0.0, 0.55),
-			randf_range(-0.22, 0.22)
+			randf_range(-xz_spread, xz_spread),
+			top_y + randf_range(y_min, y_max),
+			randf_range(-xz_spread, xz_spread)
 		)
 		var blob_color: Color = colors[randi_range(0, colors.size() - 1)] * tint
 		blob.set_surface_override_material(0, _flat_material(blob_color))
 		_tag_part(blob, PartType.BLOB, blob_color, Vector3.ONE * mesh.radius)
 		tree.add_child(blob)
-		_build_leaf_cluster(blob, colors, tint, randi_range(6, 8), mesh.radius * 0.8)
+		_build_leaf_cluster(blob, colors, tint, randi_range(leaf_count_min, leaf_count_max), mesh.radius * 0.8)
+		blob_data.append({"position": blob.position, "radius": mesh.radius})
+	return blob_data
 
 
 ## Sprint 24ter : fruits de l'arbre (arbres fruitiers uniquement, voir
@@ -543,25 +614,60 @@ func _build_foliage_fin(tree: Node3D, species: Dictionary, top_y: float, tint: f
 ## a tout le reste de l'arbre) - ils doivent pouvoir disparaitre un par un a
 ## la cueillette, ce qu'un MultiMesh partage ne permet pas facilement ; leur
 ## nombre reste de toute facon tres faible (5-6 par arbre fruitier).
-## Sprint 27 : plage verticale elargie (0.05-0.35 -> 0.05-0.65) pour rester
-## coherente avec le feuillage touffu des arbres fruitiers, desormais etale
-## plus haut (voir _build_foliage_touffu) - les fruits restent repartis dans
-## le feuillage au lieu de sembler flotter en-dessous.
-func _build_fruits(tree: Node3D, species: Dictionary, trunk_height: float, fruit_count: int) -> void:
+## 2026-07-05 (4e correction, meme jour - Francois : "la repartition
+## reguliere autour de l'arbre n'a pas marche (ou est cachee)" + "certains
+## fruits sont trop loin des feuilles et suspendus dans le vide") : la
+## couronne theorique (distance fixe 0.42-0.62 autour du tronc) ne suit pas
+## la forme reelle du feuillage, qui est un amas de blobs places de facon
+## asymetrique/aleatoire (voir _build_blob_foliage) - certaines directions
+## n'ont pas de feuillage a cette distance (fruit flottant), d'autres en ont
+## beaucoup (fruits caches derriere). Chaque fruit est desormais ancre a la
+## surface d'un blob de feuillage REELLEMENT cree (choisi au hasard parmi
+## "blob_data", position/rayon renvoyes par _build_foliage), avec une petite
+## marge (0.85-1.05x le rayon) pour rester visible en depassant un peu.
+func _build_fruits(tree: Node3D, species: Dictionary, trunk_height: float, fruit_count: int, blob_data: Array) -> void:
 	var top_y: float = 0.22 + trunk_height
 	var mat := _flat_material(species["fruit_color"])
+	var fruit_radius: float = species.get("fruit_radius", 0.13)
+	# 2026-07-05 (5e correction, meme jour - Francois : "quasiment aucun fruit
+	# d'un cote") : le choix d'un blob au hasard PAR fruit (randi_range) pouvait,
+	# avec seulement 4-6 blobs, en tirer certains 4-5 fois et d'autres jamais -
+	# tous les fruits se retrouvaient alors regroupes sur 1-2 blobs voisins,
+	# donc du meme cote de l'arbre. Repartition en "tourniquet" (chaque blob
+	# melange puis pris a son tour) pour garantir que TOUS les blobs recoivent
+	# un nombre de fruits equilibre, quel que soit fruit_count.
+	var blobs_shuffled: Array = blob_data.duplicate()
+	blobs_shuffled.shuffle()
 	for i in range(fruit_count):
 		var fruit := MeshInstance3D.new()
 		fruit.name = "Fruit_%d" % i
 		var mesh := SphereMesh.new()
-		mesh.radius = 0.06
-		mesh.height = 0.12
+		mesh.radius = fruit_radius
+		mesh.height = fruit_radius * 2.0
 		fruit.mesh = mesh
-		fruit.position = Vector3(
-			randf_range(-0.26, 0.26),
-			top_y + randf_range(0.05, 0.65),
-			randf_range(-0.26, 0.26)
-		)
+		if blobs_shuffled.is_empty():
+			# Filet de securite si jamais aucun blob n'a ete cree (ne devrait
+			# pas arriver pour un arbre fruitier, "touffu" par construction).
+			var angle := randf_range(0.0, TAU)
+			fruit.position = Vector3(
+				cos(angle) * 0.5,
+				top_y + randf_range(-0.05, 0.65),
+				sin(angle) * 0.5
+			)
+		else:
+			var blob: Dictionary = blobs_shuffled[i % blobs_shuffled.size()]
+			var blob_pos: Vector3 = blob["position"]
+			var blob_radius: float = blob["radius"]
+			# 2026-07-05 (Francois n'est pas d'accord avec l'explication
+			# "occlusion normale" donnee precedemment - il veut des fruits
+			# tout autour de CHAQUE blob, a une hauteur aleatoire par rapport
+			# au blob, pas juste biaises vers le bas) : elevation desormais
+			# sur toute la sphere (-90..+90 degres), pas seulement -70..+25.
+			var az := randf_range(0.0, TAU)
+			var elev := randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
+			var dir := Vector3(cos(elev) * cos(az), sin(elev), cos(elev) * sin(az))
+			var dist := blob_radius * randf_range(0.85, 1.05)
+			fruit.position = blob_pos + dir * dist
 		fruit.set_surface_override_material(0, mat)
 		tree.add_child(fruit)
 
@@ -594,10 +700,10 @@ func _build_leaf_cluster(parent: Node3D, colors: Array, tint: float, count: int,
 ## par la teinte de l'arbre), part_scale est le facteur d'echelle a appliquer
 ## au maillage "unite" du MultiMesh pour retrouver la taille reelle voulue
 ## (rayon/hauteur/dimensions d'origine de cette piece precise).
-func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector3) -> void:
+func _tag_part(node: MeshInstance3D, part_type: int, color: Color, part_scale: Vector3) -> void:
 	node.set_meta("part_type", part_type)
 	node.set_meta("part_color", color)
-	node.set_meta("part_scale", scale)
+	node.set_meta("part_scale", part_scale)
 
 
 ## Sprint 34 : parcourt tous les descendants de "tree" tagues via _tag_part
@@ -691,12 +797,16 @@ func _flat_material(color: Color) -> StandardMaterial3D:
 ## de la couleur par instance des MultiMeshInstance3D partages - plus rapide
 ## (pas de creation de materiau) et coherent avec le reste de la refonte.
 func apply_season_tint(season_id: String) -> void:
-	var tint: Color = SEASON_FOLIAGE_TINT.get(season_id, Color(1.0, 1.0, 1.0))
+	var tint: Color = SEASON_FOLIAGE_TINT.get(season_id, Color(1.0, 1.0, 1.0, 1.0))
+	var cone_tint: Color = SEASON_CONE_TINT.get(season_id, Color(1.0, 1.0, 1.0))
 	for part_type in _FOLIAGE_PART_TYPES:
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var base_colors: Array = _foliage_base_colors[part_type]
+		# 2026-07-05 (cycle des saisons, "sauf les sapins" en automne/hiver) :
+		# CONE (sapin) suit sa propre table, jamais SEASON_FOLIAGE_TINT.
+		var t: Color = cone_tint if part_type == PartType.CONE else tint
 		for i in range(base_colors.size()):
-			mmi.multimesh.set_instance_color(i, base_colors[i] * tint)
+			mmi.multimesh.set_instance_color(i, base_colors[i] * t)
 
 
 ## Sprint 34 : rend invisibles toutes les instances de mesh partagees

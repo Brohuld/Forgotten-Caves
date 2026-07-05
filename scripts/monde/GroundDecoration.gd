@@ -61,10 +61,53 @@ var _pending_colors: Dictionary = {}   # PartType -> Array[Color]
 ## index), pour permettre update_view_level plus bas.
 var _pending_ground_y: Dictionary = {}  # PartType -> Array[float]
 var _view_level: int = 999999  # tres haut par defaut = rien de cache avant le premier appel de CameraRig
+## 2026-07-05 (correctif bug signale par Francois : "quand on mine un bloc qui
+## a de la decoration, celle-ci ne disparait pas") - meme index que les
+## tableaux ci-dessus. Une fois une instance marquee retiree ici,
+## update_view_level ne doit plus jamais la reafficher (voir plus bas).
+var _removed_instances: Dictionary = {}  # PartType -> Array[bool]
+
+# 2026-07-05 (cycle des saisons, demande explicite de Francois - printemps :
+# "plus de fleurs de decorations" ; ete : "disparition de 30% des
+# decorations") : comme toute la decoration est generee UNE fois au demarrage
+# (voir docstring en tete de fichier - jamais de vraie regeneration dynamique),
+# ces deux effets sont obtenus en taguant CHAQUE decoration (au moment de sa
+# creation, une fois pour toutes ses pieces - voir _harvest_and_clear) avec
+# deux booleens independants plutot qu'en creant/detruisant des instances a
+# chaque changement de saison :
+# - "printemps_seulement" (fleurs uniquement, ~40% des fleurs generees) :
+#   cachees sauf au printemps -> "plus de fleurs" au printemps par rapport aux
+#   autres saisons (fleurs de base toujours visibles + bonus printemps).
+# - "masque_en_ete" (les 4 types de decoration, ~30% independamment) : cachees
+#   uniquement en ete -> "disparition de 30% des decorations" en ete.
+# Ni l'automne ni l'hiver ne sont mentionnes pour la decoration : aucun des
+# deux booleens n'y a d'effet (densite pleine, comme avant ce cycle).
+const ETE_MASQUE_FRACTION := 0.30
+const PRINTEMPS_FLEUR_BONUS_FRACTION := 0.4
+var _pending_printemps_seulement: Dictionary = {}  # PartType -> Array[bool]
+var _pending_masque_en_ete: Dictionary = {}        # PartType -> Array[bool]
+var _season_id: String = "ete"
 
 
 func _ready() -> void:
-	randomize()
+	# 2026-07-05 (revue de code, item F026) : garde de coherence avec
+	# Forest.gd/BerryBushes.gd, qui se protegent deja contre un %VoxelWorld
+	# introuvable - evite un crash null-reference si ce noeud unique venait a
+	# manquer dans la scene.
+	if voxel_world == null:
+		return
+	# 2026-07-05 (revue de code, item F010) : grid_width/grid_depth dupliques
+	# en dur (aucune garde-fou automatique auparavant) - avertissement si
+	# desynchronise de VoxelWorld.gd, sans changer le comportement.
+	if grid_width != VoxelWorldScript.WIDTH or grid_depth != VoxelWorldScript.DEPTH:
+		push_warning("GroundDecoration.grid_width/grid_depth (%d/%d) desynchronise de VoxelWorld.WIDTH/DEPTH (%d/%d)" % [grid_width, grid_depth, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH])
+	# 2026-07-05 (correctif revue de code C5, meme cause que C2-C4/C6/I9) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine (seed(active_seed)). GroundDecoration.gd est declare apres
+	# VoxelWorld dans Main.tscn : le generateur global est deja correctement
+	# initialise ici - rend desormais la position des decorations de sol
+	# reproductible par graine.
 	_build_shared_meshes()
 	var climate: Dictionary = ClimateDefs.get_climate(climate_id)
 	for x in range(grid_width):
@@ -107,6 +150,9 @@ func _build_shared_meshes() -> void:
 		_pending_xforms[key] = []
 		_pending_colors[key] = []
 		_pending_ground_y[key] = []
+		_removed_instances[key] = []
+		_pending_printemps_seulement[key] = []
+		_pending_masque_en_ete[key] = []
 
 
 func _make_mmi(mesh: Mesh) -> MultiMeshInstance3D:
@@ -182,7 +228,10 @@ func _spawn_grass_tuft(x: int, y: int, z: int, climate: Dictionary) -> void:
 		_tag_part(blade, PartType.GRASS_BLADE, color, Vector3(1.0, mesh.height, 1.0))
 		tuft.add_child(blade)
 
-	_harvest_and_clear(tuft, float(y) - 1.0)
+	# 2026-07-05 (cycle des saisons, ete : "disparition de 30% des
+	# decorations") : tire UNE fois par touffe (pas par brin) pour que toute
+	# la touffe apparaisse/disparaisse ensemble.
+	_harvest_and_clear(tuft, float(y) - 1.0, false, randf() < ETE_MASQUE_FRACTION)
 
 
 ## Petite fleur (tige + bouton), couleur choisie au hasard parmi les
@@ -215,7 +264,12 @@ func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
 	_tag_part(bloom, PartType.FLOWER_BLOOM, bloom_color, Vector3.ONE * bloom_mesh.radius)
 	flower.add_child(bloom)
 
-	_harvest_and_clear(flower, float(y) - 1.0)
+	# 2026-07-05 (cycle des saisons, printemps : "plus de fleurs de
+	# decorations") : ~40% des fleurs generees (tige+bouton ensemble) sont
+	# cachees sauf au printemps - voir la doc de PRINTEMPS_FLEUR_BONUS_FRACTION
+	# plus haut. Egalement soumises a "masque_en_ete" comme toute decoration.
+	var printemps_seulement: bool = randf() < PRINTEMPS_FLEUR_BONUS_FRACTION
+	_harvest_and_clear(flower, float(y) - 1.0, printemps_seulement, randf() < ETE_MASQUE_FRACTION)
 
 
 ## Petit caillou gris, taille/teinte/rotation legerement aleatoires
@@ -236,15 +290,15 @@ func _spawn_pebble(x: int, y: int, z: int) -> void:
 	_tag_part(mesh_part, PartType.PEBBLE, color, mesh.size)
 	pebble.add_child(mesh_part)
 
-	_harvest_and_clear(pebble, float(y) - 1.0)
+	_harvest_and_clear(pebble, float(y) - 1.0, false, randf() < ETE_MASQUE_FRACTION)
 
 
 ## Sprint 34 : marque une MeshInstance3D temporaire comme "piece a recolter"
 ## (voir _harvest_and_clear) - meme principe que Forest.gd/_tag_part.
-func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector3) -> void:
+func _tag_part(node: MeshInstance3D, part_type: int, color: Color, part_scale: Vector3) -> void:
 	node.set_meta("part_type", part_type)
 	node.set_meta("part_color", color)
-	node.set_meta("part_scale", scale)
+	node.set_meta("part_scale", part_scale)
 
 
 ## Sprint 34 : recolte le global_transform + couleur + taille de toutes les
@@ -253,7 +307,7 @@ func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector
 ## MultiMeshInstance3D partage correspondant, puis supprime "root" entier (pas
 ## besoin de garder de noeud racine ici, contrairement aux arbres - une
 ## decoration n'a ni groupe ni metadonnee ni logique de suppression future).
-func _harvest_and_clear(root: Node3D, ground_block_y: float) -> void:
+func _harvest_and_clear(root: Node3D, ground_block_y: float, printemps_seulement: bool = false, masque_en_ete: bool = false) -> void:
 	var parts: Array = []
 	_collect_tagged_parts(root, parts)
 	for node in parts:
@@ -267,6 +321,12 @@ func _harvest_and_clear(root: Node3D, ground_block_y: float) -> void:
 		# necessaire ici puisque "root" est libere juste apres (aucun noeud
 		# ne survit pour retenir cette information autrement).
 		_pending_ground_y[part_type].append(ground_block_y)
+		_removed_instances[part_type].append(false)
+		# 2026-07-05 (cycle des saisons) : voir declaration plus haut - memes
+		# valeurs pour TOUTES les pieces d'une meme decoration (tirees UNE
+		# fois par decoration cote appelant, jamais par piece individuelle).
+		_pending_printemps_seulement[part_type].append(printemps_seulement)
+		_pending_masque_en_ete[part_type].append(masque_en_ete)
 	root.queue_free()
 
 
@@ -304,13 +364,64 @@ func _apply_pending_instances() -> void:
 ## transform d'origine est toujours disponible pour la restauration.
 func update_view_level(level: int) -> void:
 	_view_level = level
+	_refresh_all_visibility()
+
+
+## 2026-07-05 (cycle des saisons) : appele par SeasonSystem.gd a chaque
+## changement de saison - meme mecanisme que update_view_level (voir plus
+## haut), factorise dans _refresh_all_visibility pour combiner les TROIS
+## raisons independantes de cacher une instance (retiree par minage / au-dessus
+## du niveau de vue / masquee par la saison) sans qu'elles se marchent dessus.
+func apply_season(season_id: String) -> void:
+	_season_id = season_id
+	_refresh_all_visibility()
+
+
+## Combine les 3 conditions de visibilite (voir update_view_level/apply_season
+## ci-dessus) et met a jour les transforms de TOUTES les instances - appele
+## par les deux, jamais directement.
+func _refresh_all_visibility() -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var xforms: Array = _pending_xforms[part_type]
 		var ground_ys: Array = _pending_ground_y[part_type]
+		var removed: Array = _removed_instances[part_type]
+		var printemps_seulement: Array = _pending_printemps_seulement[part_type]
+		var masque_en_ete: Array = _pending_masque_en_ete[part_type]
 		for i in range(xforms.size()):
-			if ground_ys[i] > float(_view_level):
+			# 2026-07-05 (correctif "decoration ne disparait pas au minage") :
+			# une instance retiree (voir remove_decoration_at) reste cachee
+			# quel que soit le niveau de vue - ne jamais la restaurer.
+			var hidden: bool = removed[i] or ground_ys[i] > float(_view_level)
+			if not hidden and printemps_seulement[i] and _season_id != "printemps":
+				hidden = true
+			if not hidden and masque_en_ete[i] and _season_id == "ete":
+				hidden = true
+			if hidden:
 				mmi.multimesh.set_instance_transform(i, zero_xform)
 			else:
 				mmi.multimesh.set_instance_transform(i, xforms[i])
+
+
+## 2026-07-05 (correctif bug signale par Francois : "quand on mine un bloc qui
+## a de la decoration, celle-ci ne disparait pas") - appelee par Dwarf.gd/
+## _complete_task ("miner") juste apres VoxelWorld.remove_block. Contrairement
+## aux arbres/buissons, une decoration n'a pas de noeud propre a liberer :
+## on retrouve la/les instance(s) concernee(s) par leur position au sol
+## (floor(origin.x/z), meme convention que le placement en grille, voir
+## _spawn_grass_tuft/_spawn_flower/_spawn_pebble) et on les met a l'echelle
+## zero de façon PERMANENTE (voir _removed_instances/update_view_level).
+func remove_decoration_at(bx: int, bz: int) -> void:
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	for part_type in _mmi.keys():
+		var mmi: MultiMeshInstance3D = _mmi[part_type]
+		var xforms: Array = _pending_xforms[part_type]
+		var removed: Array = _removed_instances[part_type]
+		for i in range(xforms.size()):
+			if removed[i]:
+				continue
+			var origin: Vector3 = xforms[i].origin
+			if int(floor(origin.x)) == bx and int(floor(origin.z)) == bz:
+				mmi.multimesh.set_instance_transform(i, zero_xform)
+				removed[i] = true

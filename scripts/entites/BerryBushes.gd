@@ -28,6 +28,9 @@ extends Node3D
 
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
+## _ready() ci-dessous (grid_width/grid_depth dupliques ci-dessous).
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
 ## Sprint 37bis (2026-07-03, correction bug "empecher les arbres et buissons
 ## dans l'eau") - voir la meme correction dans Forest.gd/_pick_dry_position.
@@ -37,7 +40,31 @@ const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 @export var grid_depth: int = 100  # 2026-07-03 : map resize (etait 20)
 @export var ground_level: float = 50.0  # sommet de la carte (HEIGHT, 2026-07-03 : map resize, etait 30)
 @export var size_multiplier: float = 0.9  # 2026-07-02 : buissons/plantes reduits de 10% (jauges nains/arbres/buissons rejustees)
-const BERRIES_PER_BUSH := 4
+const BERRIES_PER_BUSH := 4  # categorie "plante" (fraise/framboise)
+
+# 2026-07-05 (signale par Francois : "plus de baies par buisson", categorie
+# "buisson" - myrtille/groseille/cassis) : nombre distinct de BERRIES_PER_BUSH
+# pour ne pas affecter les plantes (fraise/framboise), qui restent a 4.
+const BUISSON_BERRIES_COUNT := 10
+
+# 2026-07-05 (signale par Francois : la sphere du corps du buisson "flotte" -
+# tangente au sol en un seul point, ce qui parait detache/pas pose) : sphere
+# tronquee, centre remonte a la moitie du rayon pour que 3/4 de sa hauteur
+# reste visible au-dessus du sol et que le 1/4 du bas soit enterre (base au
+# niveau du sol, pas un simple point de contact).
+const BUSH_BODY_RADIUS := 0.4
+const BUSH_BODY_CENTER_Y := BUSH_BODY_RADIUS * 0.5
+
+
+## Nombre maximal de baies pour une categorie donnee ("buisson"/"plante") -
+## utilise partout ou BERRIES_PER_BUSH etait lu en dur avant le 2026-07-05,
+## pour que "plus de baies" (buisson) n'affecte pas les plantes (fraise/
+## framboise, restees a BERRIES_PER_BUSH).
+func _berries_count_for(categorie: String) -> int:
+	if categorie == "plante":
+		return BERRIES_PER_BUSH
+	return BUISSON_BERRIES_COUNT
+
 
 # 2026-07-03 (map resize) : remplace l'ancien bush_count fixe (8, sur la
 # carte 20x20=400 cases d'origine) par une densite (nombre par 1000 cases),
@@ -50,11 +77,31 @@ enum PartType { BUSH_BODY, PLANT_LEAF }
 
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
 var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
-var _pending_colors: Dictionary = {}   # PartType -> Array[Color]
+var _pending_colors: Dictionary = {}   # PartType -> Array[Color] (couleur de BASE, jamais reecrite - voir apply_season_tint)
+
+# 2026-07-05 (cycle des saisons, hiver : "disparition totale des fruits...
+# plus aucune recolte possible en hiver") - mis a jour par SeasonSystem.gd
+# (voir set_winter_active) : empeche _regrow_one_berry de faire regermer une
+# baie (et donc de recreer un noeud Fruit_ visible/recoltable) pendant que
+# SeasonSystem.gd a deja mis fruits_left a 0 pour toute la duree de l'hiver -
+# sans cette garde, le throttle de repousse continuerait d'incrementer
+# fruits_left independamment de cette regle.
+var _winter_active: bool = false
 
 
 func _ready() -> void:
-	randomize()
+	# 2026-07-05 (revue de code, item F010) : grid_width/grid_depth/ground_level
+	# dupliques en dur (aucune garde-fou automatique auparavant) - avertissement
+	# si desynchronise de VoxelWorld.gd, sans changer le comportement.
+	if grid_width != VoxelWorldScript.WIDTH or grid_depth != VoxelWorldScript.DEPTH or not is_equal_approx(ground_level, float(VoxelWorldScript.HEIGHT)):
+		push_warning("BerryBushes.grid_width/grid_depth/ground_level (%d/%d/%.1f) desynchronise de VoxelWorld (%d/%d/%d)" % [grid_width, grid_depth, ground_level, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, VoxelWorldScript.HEIGHT])
+	# 2026-07-05 (correctif revue de code C4, meme cause que C2-C3/C5-C6/I9) :
+	# randomize() retire - reinitialisait le generateur aleatoire global de
+	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
+	# graine (seed(active_seed)). BerryBushes.gd est declare apres VoxelWorld
+	# dans Main.tscn : le generateur global est deja correctement initialise
+	# ici - rend desormais la position des buissons/baies reproductible par
+	# graine.
 	_build_shared_meshes()
 	var tile_count: float = float(grid_width * grid_depth)
 	var bush_count: int = int(round(bush_density_per_1000_tiles * tile_count / 1000.0))
@@ -80,10 +127,21 @@ func _process(delta: float) -> void:
 	_regrow_one_berry()
 
 
+## 2026-07-05 (cycle des saisons) : appele par SeasonSystem.gd a chaque
+## changement de saison (is_winter = season_id == "hiver").
+func set_winter_active(active: bool) -> void:
+	_winter_active = active
+
+
 func _regrow_one_berry() -> void:
+	if _winter_active:
+		return
 	var candidates: Array = []
 	for bush in get_children():
-		if bush.has_meta("fruits_left") and int(bush.get_meta("fruits_left")) < BERRIES_PER_BUSH:
+		if not bush.has_meta("fruits_left"):
+			continue
+		var categorie: String = String(bush.get_meta("categorie", "buisson"))
+		if int(bush.get_meta("fruits_left")) < _berries_count_for(categorie):
 			candidates.append(bush)
 	if candidates.is_empty():
 		return
@@ -101,20 +159,48 @@ func _build_one_berry(bush: Node3D, index: int) -> void:
 	if berry_type.is_empty():
 		return
 	var categorie: String = String(bush.get_meta("categorie", "buisson"))
+	_place_berry(bush, index, categorie, berry_type)
+
+
+## 2026-07-05 (revue de code, item F024) : positionnement d'une baie factorise
+## ici - etait duplique a l'identique dans _build_one_berry/_build_bush_visual/
+## _build_plant_visual (3 occurrences, seuil DRY depasse), risque de divergence
+## si l'une des copies etait corrigee sans les 2 autres. Meme formule qu'avant :
+## touffe basse et resserree pour une "plante", couronne en hauteur pour un
+## "buisson".
+func _place_berry(bush: Node3D, index: int, categorie: String, berry_type: Dictionary) -> void:
 	var berry := MeshInstance3D.new()
 	var berry_mesh := SphereMesh.new()
 	var pos: Vector3
 	if categorie == "plante":
-		berry_mesh.radius = 0.05
-		berry_mesh.height = 0.10
+		# 2026-07-05 (demande explicite Francois, "agrandir les fraises et les
+		# framboises") : rayon/hauteur doubles (etaient 0.05/0.10, jugees trop
+		# petites pour bien lire la forme du fruit) - dispersion (dist) un peu
+		# elargie en consequence pour eviter que des baies plus grosses ne se
+		# chevauchent trop autour de la meme plante.
+		berry_mesh.radius = 0.10
+		berry_mesh.height = 0.20
 		var angle: float = index * TAU / float(BERRIES_PER_BUSH) + randf_range(-0.3, 0.3)
-		var dist: float = randf_range(0.08, 0.18)
-		pos = Vector3(cos(angle) * dist, 0.10, sin(angle) * dist)
+		var dist: float = randf_range(0.10, 0.24)
+		pos = Vector3(cos(angle) * dist, 0.20, sin(angle) * dist)
 	else:
-		berry_mesh.radius = 0.08
-		berry_mesh.height = 0.16
-		var angle2: float = index * TAU / float(BERRIES_PER_BUSH)
-		pos = Vector3(cos(angle2) * 0.35, 0.55, sin(angle2) * 0.35)
+		berry_mesh.radius = 0.055
+		berry_mesh.height = 0.11
+		# 2026-07-05 (3e passe, meme jour - "reduire la taille des baies" + "plus
+		# de baies par buisson" + "placement aleatoire tout autour, hauteur et
+		# angle") : baies retrecies (etaient 0.08/0.16), comptees via
+		# BUISSON_BERRIES_COUNT (10, au lieu de BERRIES_PER_BUSH reserve aux
+		# plantes), ancrees a la surface reelle du corps (rayon x 1.05-1.2),
+		# direction 3D (azimut + elevation) sur la sphere complete (-90..+90,
+		# avant -50..+40) pour rester visible a toute hauteur/angle.
+		var angle2: float = index * TAU / float(BUISSON_BERRIES_COUNT) + randf_range(-0.15, 0.15)
+		var elev2: float = randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
+		var dist2: float = BUSH_BODY_RADIUS * randf_range(1.05, 1.2)
+		pos = Vector3(
+			cos(elev2) * cos(angle2) * dist2,
+			BUSH_BODY_CENTER_Y + sin(elev2) * dist2,
+			cos(elev2) * sin(angle2) * dist2
+		)
 	berry.mesh = berry_mesh
 	berry.position = pos
 	var berry_mat := StandardMaterial3D.new()
@@ -198,16 +284,17 @@ func _spawn_bush() -> void:
 	bush.position = Vector3(x, _ground_y_at(x, z), z)
 	bush.add_to_group("cueillette")
 	bush.add_to_group("bushes")  # Sprint 85 : groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
+	var categorie: String = berry_type.get("categorie", "buisson")
 	bush.set_meta("fruit_resource", berry_type["id"])
-	bush.set_meta("fruits_left", BERRIES_PER_BUSH)
+	bush.set_meta("fruits_left", _berries_count_for(categorie))
 	bush.set_meta("species_name", berry_type["nom"])
 	# Sprint 37 (backlog Phase 1 item 16) : necessaire pour reconstruire une
 	# baie au bon endroit quand elle repousse (voir _build_one_berry).
-	bush.set_meta("categorie", berry_type.get("categorie", "buisson"))
+	bush.set_meta("categorie", categorie)
 	bush.scale = Vector3.ONE * size_multiplier  # meme mecanisme que Forest.gd/tree.scale, ancre au sol
 	add_child(bush)
 
-	if berry_type.get("categorie", "buisson") == "plante":
+	if categorie == "plante":
 		_build_plant_visual(bush, berry_type)
 	else:
 		_build_bush_visual(bush, berry_type)
@@ -219,14 +306,18 @@ func _spawn_bush() -> void:
 
 
 ## Visuel "buisson" (myrtille/groseille/cassis) : boule de feuillage + baies
-## disposees autour, a hauteur de genou - inchange depuis les sprints precedents.
+## disposees autour, a hauteur de genou.
+## 2026-07-05 (signale par Francois : "sphere flottante, il faudrait une base
+## au niveau du sol") : centre remonte a BUSH_BODY_CENTER_Y (voir sa doc plus
+## haut) au lieu de "radius" - la sphere s'enfonce desormais de 1/4 de sa
+## hauteur dans le sol au lieu d'y etre tangente en un seul point.
 func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	var body := MeshInstance3D.new()
 	var body_mesh := SphereMesh.new()
-	body_mesh.radius = 0.4
-	body_mesh.height = 0.8
+	body_mesh.radius = BUSH_BODY_RADIUS
+	body_mesh.height = BUSH_BODY_RADIUS * 2.0
 	body.mesh = body_mesh
-	body.position.y = 0.4
+	body.position.y = BUSH_BODY_CENTER_Y
 	var body_color := Color(0.25, 0.45, 0.15)
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = body_color
@@ -234,19 +325,10 @@ func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	_tag_part(body, PartType.BUSH_BODY, body_color, Vector3.ONE * body_mesh.radius)
 	bush.add_child(body)
 
-	var berry_mat := StandardMaterial3D.new()
-	berry_mat.albedo_color = berry_type["couleur"]
-	for i in range(BERRIES_PER_BUSH):
-		var berry := MeshInstance3D.new()
-		var berry_mesh := SphereMesh.new()
-		berry_mesh.radius = 0.08
-		berry_mesh.height = 0.16
-		berry.mesh = berry_mesh
-		var angle := i * TAU / float(BERRIES_PER_BUSH)
-		berry.position = Vector3(cos(angle) * 0.35, 0.55, sin(angle) * 0.35)
-		berry.set_surface_override_material(0, berry_mat)
-		berry.name = "Fruit_%d" % i
-		bush.add_child(berry)
+	# 2026-07-05 (revue de code, item F024) : positionnement des baies
+	# factorise dans _place_berry (voir sa doc plus haut).
+	for i in range(BUISSON_BERRIES_COUNT):
+		_place_berry(bush, i, "buisson", berry_type)
 
 
 ## Sprint 24sexies : visuel "plante" (fraise/framboise) - touffe basse de
@@ -274,28 +356,18 @@ func _build_plant_visual(bush: Node3D, berry_type: Dictionary) -> void:
 		_tag_part(leaf, PartType.PLANT_LEAF, leaf_color, mesh.size)
 		bush.add_child(leaf)
 
-	var berry_mat := StandardMaterial3D.new()
-	berry_mat.albedo_color = berry_type["couleur"]
+	# 2026-07-05 (revue de code, item F024) : positionnement des baies
+	# factorise dans _place_berry (voir sa doc plus haut).
 	for i in range(BERRIES_PER_BUSH):
-		var berry := MeshInstance3D.new()
-		var berry_mesh := SphereMesh.new()
-		berry_mesh.radius = 0.05
-		berry_mesh.height = 0.10
-		berry.mesh = berry_mesh
-		var angle := i * TAU / float(BERRIES_PER_BUSH) + randf_range(-0.3, 0.3)
-		var dist := randf_range(0.08, 0.18)
-		berry.position = Vector3(cos(angle) * dist, 0.10, sin(angle) * dist)
-		berry.set_surface_override_material(0, berry_mat)
-		berry.name = "Fruit_%d" % i
-		bush.add_child(berry)
+		_place_berry(bush, i, "plante", berry_type)
 
 
 ## Sprint 34 : marque une MeshInstance3D temporaire comme "piece a recolter"
 ## (meme principe que Forest.gd/_tag_part).
-func _tag_part(node: MeshInstance3D, part_type: int, color: Color, scale: Vector3) -> void:
+func _tag_part(node: MeshInstance3D, part_type: int, color: Color, part_scale: Vector3) -> void:
 	node.set_meta("part_type", part_type)
 	node.set_meta("part_color", color)
-	node.set_meta("part_scale", scale)
+	node.set_meta("part_scale", part_scale)
 
 
 ## Sprint 34 : recolte le corps/les feuilles taguees sous "bush" (jamais les
@@ -342,6 +414,28 @@ func _apply_pending_instances() -> void:
 		for i in range(xforms.size()):
 			mmi.multimesh.set_instance_transform(i, xforms[i])
 			mmi.multimesh.set_instance_color(i, colors[i])
+
+
+## 2026-07-05 (cycle des saisons, demande explicite de Francois : "buissons
+## couleur plus claire" au printemps, "teinte rouge" en automne (idem que les
+## arbres), "teinte grise" en hiver) - UNIQUEMENT PartType.BUSH_BODY (jamais
+## PLANT_LEAF : les plantes/fraise-framboise ne sont pas mentionnees, elles ne
+## changent pas de couleur avec la saison). Repart toujours de la couleur de
+## BASE (_pending_colors, jamais reecrite ailleurs - voir sa declaration),
+## meme principe que Forest.gd/apply_season_tint pour eviter toute derive.
+const SEASON_BODY_TINT := {
+	"ete": Color(1.0, 1.0, 1.0),
+	"automne": Color(1.3, 0.82, 0.55),
+	"hiver": Color(0.72, 0.7, 0.7),
+	"printemps": Color(1.15, 1.18, 1.05),
+}
+
+func apply_season_tint(season_id: String) -> void:
+	var tint: Color = SEASON_BODY_TINT.get(season_id, Color(1.0, 1.0, 1.0))
+	var mmi: MultiMeshInstance3D = _mmi[PartType.BUSH_BODY]
+	var base_colors: Array = _pending_colors[PartType.BUSH_BODY]
+	for i in range(base_colors.size()):
+		mmi.multimesh.set_instance_color(i, base_colors[i] * tint)
 
 
 ## Sprint 85 (2026-07-04, meme demande que Forest.gd/update_view_level -

@@ -25,15 +25,31 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 ## genere QUE la toute premiere fois (aucune sauvegarde encore presente).
 const LAST_SEED_PATH := "user://last_seed.txt"
 
+## 2026-07-05 (revue de code, item F005) : plage de la graine aleatoire par
+## defaut - etait en dur (1000000) dans _build_seed_field, sans nom.
+const DEFAULT_SEED_RANGE := 1000000
+
 var seed_input: LineEdit
 
 
+# 2026-07-05 (revue de code, item F001) : _ready() (~80 lignes) decoupe en
+# sous-fonctions _build_*() - un helper par bloc d'UI, meme contenu qu'avant,
+# rien de fonctionnel ne change.
 func _ready() -> void:
 	anchor_left = 0.0
 	anchor_top = 0.0
 	anchor_right = 1.0
 	anchor_bottom = 1.0
 
+	_build_background()
+	var box: VBoxContainer = _build_panel()
+	_build_title(box)
+	_build_seed_field(box)
+	_build_launch_button(box)
+	_build_note(box)
+
+
+func _build_background() -> void:
 	var bg := ColorRect.new()
 	bg.color = Color(0.10, 0.12, 0.16)
 	bg.anchor_left = 0.0
@@ -42,6 +58,10 @@ func _ready() -> void:
 	bg.anchor_bottom = 1.0
 	add_child(bg)
 
+
+## Cree le panneau central + son conteneur vertical, et retourne ce dernier
+## pour que les autres _build_*() y ajoutent leurs elements.
+func _build_panel() -> VBoxContainer:
 	var panel := PanelContainer.new()
 	panel.anchor_left = 0.5
 	panel.anchor_top = 0.5
@@ -61,14 +81,19 @@ func _ready() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 14)
 	panel.add_child(box)
+	return box
 
+
+func _build_title(box: VBoxContainer) -> void:
 	var title := Label.new()
 	title.text = "Forgotten Caves"
-	title.add_theme_font_size_override("font_size", 28)
+	title.add_theme_font_size_override("font_size", 35)
 	title.add_theme_color_override("font_color", Color.WHITE)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
 
+
+func _build_seed_field(box: VBoxContainer) -> void:
 	var hint := Label.new()
 	hint.text = "Graine de la carte (laisser vide = carte aleatoire) :"
 	hint.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
@@ -89,11 +114,13 @@ func _ready() -> void:
 	# sauvegarde (tout premier lancement).
 	randomize()
 	var last_seed: String = _load_last_seed()
-	seed_input.text = last_seed if not last_seed.is_empty() else str(randi() % 1000000)
+	seed_input.text = last_seed if not last_seed.is_empty() else str(randi() % DEFAULT_SEED_RANGE)
 	# N'accepte que des chiffres (une graine est toujours un nombre entier).
 	seed_input.text_changed.connect(_on_seed_text_changed)
 	box.add_child(seed_input)
 
+
+func _build_launch_button(box: VBoxContainer) -> void:
 	var launch_button := Button.new()
 	launch_button.text = "Lancer la partie"
 	launch_button.custom_minimum_size = Vector2(200, 40)
@@ -101,9 +128,11 @@ func _ready() -> void:
 	launch_button.pressed.connect(_on_launch_pressed)
 	box.add_child(launch_button)
 
+
+func _build_note(box: VBoxContainer) -> void:
 	var note := Label.new()
 	note.text = "La graine utilisee sera affichee dans la console Godot."
-	note.add_theme_font_size_override("font_size", 12)
+	note.add_theme_font_size_override("font_size", 15)
 	note.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD
@@ -152,3 +181,9 @@ func _save_last_seed(text: String) -> void:
 	var f := FileAccess.open(LAST_SEED_PATH, FileAccess.WRITE)
 	if f != null:
 		f.store_string(text)
+	else:
+		# 2026-07-05 (revue de code, item F004) : echouait silencieusement
+		# (disque plein/permissions) - la graine ne sera simplement pas
+		# reproposee au prochain lancement (defaut : nouveau nombre aleatoire),
+		# rien de bloquant, mais desormais visible dans la console.
+		push_warning("StartMenu: impossible d'ecrire %s (graine non sauvegardee)" % LAST_SEED_PATH)

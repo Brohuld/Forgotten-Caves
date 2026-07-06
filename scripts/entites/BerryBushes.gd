@@ -75,6 +75,14 @@ func _berries_count_for(categorie: String) -> int:
 ## Un type par "piece" decorative (hors baies, qui restent individuelles).
 enum PartType { BUSH_BODY, PLANT_LEAF }
 
+## 2026-07-06 (meme correctif que Forest.gd, voir ses commentaires pour le
+## detail complet) : cacher une instance de MultiMesh avec une echelle
+## Vector3.ZERO PILE (Basis totalement degenere) peut corrompre le rendu de
+## TOUT le MultiMesh concerne avec un materiau a eclairage reel - jamais
+## reproduit ici (pas encore observe sur les buissons), mais meme code a
+## risque (voir update_view_level ci-dessous) - corrige preventivement.
+const HIDDEN_INSTANCE_SCALE := 0.0001
+
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
 var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
 var _pending_colors: Dictionary = {}   # PartType -> Array[Color] (couleur de BASE, jamais reecrite - voir apply_season_tint)
@@ -155,8 +163,13 @@ func _regrow_one_berry() -> void:
 ## position/taille que _build_bush_visual/_build_plant_visual (voir plus bas),
 ## pour que la baie qui repousse soit indiscernable d'une baie d'origine.
 func _build_one_berry(bush: Node3D, index: int) -> void:
-	var berry_type: Dictionary = BerryTypes.get_type(String(bush.get_meta("fruit_resource")))
+	var fruit_resource_id: String = String(bush.get_meta("fruit_resource"))
+	var berry_type: Dictionary = BerryTypes.get_type(fruit_resource_id)
 	if berry_type.is_empty():
+		# 2026-07-06 (revue de code, paquet C, M47) : un fruit_resource
+		# corrompu/invalide (id absent de BerryTypes) passait inapercu -
+		# avertissement pour le reperer (repousse silencieusement ignoree).
+		push_warning("BerryBushes: fruit_resource '%s' inconnu de BerryTypes, repousse de baie ignoree" % fruit_resource_id)
 		return
 	var categorie: String = String(bush.get_meta("categorie", "buisson"))
 	_place_berry(bush, index, categorie, berry_type)
@@ -275,8 +288,14 @@ func _ground_y_at(x: float, z: float) -> float:
 
 func _spawn_bush() -> void:
 	var pos := _pick_dry_position()
-	var x := pos.x
-	var z := pos.y
+	# 2026-07-06 (demande explicite Francois) : centre le buisson sur son bloc
+	# de grille (case entiere) plutot que sur une position flottante
+	# quelconque a l'interieur - un buisson decale dans sa case causait des
+	# problemes lors de la cueillette.
+	# 2026-07-06 (correctif parse error) : type explicite ("float"), :=
+	# echouait a inferer le type de retour de floor() dans ce contexte.
+	var x: float = floor(pos.x) + 0.5
+	var z: float = floor(pos.y) + 0.5
 	var berry_type: Dictionary = BerryTypes.random_type()
 
 	var bush := Node3D.new()
@@ -425,15 +444,37 @@ func _apply_pending_instances() -> void:
 ## meme principe que Forest.gd/apply_season_tint pour eviter toute derive.
 const SEASON_BODY_TINT := {
 	"ete": Color(1.0, 1.0, 1.0),
-	"automne": Color(1.3, 0.82, 0.55),
-	"hiver": Color(0.72, 0.7, 0.7),
 	"printemps": Color(1.15, 1.18, 1.05),
 }
+# 2026-07-06 (Francois : "les buissons... ne sont pas assez rouges en
+# automne") : meme cause et meme correctif qu'un lerp cote Forest.gd - la
+# couleur de base du corps du buisson, Color(0.25, 0.45, 0.15), est plus verte
+# que rouge ; un simple facteur multiplicatif ne pouvait pas inverser cette
+# dominante. Meme couleur cible que les arbres (voir Forest.gd), pour que
+# l'automne ait une palette coherente entre arbres et buissons.
+const AUTOMNE_BODY_TARGET := Color(0.55, 0.10, 0.05)
+const AUTOMNE_BODY_STRENGTH := 0.65
+# 2026-07-06 (Francois : "et les buissons doivent etre plus gris [en hiver].
+# peut-etre le meme bug qu'avec les arbres") : meme cause que l'automne
+# ci-dessus - Color(0.72, 0.7, 0.7) multiplie par la base verte donnait
+# (0.18, 0.315, 0.105), toujours vert dominant, pas gris du tout (verifie
+# numeriquement avant ce correctif). Passage en lerp vers un gris quasi
+# neutre, comme pour l'automne.
+const HIVER_BODY_TARGET := Color(0.5, 0.5, 0.48)
+const HIVER_BODY_STRENGTH := 0.85
 
 func apply_season_tint(season_id: String) -> void:
-	var tint: Color = SEASON_BODY_TINT.get(season_id, Color(1.0, 1.0, 1.0))
 	var mmi: MultiMeshInstance3D = _mmi[PartType.BUSH_BODY]
 	var base_colors: Array = _pending_colors[PartType.BUSH_BODY]
+	if season_id == "automne":
+		for i in range(base_colors.size()):
+			mmi.multimesh.set_instance_color(i, base_colors[i].lerp(AUTOMNE_BODY_TARGET, AUTOMNE_BODY_STRENGTH))
+		return
+	if season_id == "hiver":
+		for i in range(base_colors.size()):
+			mmi.multimesh.set_instance_color(i, base_colors[i].lerp(HIVER_BODY_TARGET, HIVER_BODY_STRENGTH))
+		return
+	var tint: Color = SEASON_BODY_TINT.get(season_id, Color(1.0, 1.0, 1.0))
 	for i in range(base_colors.size()):
 		mmi.multimesh.set_instance_color(i, base_colors[i] * tint)
 
@@ -445,7 +486,7 @@ func apply_season_tint(season_id: String) -> void:
 ## _pending_xforms (jamais vide apres _apply_pending_instances). Les baies
 ## ("Fruit_%d") bascules via leur propre "visible".
 func update_view_level(level: int) -> void:
-	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for bush in get_tree().get_nodes_in_group("bushes"):
 		var ground_block_y: float = bush.position.y - 1.0
 		var hidden: bool = ground_block_y > float(level)
@@ -460,4 +501,7 @@ func update_view_level(level: int) -> void:
 					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
 		for child in bush.get_children():
 			if (child.name as String).begins_with("Fruit_"):
-				child.visible = not hidden
+				## 2026-07-06 : sans "and not _winter_active", cette ligne
+				## réaffichait les baies déjà cachées par l'hiver dès qu'un
+				## changement de niveau de vue appelait update_view_level().
+				child.visible = not hidden and not _winter_active

@@ -1,16 +1,22 @@
 extends Node
 ## Sprint 30 (2026-07-02) : systeme meteo purement visuel, independant du
 ## gameplay (comme DayNightCycle.gd). Alterne aleatoirement dans le temps
-## entre Normal / Brouillard / Pluie / Neige. Place APRES DayNightCycle.gd
-## dans Main.tscn afin que son _process() tourne juste apres (l'ordre de
-## traitement de Godot suit l'ordre des enfants dans l'arbre) - ca permet
-## d'ajouter les effets meteo PAR-DESSUS ce que DayNightCycle vient de
-## calculer ce meme frame (densite de fog, energie de la lumiere), sans que
-## les deux scripts se marchent dessus : DayNightCycle reste proprietaire
-## des couleurs de ciel/sol et de la rotation/couleur de base de la lumiere ;
-## WeatherSystem n'ajoute qu'un delta de densite de fog et un multiplicateur
-## d'energie lumineuse, tous deux lisses/interpoles pour eviter un
-## changement brutal quand la meteo change.
+## entre Normal / Brouillard / Pluie / Neige. Ajoute les effets meteo
+## PAR-DESSUS ce que DayNightCycle calcule (densite de fog, energie
+## lumineuse, teinte du ciel) : DayNightCycle reste proprietaire des
+## couleurs de ciel/sol et de la rotation/couleur de base de la lumiere ;
+## WeatherSystem n'ajoute qu'un delta de densite de fog, un multiplicateur
+## d'energie lumineuse et une teinte de ciel, tous lisses/interpoles pour
+## eviter un changement brutal quand la meteo change.
+## 2026-07-06 (revue de code Phase 2, C8/C10/I49/I56) : jusqu'ici cette
+## composition ne fonctionnait QUE parce que WeatherSystem est place APRES
+## DayNightCycle dans Main.tscn (donc son _process() tourne juste apres) -
+## un reordonnancement accidentel des noeuds aurait casse silencieusement le
+## resultat visuel (aucune erreur levee). Desormais WeatherSystem lit les
+## champs publics base_light_energy/base_sky_*_color/base_ground_*_color de
+## DayNightCycle (voir _day_night_cycle ci-dessous) au lieu de relire
+## _light.light_energy/_sky_material.*_color (potentiellement deja modifies
+## par ce meme script) - la composition ne depend plus de l'ordre des noeuds.
 
 ## Reference au script (pas juste une scene) pour lire ses constantes de
 ## dimensions de carte (WIDTH/DEPTH/BUILD_CEILING) sans les dupliquer en dur
@@ -21,6 +27,8 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 ## Sprint 37 (backlog Phase 1 item 8) : voir SeasonSystem.gd - meme pattern
 ## pour lire DayNightCycleScript.game_speed (pause/x1/x2/x4).
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## 2026-07-06 (revue de code, paquet B, I50) : pour season_id_or_default().
+const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 
 enum Weather { NORMAL, BROUILLARD, PLUIE, NEIGE }
 
@@ -81,15 +89,16 @@ var _time_left: float = 0.0
 var _fog_extra: float = 0.0
 var _light_mult: float = 1.0
 var _sky_tint_strength: float = 0.0
-## 2026-07-05 (diagnostic temporaire, bug signale par Francois : "chene/
-## bouleau deviennent vert sombre tout a coup, peut-etre lie au brouillard") -
-## a retirer une fois la cause identifiee.
-var _debug_timer: float = 0.0
 
 @onready var _world_environment: WorldEnvironment = %WorldEnvironment
 @onready var _light: DirectionalLight3D = %DirectionalLight3D
 @onready var _season_system: Node = %SeasonSystem
 @onready var _sky_material: ProceduralSkyMaterial = _world_environment.environment.sky.sky_material as ProceduralSkyMaterial
+## 2026-07-06 (revue de code Phase 2, C8/C10/I49/I56) : reference au noeud
+## (pas juste au script comme DayNightCycleScript ci-dessus) pour lire ses
+## champs d'instance base_light_energy/base_sky_*_color/base_ground_*_color
+## - voir le commentaire d'en-tete de ce fichier.
+@onready var _day_night_cycle: Node = %DayNightCycle
 var _rain_particles: GPUParticles3D
 var _snow_particles: GPUParticles3D
 
@@ -125,21 +134,14 @@ func _process(delta: float) -> void:
 	_sky_tint_strength = lerp(_sky_tint_strength, SKY_TINT_STRENGTH[current_weather], scaled_delta * transition_speed)
 
 	_world_environment.environment.fog_density = BASE_FOG_DENSITY + _fog_extra
-	_light.light_energy *= _light_mult
+	_light.light_energy = _day_night_cycle.base_light_energy * _light_mult
 
-	# 2026-07-05 (diagnostic temporaire) : un instantane toutes les 2 secondes,
-	# pour capturer les valeurs reelles au moment ou le bug "arbres tout a
-	# coup vert sombre" se reproduit - a retirer une fois la cause trouvee.
-	_debug_timer += delta
-	if _debug_timer >= 2.0:
-		_debug_timer = 0.0
-		print("[DEBUG Lumiere] meteo=%s light_mult=%.3f light_energy=%.3f ambient_energy=%.3f fog_density=%.4f" % [
-			Weather.keys()[current_weather],
-			_light_mult,
-			_light.light_energy,
-			_world_environment.environment.ambient_light_energy,
-			_world_environment.environment.fog_density,
-		])
+	# 2026-07-06 (revue de code, C9) : print de diagnostic temporaire du
+	# 2026-07-05 ("chene/bouleau deviennent vert sombre tout a coup") retire -
+	# il tournait en continu toutes les 2 secondes sans jamais avoir ete
+	# retire, marque "temporaire" dans son propre commentaire d'origine. Si le
+	# symptome revient, rediagnostiquer plutot que supposer la cause deja
+	# trouvee (aucune confirmation en jeu ne l'atteste).
 
 	# Sprint 41 : teinte le ciel (deja colore par DayNightCycle ce meme frame,
 	# voir commentaire de SKY_TINT_COLOR) vers un gris selon la meteo courante.
@@ -148,17 +150,18 @@ func _process(delta: float) -> void:
 	# sky/ground deja utilise par DayNightCycle.
 	var tint: Color = SKY_TINT_COLOR[current_weather]
 	var ground_tint: Color = tint * 0.75
-	_sky_material.sky_top_color = _sky_material.sky_top_color.lerp(tint, _sky_tint_strength)
-	_sky_material.sky_horizon_color = _sky_material.sky_horizon_color.lerp(tint, _sky_tint_strength)
-	_sky_material.ground_bottom_color = _sky_material.ground_bottom_color.lerp(ground_tint, _sky_tint_strength)
-	_sky_material.ground_horizon_color = _sky_material.ground_horizon_color.lerp(ground_tint, _sky_tint_strength)
+	_sky_material.sky_top_color = _day_night_cycle.base_sky_top_color.lerp(tint, _sky_tint_strength)
+	_sky_material.sky_horizon_color = _day_night_cycle.base_sky_horizon_color.lerp(tint, _sky_tint_strength)
+	_sky_material.ground_bottom_color = _day_night_cycle.base_ground_bottom_color.lerp(ground_tint, _sky_tint_strength)
+	_sky_material.ground_horizon_color = _day_night_cycle.base_ground_horizon_color.lerp(ground_tint, _sky_tint_strength)
 
 
 func _pick_new_weather() -> void:
 	# Sprint 33 : l'urne de probabilites depend de la saison courante
-	# (SeasonSystem.gd) - repli sur la liste "ete" si jamais SeasonSystem
+	# (SeasonSystem.gd) - repli sur la saison par defaut si jamais SeasonSystem
 	# n'est pas trouve (ne devrait pas arriver, garde-fou uniquement).
-	var season_id: String = _season_system.current_season_id() if _season_system else "ete"
+	# 2026-07-06 (paquet B, I50) : repli factorise via ClimateDefs.season_id_or_default.
+	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var choices: Array = SEASON_WEATHER_POOLS.get(season_id, SEASON_WEATHER_POOLS["ete"])
 	current_weather = choices[randi() % choices.size()]
 	_time_left = randf_range(min_weather_duration, max_weather_duration)

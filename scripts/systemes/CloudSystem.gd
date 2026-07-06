@@ -32,6 +32,7 @@ extends Node3D
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+const NightDarkenScript := preload("res://scripts/systemes/NightDarken.gd")
 
 @export var cloud_count: int = 14
 @export var wind_speed: float = 1.4          # unites/seconde
@@ -46,7 +47,16 @@ const NIGHT_CLOUD_COLOR := Color(0.10, 0.11, 0.16)
 const NIGHT_DARKEN_STRENGTH := 0.8
 
 @onready var _weather_system: Node = %WeatherSystem
-@onready var _light: DirectionalLight3D = %DirectionalLight3D
+# 2026-07-06 (revue de code, paquet F, I43) : reference au NOEUD DayNightCycle
+# (pas juste a son script comme DayNightCycleScript plus haut) pour lire son
+# champ d'instance base_light_energy - meme motif que _day_night_cycle dans
+# WeatherSystem.gd (C8/C10/I49/I56). Ce champ est la source de verite
+# "energie de plein jour/nuit" maintenue par DayNightCycle, independante de ce
+# que WeatherSystem peut ensuite ecrire dans %DirectionalLight3D.light_energy
+# (multiplicateur meteo) - remplace l'ancienne lecture directe de
+# %DirectionalLight3D.light_energy (supprimee plus bas), qui dependait de
+# l'ordre d'execution entre DayNightCycle/WeatherSystem/CloudSystem.
+@onready var _day_night_cycle: Node = %DayNightCycle
 
 var _mmi: MultiMeshInstance3D
 # Un nuage = une position de base (le "vent" ne deplace que celle-ci) ; ses
@@ -192,8 +202,18 @@ func _process(delta: float) -> void:
 	# de DayNightCycle.gd) plutot qu'une valeur codee en dur, pour rester
 	# correct si ces constantes sont retouchees plus tard (ce qui est deja
 	# arrive plusieurs fois - voir memoire du cycle jour/nuit).
-	var day_energy: float = DayNightCycleScript.LIGHT_ENERGY[1]
-	var night_factor: float = 1.0 - clampf(_light.light_energy / maxf(day_energy, 0.001), 0.0, 1.0)
+	# 2026-07-06 (revue de code, paquet C, M34) : _light etait lu sans
+	# verification de nullite, contrairement a _weather_system juste en
+	# dessous (garde par un "if") - meme prudence ici (repli sur "pas de
+	# nuit" si le noeud unique venait a manquer de la scene).
+	# 2026-07-06 (revue de code, paquet F, I43) : _day_night_cycle.base_light_energy
+	# remplace _light.light_energy (voir commentaire sur _day_night_cycle plus
+	# haut) - meme garde de nullite.
+	# 2026-07-06 (revue de code, paquet H, A2/M30) : calcul deplace dans
+	# l'utilitaire partage NightDarken.gd (meme formule exacte qu'avant,
+	# desormais reutilisee aussi par WaterfallFoamClouds.gd/DwarfResourcePile.gd
+	# au lieu d'etre dupliquee independamment dans chaque fichier).
+	var night_factor: float = NightDarkenScript.night_factor(_day_night_cycle)
 
 	if _weather_system:
 		_update_all_colors(_weather_system.cloud_tint_color(), _weather_system.cloud_tint_strength(), night_factor)

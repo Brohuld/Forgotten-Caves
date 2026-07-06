@@ -8,12 +8,10 @@ extends RefCounted
 ## Egalement utilise par Dwarf.gd (_resource_color) pour retrouver la couleur
 ## d'un minerai/pierre precieuse recolte, sans dupliquer les couleurs.
 ##
-## Sprint 23quater : atlas_order()/atlas_index() donnent un ordre FIXE (pas
-## trie par rarete, contrairement a all()) utilise pour placer chaque materiau
-## dans l'atlas de textures des filons (voir VoxelWorld.gd/_atlas_uv_min et
-## assets/vein_atlas.png, genere par tools/gen_vein_atlas.py). Important :
-## cet ordre doit rester identique a la liste MATERIALS de gen_vein_atlas.py -
-## si on ajoute un materiau, l'ajouter A LA FIN des deux listes, jamais au milieu.
+## 2026-07-06 (revue de code, paquet H, I17) : atlas_order()/atlas_index()
+## (Sprint 23quater, approche "atlas de textures" via tools/gen_vein_atlas.py)
+## supprimees - ce fichier Python n'existe plus dans le depot et ces 2
+## fonctions n'etaient appelees nulle part ailleurs (approche abandonnee).
 
 const MetalTypes := preload("res://scripts/data/materiaux/types/metaux/MetalTypes.gd")
 const GemTypes := preload("res://scripts/data/materiaux/types/pierres_precieuses/GemTypes.gd")
@@ -26,6 +24,13 @@ static func all() -> Array:
 	var combined: Array = []
 	combined.append_array(MetalTypes.TABLE)
 	combined.append_array(GemTypes.TABLE)
+	# 2026-07-06 (revue de code, paquet H, M13) : une "rarete" absente de
+	# RARITY_ORDER (faute de frappe) donnait RARITY_ORDER.find() = -1, ce qui
+	# la placait silencieusement EN TETE (plus rare que "tres_rare") sans
+	# aucun avertissement - averti ici une seule fois par materiau concerne.
+	for entry in combined:
+		if not RARITY_ORDER.has(entry["rarete"]):
+			push_warning("VeinMaterials.all() : materiau \"%s\" a une rarete inconnue (\"%s\"), absente de RARITY_ORDER - trie en tete par defaut." % [entry.get("id", "?"), entry["rarete"]])
 	combined.sort_custom(func(a, b): return RARITY_ORDER.find(a["rarete"]) < RARITY_ORDER.find(b["rarete"]))
 	return combined
 
@@ -37,25 +42,6 @@ static func get_type(id: String) -> Dictionary:
 	if not found.is_empty():
 		return found
 	return GemTypes.get_type(id)
-
-
-## Ordre fixe (metaux puis pierres precieuses, dans l'ordre des tables) utilise
-## pour l'atlas de textures - contrairement a all(), jamais retrie par rarete
-## (l'atlas a une case fixe par materiau, elle ne doit pas bouger d'un appel a l'autre)
-static func atlas_order() -> Array:
-	var combined: Array = []
-	combined.append_array(MetalTypes.TABLE)
-	combined.append_array(GemTypes.TABLE)
-	return combined
-
-
-## Renvoie l'index (case) d'un materiau dans l'atlas, -1 si inconnu
-static func atlas_index(id: String) -> int:
-	var ordered: Array = atlas_order()
-	for i in range(ordered.size()):
-		if ordered[i]["id"] == id:
-			return i
-	return -1
 
 
 ## Sprint 23sexies : indique si un materiau est un metal (true) ou une pierre

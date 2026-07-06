@@ -51,7 +51,10 @@ const SURNAMES := [
 
 
 ## Tire un nom complet aleatoire "Prenom Nom-de-clan".
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie "nains_noms"
+## au lieu de randi() global - voir GameRandom.gd.
 static func random_name() -> String:
-	var first: String = FIRST_NAMES[randi() % FIRST_NAMES.size()]
-	var last: String = SURNAMES[randi() % SURNAMES.size()]
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_noms")
+	var first: String = FIRST_NAMES[rng.randi() % FIRST_NAMES.size()]
+	var last: String = SURNAMES[rng.randi() % SURNAMES.size()]
 	return "%s %s" % [first, last]

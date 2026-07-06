@@ -18,34 +18,40 @@ var tasks: Array = []
 var next_task_id: int = 0
 
 
+## 2026-07-06 (revue de code, paquet B, I24) : extrait des 5 fonctions
+## add_*_task ci-dessous, qui dupliquaient a l'identique la generation d'id
+## (next_task_id) et l'ajout au tableau "tasks" - seul le contenu propre a
+## chaque type de tache changeait. "fields" doit deja contenir toutes les
+## cles de la tache SAUF "id" (ajoutee ici). Comportement/forme des
+## dictionnaires de taches inchanges (memes cles, memes valeurs).
+func _add_task(fields: Dictionary) -> int:
+	var id := next_task_id
+	next_task_id += 1
+	fields["id"] = id
+	tasks.append(fields)
+	return id
+
+
 ## Ajoute une tache de minage. walk_pos = ou le nain doit se placer,
 ## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld. Renvoie l'id
 ## unique de la tache (icone temporaire, voir ActionController.gd).
 func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> int:
-	var id := next_task_id
-	next_task_id += 1
-	tasks.append({
+	return _add_task({
 		"type": "miner",
-		"id": id,
 		"position": walk_pos,
 		"bx": bx, "by": by, "bz": bz,
 		"tree": null,
 	})
-	return id
 
 
 ## Ajoute une tache d'abattage sur un arbre (Node3D du groupe "trees").
 ## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
 func add_chop_task(tree: Node3D) -> int:
-	var id := next_task_id
-	next_task_id += 1
-	tasks.append({
+	return _add_task({
 		"type": "couper",
-		"id": id,
 		"position": tree.global_position,
 		"tree": tree,
 	})
-	return id
 
 
 ## Sprint 24ter : ajoute une tache de cueillette sur un arbre fruitier ou un
@@ -53,31 +59,23 @@ func add_chop_task(tree: Node3D) -> int:
 ## ne detruit pas la cible, contrairement a "couper" (voir Dwarf.gd/_complete_task).
 ## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
 func add_gather_task(target: Node3D) -> int:
-	var id := next_task_id
-	next_task_id += 1
-	tasks.append({
+	return _add_task({
 		"type": "cueillir",
-		"id": id,
 		"position": target.global_position,
 		"tree": target,
 	})
-	return id
 
 
 ## Ajoute une tache de construction (mur bois/pierre/terre) a la colonne
 ## (bx,bz). Renvoie l'id unique de la tache (utilise pour gerer le mur
 ## fantome affiche pendant l'attente).
 func add_build_task(walk_pos: Vector3, bx: int, bz: int, material: String) -> int:
-	var id := next_task_id
-	next_task_id += 1
-	tasks.append({
+	return _add_task({
 		"type": "construire",
-		"id": id,
 		"position": walk_pos,
 		"bx": bx, "bz": bz,
 		"material": material,
 	})
-	return id
 
 
 ## Sprint 36 : ajoute une tache de puisage d'eau sur la colonne (bx,bz) - a la
@@ -85,15 +83,11 @@ func add_build_task(walk_pos: Vector3, bx: int, bz: int, material: String) -> in
 ## renouvelable, voir VoxelWorld.is_water/Dwarf.gd/_complete_task "puiser").
 ## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
 func add_puiser_task(walk_pos: Vector3, bx: int, bz: int) -> int:
-	var id := next_task_id
-	next_task_id += 1
-	tasks.append({
+	return _add_task({
 		"type": "puiser",
-		"id": id,
 		"position": walk_pos,
 		"bx": bx, "bz": bz,
 	})
-	return id
 
 
 func has_tasks() -> bool:
@@ -106,7 +100,13 @@ func task_count() -> int:
 
 ## Retire et renvoie la tache la plus proche de "from_position" (priorite
 ## par distance, plutot que la simple ordre d'ajout)
+## 2026-07-06 (revue de code, C7) : garde ajoutee - jusqu'ici le seul appelant
+## (Dwarf.gd) verifie deja has_tasks() avant d'appeler cette fonction, mais
+## rien dans la fonction elle-meme n'empechait un crash (pop_at sur tableau
+## vide) si un futur appelant l'invoquait sans cette verification.
 func pop_nearest_task(from_position: Vector3) -> Dictionary:
+	if tasks.is_empty():
+		return {}
 	var best_index := 0
 	var best_dist := INF
 	for i in range(tasks.size()):

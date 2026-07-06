@@ -185,14 +185,17 @@ const FRUIT_SPECIES := [
 
 ## Renvoie une espece au hasard parmi les arbres de foret (chene/sapin/bouleau
 ## - voir Forest.gd, boucle des tree_count arbres "normaux")
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
+## "arbres_especes" au lieu de randi_range() global - voir GameRandom.gd.
 static func random_species() -> Dictionary:
-	return SPECIES[randi_range(0, SPECIES.size() - 1)]
+	return SPECIES[GameRandom.get_rng("arbres_especes").randi_range(0, SPECIES.size() - 1)]
 
 
 ## Sprint 24ter : renvoie une espece fruitiere au hasard (voir Forest.gd,
 ## boucle separee des arbres fruitiers)
+## 2026-07-06 (revue de code, paquet A) : meme flux "arbres_especes".
 static func random_fruit_species() -> Dictionary:
-	return FRUIT_SPECIES[randi_range(0, FRUIT_SPECIES.size() - 1)]
+	return FRUIT_SPECIES[GameRandom.get_rng("arbres_especes").randi_range(0, FRUIT_SPECIES.size() - 1)]
 
 
 ## Renvoie une espece (foret ou fruitiere) par id, ou la premiere de SPECIES
@@ -207,28 +210,31 @@ static func get_species(id: String) -> Dictionary:
 	return SPECIES[0]
 
 
+## 2026-07-06 (revue de code, paquet B, M16) : extrait de is_fruit/
+## fruit_color_for/calories_for, qui dupliquaient a l'identique cette
+## recherche par "fruit_resource" dans FRUIT_SPECIES (seuil DRY de 3
+## occurrences atteint, axe 14). Renvoie l'espece correspondante, ou un
+## dictionnaire vide si "resource_id" n'est le fruit d'aucune espece.
+static func _fruit_species_for(resource_id: String) -> Dictionary:
+	for s in FRUIT_SPECIES:
+		if s.get("fruit_resource", "") == resource_id:
+			return s
+	return {}
+
+
 ## Sprint 24ter : indique si "resource_id" est le fruit d'une espece fruitiere
 ## (utilise par Dwarf.gd/_resource_color pour colorer l'item recolte)
 static func is_fruit(resource_id: String) -> bool:
-	for s in FRUIT_SPECIES:
-		if s.get("fruit_resource", "") == resource_id:
-			return true
-	return false
+	return not _fruit_species_for(resource_id).is_empty()
 
 
 ## Sprint 24ter : couleur d'un fruit par id de ressource, blanc si inconnu
 static func fruit_color_for(resource_id: String) -> Color:
-	for s in FRUIT_SPECIES:
-		if s.get("fruit_resource", "") == resource_id:
-			return s.get("fruit_color", Color.WHITE)
-	return Color.WHITE
+	return _fruit_species_for(resource_id).get("fruit_color", Color.WHITE)
 
 
 ## Sprint 24septies : calories d'un fruit par id de ressource (voir
 ## Dwarf.gd/_process_eating), -1.0 si inconnu (permet a l'appelant de
 ## distinguer "pas un fruit" d'une vraie valeur)
 static func calories_for(resource_id: String) -> float:
-	for s in FRUIT_SPECIES:
-		if s.get("fruit_resource", "") == resource_id:
-			return s.get("calories", -1.0)
-	return -1.0
+	return _fruit_species_for(resource_id).get("calories", -1.0)

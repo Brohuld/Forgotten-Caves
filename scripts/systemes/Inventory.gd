@@ -11,33 +11,41 @@ extends Node
 ## Sprint 36 : ajoute "eau" (voir bouton Puiser/ActionController.gd), remplie
 ## par la tache "puiser" et consommee par les nains lorsque la soif est
 ## critique (voir Dwarf.gd/_try_start_drinking).
+##
+## 2026-07-06 (revue de code, paquet B, I23) : la liste des ids etait
+## dupliquee ici a la main, desynchronisee des tables centrales (bois/fruits
+## des especes fruitieres - bois_pommier/bois_oranger/bois_cerisier/pomme/
+## orange/cerise - et les 5 baies n'y figuraient pas du tout, alors que
+## add_resource() les gere deja correctement via son repli ".get(id, 0)").
+## resource_counts est maintenant DERIVE des tables (MetalTypes.TABLE/
+## GemTypes.TABLE/BerryTypes.TYPES/TreeSpecies.SPECIES/FRUIT_SPECIES) dans
+## _ready() - un futur ajout dans une de ces tables apparait donc
+## automatiquement ici, sans modification a faire dans ce fichier.
+const MetalTypesScript := preload("res://scripts/data/materiaux/types/metaux/MetalTypes.gd")
+const GemTypesScript := preload("res://scripts/data/materiaux/types/pierres_precieuses/GemTypes.gd")
+const BerryTypesScript := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
+const TreeSpeciesScript := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 
 var resource_counts: Dictionary = {
 	"bois": 0,
-	"bois_chene": 0,
-	"bois_sapin": 0,
-	"bois_bouleau": 0,
 	"pierre": 0,
 	"terre": 0,
 	"eau": 0,
-	# Metaux (Sprint 23)
-	"fer": 0,
-	"cuivre": 0,
-	"etain": 0,
-	"charbon": 0,
-	"argent": 0,
-	"or": 0,
-	"platine": 0,
-	# Pierres precieuses (Sprint 23)
-	"emeraude": 0,
-	"rubis": 0,
-	"saphir": 0,
-	"lapis_lazuli": 0,
-	"jade": 0,
-	"diamant_blanc": 0,
-	"diamant_rose": 0,
-	"diamant_noir": 0,
 }
+
+
+func _ready() -> void:
+	for species in TreeSpeciesScript.SPECIES:
+		resource_counts[species["wood_resource"]] = 0
+	for species in TreeSpeciesScript.FRUIT_SPECIES:
+		resource_counts[species["wood_resource"]] = 0
+		resource_counts[species["fruit_resource"]] = 0
+	for entry in MetalTypesScript.TABLE:
+		resource_counts[entry["id"]] = 0
+	for entry in GemTypesScript.TABLE:
+		resource_counts[entry["id"]] = 0
+	for id in BerryTypesScript.all_ids():
+		resource_counts[id] = 0
 
 
 func add_resource(resource_name: String, amount: int = 1) -> void:

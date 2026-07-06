@@ -2,7 +2,18 @@ extends Node
 ## Sprint 37 (2026-07-04) : systeme de temperature/gel/neige - backlog Phase 1
 ## (items 1-6 : climat/temperature, voir memoire "Forgotten Caves Phase 1
 ## backlog"). Minuteur/etat independant, meme esprit que WeatherSystem.gd/
-## SeasonSystem.gd, place apres eux dans Main.tscn pour pouvoir les lire.
+## SeasonSystem.gd.
+## 2026-07-06 (revue de code Phase 3, C13) : correctif de commentaire - la
+## phrase precedente ("place apres eux dans Main.tscn pour pouvoir les lire")
+## laissait croire que la position de ce noeud dans Main.tscn importe pour la
+## correction du script, ce qui n'est PAS le cas : SeasonSystem/WeatherSystem
+## sont lus uniquement via les references %SeasonSystem/%WeatherSystem
+## (resolues par nom unique, pas par ordre) et uniquement dans des fonctions
+## appelees APRES le _ready() de tous les noeuds (_process/_maybe_start_episode/
+## current_temperature) - aucune dependance a leur _ready() deja execute.
+## L'ordre des noeuds dans Main.tscn n'a donc aucun impact fonctionnel connu
+## pour ce script (contrairement au vrai couplage d'ordre corrige entre
+## DayNightCycle.gd et WeatherSystem.gd, voir leurs commentaires).
 ##
 ## Simplifications assumees (pas de retour visuel possible pour moi, donc on
 ## reste sur des mecaniques simples et sures plutot que fines/par-case) :
@@ -67,6 +78,15 @@ var snow_coverage: float = 0.0  # 0..1, lu par VoxelWorld pour le voile de neige
 var _last_applied_frozen: bool = false
 var _last_applied_snow_step: int = -1
 
+## 2026-07-06 (revue de code, paquet C, M37) : evite de spammer la console a
+## chaque frame si _voxel_world/_season_system restent null (noeud manquant/
+## renomme) - un seul avertissement au premier _process() concerne.
+## 2026-07-06 (revue de code, paquet F, I46) : la garde couvrait seulement
+## _voxel_world/_season_system - etendue a _weather_system/_day_night ci-
+## dessous, qui sont lus plus loin dans ce fichier (is_snowing/time_of_day)
+## sans jamais etre verifies eux-memes.
+var _warned_missing_refs: bool = false
+
 @onready var _season_system: Node = %SeasonSystem
 @onready var _day_night: Node = %DayNightCycle
 @onready var _weather_system: Node = %WeatherSystem
@@ -78,6 +98,9 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if not _warned_missing_refs and (_voxel_world == null or _season_system == null or _weather_system == null or _day_night == null):
+		push_warning("TemperatureSystem: reference(s) manquante(s) de facon persistante (VoxelWorld=%s, SeasonSystem=%s, WeatherSystem=%s, DayNightCycle=%s) - scene probablement mal configuree" % [_voxel_world != null, _season_system != null, _weather_system != null, _day_night != null])
+		_warned_missing_refs = true
 	var scaled_delta: float = delta * DayNightCycleScript.game_speed
 	if current_episode != "":
 		_episode_time_left -= scaled_delta
@@ -121,7 +144,10 @@ func _maybe_start_episode() -> void:
 	_episode_check_timer = randf_range(episode_check_interval_min, episode_check_interval_max)
 	if randf() > EPISODE_CHANCE_PER_CHECK:
 		return
-	var season_id: String = _season_system.current_season_id() if _season_system else ClimateDefs.DEFAULT_SEASON
+	# 2026-07-06 (revue de code, paquet B, I50) : repli factorise via
+	# ClimateDefs.season_id_or_default (motif duplique aussi dans
+	# DayNightCycle.gd/WeatherSystem.gd).
+	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var candidates: Array = []
 	for episode_id in EPISODE_SEASONS:
 		if season_id in EPISODE_SEASONS[episode_id]:
@@ -136,7 +162,7 @@ func _maybe_start_episode() -> void:
 ## (creux vers minuit, pic vers midi, voir DayNightCycle.time_of_day) +
 ## delta d'episode eventuel (vague de froid/canicule).
 func current_temperature() -> float:
-	var season_id: String = _season_system.current_season_id() if _season_system else ClimateDefs.DEFAULT_SEASON
+	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var base: float = BASE_TEMP_PAR_SAISON.get(season_id, 15.0)
 	if _day_night != null:
 		# time_of_day : 0.0 Matin / 0.25 Jour(midi) / 0.5 Soir / 0.75 Nuit(minuit)

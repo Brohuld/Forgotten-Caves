@@ -1,4 +1,8 @@
 extends RefCounted
+## 2026-07-06 (revue de code, paquet B, M17) : get_type() delegue desormais a
+## DataTableUtils.find_by_id() (motif duplique aussi dans MetalTypes.gd/
+## GemTypes.gd) - comportement inchange.
+const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
 ## Sprint 24quater : table des types de baies (buissons). Meme pattern que
 ## TreeSpecies.gd/FRUIT_SPECIES : chaque type definit son id (utilise comme
 ## nom de ressource dans l'inventaire), son nom affiche et sa couleur.
@@ -27,16 +31,15 @@ const TYPES := [
 
 
 ## Renvoie un type de baie au hasard (un par buisson genere, voir BerryBushes.gd)
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie "baies_types"
+## au lieu de randi_range() global - voir GameRandom.gd.
 static func random_type() -> Dictionary:
-	return TYPES[randi_range(0, TYPES.size() - 1)]
+	return TYPES[GameRandom.get_rng("baies_types").randi_range(0, TYPES.size() - 1)]
 
 
 ## Renvoie un type de baie par id, ou un dictionnaire vide si inconnu
 static func get_type(id: String) -> Dictionary:
-	for t in TYPES:
-		if t["id"] == id:
-			return t
-	return {}
+	return DataTableUtils.find_by_id(TYPES, id)
 
 
 ## Sprint 24septies : calories d'une baie par id, -1.0 si inconnu (voir

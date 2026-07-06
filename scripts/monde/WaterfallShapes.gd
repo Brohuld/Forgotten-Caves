@@ -76,6 +76,9 @@ func _color_for_height(y: float, radius: float) -> Color:
 	return WATERFALL_COLOR.lerp(dark_color, t)
 
 
+## ⚠️ GEOMETRIE GELEE - NE PAS MODIFIER SANS AUTORISATION EXPLICITE DE FRANCOIS
+## (voir memoire projet [[project_forgotten_caves_waterfall_shape_spec]] - 6
+## criteres de reference a consulter avant toute modif de ce fichier).
 ## Construit un vrai quart de cylindre PLEIN (pas juste la peau courbe) via
 ## SurfaceTool - arc 0-90° ("haut" vers "droite"), plus les 2 capuchons plats
 ## (les 2 bouts, en eventail depuis l'axe) et les 2 faces planes radiales
@@ -199,6 +202,9 @@ func _ready() -> void:
 ## seule rotation autour de l'axe vertical (Y) suffit pour aligner cet axe
 ## "droite" sur la direction du courant (dx,dz) - contrairement au cylindre
 ## complet couche (Sprint 52-54), qui necessitait un axe couche errone.
+## ⚠️ GEOMETRIE GELEE - NE PAS MODIFIER SANS AUTORISATION EXPLICITE DE FRANCOIS
+## (voir memoire projet [[project_forgotten_caves_waterfall_shape_spec]] - 6
+## criteres de reference a consulter avant toute modif de ce fichier).
 func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 	var dx: int = int(col["dx"])
 	var dz: int = int(col["dz"])

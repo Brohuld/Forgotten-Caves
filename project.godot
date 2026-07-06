@@ -19,6 +19,10 @@ run/main_scene="res://scenes/StartMenu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+GameRandom="*res://scripts/systemes/GameRandom.gd"
+
 [display]
 
 window/size/viewport_width=4160

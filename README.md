@@ -115,6 +115,7 @@ Cycle jour/nuit complet (lever/coucher exact par saison, jeu démarrant à 7h du
 - Couleurs "trop sombres" qui ne réagissaient à aucun correctif → cause réelle : `ambient_light_source` de la scène ne se mettait pas à jour assez vite pour un cycle de 2 minutes ; remplacé par une couleur pilotée directement par script à chaque frame.
 - Ciel resté gris en plein jour malgré plusieurs correctifs de couleur → cause réelle : `fog_sky_affect` recouvrait le ciel par défaut, indépendamment de l'heure/la météo.
 - Bandeau horaire "bande blanche à droite" → cause réelle : tout `Gradient` créé par code garde 2 points par défaut qu'il faut explicitement vider avant d'ajouter les siens ; un premier correctif (boucle de suppression) a provoqué un plantage au lancement (boucle infinie dès 1 point restant), corrigé ensuite.
+- **Couplage DayNightCycle.gd/WeatherSystem.gd fiabilisé (revue de code, Phase 2 du plan de correction, C8/C10/I49/I56, 2026-07-06)** : la composition météo (assombrissement/teinte du ciel appliqués par-dessus l'énergie lumineuse et les couleurs du ciel) ne dépendait QUE de l'ordre des nœuds dans `Main.tscn`, sans aucune garde dans le code — un réordonnancement accidentel aurait cassé silencieusement le rendu. `DayNightCycle.gd` expose désormais des champs publics (`base_light_energy`/`base_sky_top_color`/`base_sky_horizon_color`/`base_ground_bottom_color`/`base_ground_horizon_color`) que `WeatherSystem.gd` lit directement via `%DayNightCycle`, indépendamment de l'ordre d'exécution des `_process()`. Confirmé en jeu par François.
 
 ### 9. Rivières, cascades & relief
 
@@ -151,9 +152,35 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 
 ---
 
+## Scénarios de test à vérifier manuellement (revue de code, paquet H)
+
+Cas limites identifiés par la revue de code du 2026-07-06 sans scénario de
+test documenté nulle part ailleurs - a verifier au fil des prochaines
+sessions de jeu (pas des bugs confirmes, juste des zones a surveiller) :
+
+- **File de tâches vide** (`TaskQueue.gd`) : cas exact à l'origine du bug
+  critique C7 (déjà corrigé) - revérifier qu'une file vide ne replante pas.
+- **Repousse hivernale des baies** (`BerryBushes.gd`, `_winter_active`) :
+  vérifier qu'un buisson qui repousse en plein hiver se comporte bien.
+- **Saison + niveau de vue** (`Forest.gd`, `_winter_fruits_hidden` +
+  `update_view_level()`) : un vrai bug a déjà été trouvé ici le 2026-07-06
+  (fruits visibles en hiver) - surveiller en priorité après un changement de
+  saison combiné à un minage/changement de niveau de vue.
+- **Cliquer-glisser cas limites** (`ActionController.gd`) : rectangle vide,
+  glisser en dehors de la carte.
+- **Fin de tâche cas limites** (`Dwarf.gd`, `_complete_task`) : cible détruite
+  entre-temps (ex: arbre coupé par un autre nain avant la fin), et
+  interaction énergie critique + recherche d'eau (`is_seeking_dry_land`).
+
+---
+
 ## État actuel du projet
 
-**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Le bug Couper/Cueillir est résolu (voir paquet 1). Reste à confirmer en jeu par François : les ajustements chêne/sapin/buissons et l'interface (paquets 4-5) et le nouveau cycle de végétation saisonnière (paquet 10). Dette d'architecture A1 en cours (ActionValidator.gd/DwarfSkills.gd/IconRenderer.gd extraits, ActionController.gd/Dwarf.gd restent volumineux — voir `Forgotten_Caves_Sprints.xlsx`, onglet Revue de code). Ne pas commencer la Phase 2 avant confirmation explicite.
+**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Le bug Couper/Cueillir est résolu (voir paquet 1). Reste à confirmer en jeu par François : les ajustements chêne/sapin/buissons et l'interface (paquets 4-5) et le nouveau cycle de végétation saisonnière (paquet 10).
+
+**Revue de code du 2026-07-06 (scan complet, 116 findings + 5 hors scan) : TERMINÉE ET CONFIRMÉE EN JEU.** Traitée en 8 paquets thématiques (A à H) après les 4 phases initiales de correctifs critiques (C7-C18, dont la dette d'architecture A1 : `ActionController.gd` et `Dwarf.gd` découpés en plusieurs fichiers par responsabilité, voir structure du projet ci-dessus). Paquet A (déterminisme/seed, système `GameRandom.gd`), B (duplication de code), C (robustesse), D (print() de debug), E (fonctions/fichiers trop longs), F (ordre d'initialisation implicite), G (performance), H (divers - dernier paquet) tous corrigés et confirmés en jeu par François le 2026-07-06. Bilan final : 91 corrigés, 25 vérifiés déjà corrects (aucun changement nécessaire), 3 ignorés (décision explicite), 2 encore ouverts (`VoxelHydrology._place_river()`/`VoxelWorld.generate_flat_terrain()` - geometrie "Cascade GELÉE", autorisation explicite de François requise avant toute modification). Détail complet par item : dossier `Code Review` (hors de ce dépôt git), fichier `Revue_de_code_2026-07-06.html`. À surveiller particulièrement si un souci apparaît : position des armes dans le dos (`DwarfWeaponBuilder.attach_to_back`, ajustement à l'estime) et assombrissement nocturne des tas de ressources (`DwarfResourcePile.gd`, effectif seulement à la création du tas, pas de mise à jour continue).
+
+Ne pas commencer la Phase 2 DU JEU (Ateliers & artisanat, ci-dessous) avant confirmation explicite.
 
 **Phase 2 (à venir) — Ateliers & artisanat** : ateliers de production, qualité/usure des objets, champs & agriculture, stockage, et l'équipement réel (habits/armures/armes fabricables et utilisables, pas seulement l'apparence du modèle 3D — décision du 2026-07-02, traité avec les ateliers plutôt qu'en sprint isolé).
 

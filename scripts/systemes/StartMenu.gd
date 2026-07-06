@@ -172,7 +172,16 @@ func _load_last_seed() -> String:
 	var f := FileAccess.open(LAST_SEED_PATH, FileAccess.READ)
 	if f == null:
 		return ""
-	return f.get_as_text().strip_edges()
+	var raw := f.get_as_text().strip_edges()
+	# 2026-07-06 (revue de code, paquet H, M38) : filtre aux chiffres, meme
+	# regle que _on_seed_text_changed() - un fichier last_seed.txt modifie a
+	# la main (texte non numerique) affichait ce texte tel quel dans le champ
+	# avant la prochaine frappe utilisateur, contrairement a la saisie live.
+	var filtered := ""
+	for c in raw:
+		if c >= "0" and c <= "9":
+			filtered += c
+	return filtered
 
 
 ## Sprint 83 : sauvegarde la graine utilisee ce lancement, pour la retrouver

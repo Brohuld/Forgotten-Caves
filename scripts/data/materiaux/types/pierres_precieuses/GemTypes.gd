@@ -6,6 +6,10 @@ extends RefCounted
 ##
 ## Champs : voir MetalTypes.gd (memes champs id/nom/rarete/couleur).
 ## Rarete par defaut "rare" pour cette categorie, sauf exceptions ("tres_rare").
+## 2026-07-06 (revue de code, paquet B, M17) : get_type() delegue desormais a
+## DataTableUtils.find_by_id() (motif duplique aussi dans MetalTypes.gd/
+## BerryTypes.gd) - comportement inchange.
+const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
 
 const TABLE := [
 	{"id": "emeraude", "nom": "Emeraude", "rarete": "rare", "couleur": Color(0.10, 0.55, 0.30)},
@@ -23,7 +27,4 @@ const TABLE := [
 
 ## Renvoie la definition d'une pierre precieuse par id, ou un dictionnaire vide si inconnu
 static func get_type(id: String) -> Dictionary:
-	for entry in TABLE:
-		if entry["id"] == id:
-			return entry
-	return {}
+	return DataTableUtils.find_by_id(TABLE, id)

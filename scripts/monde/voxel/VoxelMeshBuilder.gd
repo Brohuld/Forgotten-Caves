@@ -208,7 +208,6 @@ func _rebuild_mesh_body() -> void:
 	# grille. Le rendu (couleur/filon/exposition de face) est identique a
 	# avant pour tout ce qui est decouvert - seule la SOURCE de l'iteration
 	# change (un ensemble cible au lieu d'une triple boucle x/z/y).
-	var _detailed_faces: int = 0
 	for pos in discovered.keys():
 		if pos.y > view_level:
 			continue
@@ -241,8 +240,9 @@ func _rebuild_mesh_body() -> void:
 					face_color = _stone_color_for(pos)
 				elif idx == 10:
 					face_color = _vein_color_for(pos)
+				# 2026-07-06 (revue de code, paquet H, M28) : le compteur
+				# _detailed_faces (jamais lu/log ailleurs) est retire ici.
 				_add_face(surface_tools[idx], pos, dir, face_color)
-				_detailed_faces += 1
 
 	# Sprint 35 : passe "non decouvert" - une seule face (le dessus) par
 	# colonne, grise, pour representer ce qui n'a jamais ete explore au
@@ -250,7 +250,8 @@ func _rebuild_mesh_body() -> void:
 	# tout ce qui n'est pas dans "discovered"). Ne coute qu'une iteration sur
 	# les colonnes (WIDTH*DEPTH = 10 000), jamais sur la profondeur - c'est ce
 	# qui rend le changement de niveau rapide meme a view_level eleve.
-	var _grey_faces: int = 0
+	# 2026-07-06 (revue de code, paquet H, M28) : le compteur _grey_faces
+	# (jamais lu/log ailleurs) est retire ici.
 	for x in range(WIDTH):
 		for z in range(DEPTH):
 			var pos := Vector3i(x, view_level, z)
@@ -260,7 +261,6 @@ func _rebuild_mesh_body() -> void:
 			if type == BlockType.EMPTY:
 				continue
 			_add_face(surface_tools[11], pos, Vector3i(0, 1, 0), UNDISCOVERED_COLOR)
-			_grey_faces += 1
 
 	# 2026-07-05 (revue de code, item F008) : le print() de diagnostic Sprint 35
 	# ci-dessus (confirmation manuelle "le trou n'apparait pas") est retire -
@@ -288,7 +288,16 @@ func _rebuild_mesh_body() -> void:
 		var surfaces_before := mesh.get_surface_count()
 		st.commit(mesh)
 		if mesh.get_surface_count() > surfaces_before:
-			mesh.surface_set_material(surfaces_before, bucket_materials[bucket_idx])
+			# 2026-07-06 (revue de code, paquet C, I34) : .get() avec repli sur
+			# StandardMaterial3D.new() (materiau neutre) plutot qu'un acces
+			# direct - si _get_bucket_materials() ne couvre pas ce bucket_idx,
+			# on evite un crash "Index p_idx out of bounds" au profit d'un
+			# rendu degrade (couleur par defaut) et d'un avertissement.
+			var mat: Material = bucket_materials.get(bucket_idx)
+			if mat == null:
+				push_warning("VoxelMeshBuilder: aucun materiau pour le bucket %d, materiau par defaut utilise" % bucket_idx)
+				mat = StandardMaterial3D.new()
+			mesh.surface_set_material(surfaces_before, mat)
 
 	mesh_instance.mesh = mesh
 	vein_system.rebuild_pepites(view_level, discovered, Callable(self, "_is_face_exposed"), DIRECTIONS)

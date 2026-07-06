@@ -57,6 +57,10 @@ var is_middle_dragging: bool = false
 # doivent disparaitre aussi" en descendant de niveau).
 @onready var ground_decoration: Node3D = %GroundDecoration
 var level_label: Label
+# 2026-07-06 (revue de code, paquet H, M33) : reference au Tween de rotation
+# en cours, pour pouvoir l'arreter avant d'en lancer un nouveau si l'utilisateur
+# presse A/E rapidement plusieurs fois - voir _rotate_step().
+var _rotate_tween: Tween
 
 
 func _ready() -> void:
@@ -162,9 +166,14 @@ func _unhandled_input(event: InputEvent) -> void:
 ## interpolation), ressenti comme brutal. Anime desormais la rotation sur une
 ## courte duree via un Tween plutot qu'un saut immediat.
 func _rotate_step(delta_deg: float) -> void:
-	var tween := create_tween()
-	tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.tween_property(self, "rotation:y", rotation.y + deg_to_rad(delta_deg), 0.25)
+	# 2026-07-06 (revue de code, paquet H, M33) : arrete le Tween de rotation
+	# precedent s'il tourne encore (pressions rapides de A/E) avant d'en
+	# lancer un nouveau - evite deux Tweens concurrents sur "rotation:y".
+	if _rotate_tween != null and _rotate_tween.is_valid():
+		_rotate_tween.kill()
+	_rotate_tween = create_tween()
+	_rotate_tween.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_rotate_tween.tween_property(self, "rotation:y", rotation.y + deg_to_rad(delta_deg), 0.25)
 
 
 func _update_camera_offset() -> void:
@@ -194,6 +203,14 @@ func _update_view_level() -> void:
 	]
 	for node in view_level_nodes:
 		if node != null and node.has_method("update_view_level"):
+			# 2026-07-06 (revue de code, paquet F, I42) : is_node_ready() evite
+			# d'appeler update_view_level() sur un noeud dont le _ready() n'est
+			# pas encore termine (ordre d'execution entre noeuds freres non
+			# garanti) - avertit plutot que d'echouer silencieusement sur un
+			# etat interne pas encore initialise.
+			if not node.is_node_ready():
+				push_warning("CameraRig._update_view_level : %s n'est pas encore pret (_ready() non termine), appel ignore cette fois." % node.name)
+				continue
 			node.update_view_level(current_level)
 
 

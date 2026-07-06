@@ -86,6 +86,14 @@ func season_progress() -> float:
 
 
 func _apply_season() -> void:
+	# 2026-07-06 (revue de code, paquet C, M35) : garde de nullite sur les 4
+	# noeuds lus ci-dessous (et par _apply_winter_fruit_availability, appelee
+	# en fin de fonction) - meme principe que CameraRig.gd (has_method/!=
+	# null) - un noeud manquant ou un ordre de scene casse levera desormais
+	# un avertissement explicite plutot qu'un crash.
+	if _voxel_world == null or _forest == null or _berry_bushes == null or _ground_decoration == null:
+		push_warning("SeasonSystem: noeud(s) manquant(s) (VoxelWorld/Forest/BerryBushes/GroundDecoration), changement de saison ignore")
+		return
 	var season_id := current_season_id()
 	_voxel_world.season_id = season_id
 	_voxel_world.rebuild_mesh()
@@ -139,5 +147,15 @@ func _apply_winter_fruit_availability(is_winter: bool) -> void:
 				if (child.name as String).begins_with("Fruit_"):
 					child.visible = true
 	_berry_bushes.set_winter_active(is_winter)
+	_forest.set_winter_fruits_hidden(is_winter)  # 2026-07-06 : sinon update_view_level() ci-dessous reaffichait les fruits caches juste au-dessus
+	# 2026-07-06 (revue de code, paquet F, I45) : verifie - l'ordre exact des 4
+	# lignes ci-dessus (set_winter_* avant update_view_level) n'est plus
+	# strictement critique. Forest.gd et BerryBushes.gd consultent chacun leur
+	# PROPRE flag interne (_winter_fruits_hidden / _winter_active) directement
+	# a l'interieur de leur update_view_level(), donc meme un appel dans
+	# l'autre sens donnerait le meme resultat final tant que les deux lignes
+	# de cette fonction s'executent avant la fin de _apply_season(). Aucun
+	# changement fonctionnel ici - simple clarification, comportement deja
+	# correct (comme M24).
 	_forest.update_view_level(_voxel_world.view_level)
 	_berry_bushes.update_view_level(_voxel_world.view_level)

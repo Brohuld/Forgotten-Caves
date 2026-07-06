@@ -27,14 +27,18 @@ const SKILL_BONUS_YIELD_MAX := 0.6         # plafond de la chance de bonus
 ## Genere les caracteristiques de base du nain (Sprint 12), retournees en
 ## Dictionary (force/agilite/constitution/intelligence/beaute/bonheur) -
 ## purement informatif pour l'instant, aucun effet sur le gameplay.
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
+## "nains_competences" au lieu de randi_range()/randf() globaux (idem dans
+## _distribute_skill_points/roll_bonus_yield ci-dessous) - voir GameRandom.gd.
 func generate_characteristics() -> Dictionary:
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_competences")
 	return {
-		"force": randi_range(1, 10),
-		"agilite": randi_range(1, 10),
-		"constitution": randi_range(1, 10),
-		"intelligence": randi_range(1, 10),
-		"beaute": randi_range(1, 10),
-		"bonheur": randi_range(40, 80),
+		"force": rng.randi_range(1, 10),
+		"agilite": rng.randi_range(1, 10),
+		"constitution": rng.randi_range(1, 10),
+		"intelligence": rng.randi_range(1, 10),
+		"beaute": rng.randi_range(1, 10),
+		"bonheur": rng.randi_range(40, 80),
 	}
 
 
@@ -66,10 +70,11 @@ func generate_skills() -> Dictionary:
 ## "max_per_skill". Le reste eventuel (du a l'arrondi) est distribue un point
 ## a la fois, au hasard, parmi les competences pas encore au plafond.
 func _distribute_skill_points(total_budget: int, count: int, max_per_skill: int) -> Array:
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_competences")
 	var weights: Array = []
 	var weight_sum: float = 0.0
 	for i in range(count):
-		var w: float = randf() + 0.1  # + 0.1 pour eviter un poids quasi nul
+		var w: float = rng.randf() + 0.1  # + 0.1 pour eviter un poids quasi nul
 		weights.append(w)
 		weight_sum += w
 
@@ -84,7 +89,7 @@ func _distribute_skill_points(total_budget: int, count: int, max_per_skill: int)
 	var remaining: int = total_budget - allocated
 	var guard: int = 0
 	while remaining > 0 and guard < 500:
-		var idx: int = randi_range(0, count - 1)
+		var idx: int = rng.randi_range(0, count - 1)
 		if values[idx] < max_per_skill:
 			values[idx] += 1
 			remaining -= 1
@@ -103,9 +108,21 @@ func gain_xp(skill_levels: Dictionary, skill_xp: Dictionary, skill_id: String, a
 		return
 	skill_xp[skill_id] += amount
 	var guard: int = 0
-	while skill_xp[skill_id] >= xp_needed_for_level(skill_levels[skill_id]) and guard < 100:
-		skill_xp[skill_id] -= xp_needed_for_level(skill_levels[skill_id])
+	# 2026-07-06 (revue de code, paquet H, M20) : xp_needed_for_level() se
+	# recalculait deux fois par iteration (condition + corps) pour la meme
+	# valeur de skill_levels[skill_id] - stockee une seule fois ici.
+	var needed: float = xp_needed_for_level(skill_levels[skill_id])
+	while skill_xp[skill_id] >= needed and guard < 100:
+		skill_xp[skill_id] -= needed
 		skill_levels[skill_id] += 1
+		needed = xp_needed_for_level(skill_levels[skill_id])
+		# 2026-07-06 (revue de code, paquet D, M21) : clarifie - CE print() est
+		# volontaire, pas un reliquat de mise au point. Il n'existe aujourd'hui
+		# aucune notification visuelle en jeu pour une montee de niveau ; ce
+		# message console reste donc le seul retour disponible sur cet
+		# evenement. A retirer ou remplacer le jour ou une vraie UI de
+		# notification existe (contrairement aux autres print() de ce paquet,
+		# qui etaient de la pure instrumentation de perf/debug).
 		print("%s : %s passe niveau %d" % [dwarf_name, SkillDefs.display_name(skill_id), skill_levels[skill_id]])
 		guard += 1
 
@@ -132,4 +149,4 @@ func roll_bonus_yield(skill_levels: Dictionary, skill_id: String) -> bool:
 		return false
 	var level: int = skill_levels[skill_id]
 	var chance: float = min(float(level) * SKILL_BONUS_YIELD_PER_LEVEL, SKILL_BONUS_YIELD_MAX)
-	return randf() < chance
+	return GameRandom.get_rng("nains_competences").randf() < chance

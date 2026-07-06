@@ -8,7 +8,11 @@ extends RefCounted
 ## gameplay (vitesse de travail + bonus de recolte), il faut relier son champ
 ## "tache" a un type de tache existant ("miner", "couper", "construire" ou
 ## "cueillir") ; laisser "tache": "" pour une competence purement affichee,
-## sans effet pour l'instant (comme Combat, pas encore de mecanique associee).
+## sans effet pour l'instant. (2026-07-06, revue de code I16 : les 4
+## competences actuelles sont TOUTES reliees a une tache - ce cas "tache": ""
+## n'est donc pas encore utilise dans SKILLS, mais reste disponible pour une
+## future competence purement affichee, ex: Combat, tant qu'aucune mecanique
+## ne lui est associee.)
 ##
 ## Champs de chaque entree :
 ## - id    : identifiant interne stable (utilise pour stocker niveau/xp)

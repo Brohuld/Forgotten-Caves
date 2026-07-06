@@ -99,6 +99,24 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 ## (voir _build_shared_meshes).
 enum PartType { ROOTS, TRUNK, BRANCH, CONE, BLOB, LEAF }
 
+## 2026-07-06 (regression "tous les troncs ont disparu apres avoir coupe UN
+## arbre") : hide_tree_visuals()/update_view_level() cachaient une instance en
+## mettant son echelle a Vector3.ZERO PILE (Basis totalement degenere,
+## determinant=0). Avec un materiau a eclairage REEL (roughness=1.0, voir
+## _make_mmi - pas SHADING_MODE_UNSHADED), Godot calcule une matrice de
+## normales par instance a partir de sa transform ; une base totalement
+## degeneree produit un resultat non-inversible (NaN/Inf) qui peut corrompre
+## le rendu de TOUT le lot d'instances du MultiMesh concerne (pas seulement
+## celle qu'on voulait cacher) - exactement le symptome observe : couper un
+## chene a fait disparaitre TOUS les troncs/racines/branches/feuillage BLOB+LEAF
+## de la carte (tous les part_types que ce chene utilisait), mais PAS les
+## cones (sapins, jamais touches puisque ce chene n'en a pas) ni les fruits
+## (noeuds independants, pas dans un MultiMesh). Fix : une echelle
+## MINUSCULE mais JAMAIS EXACTEMENT ZERO (base non-degeneree, determinant
+## non-nul) - invisible a l'oeil, mais n'expose plus Godot au calcul sur une
+## matrice singuliere.
+const HIDDEN_INSTANCE_SCALE := 0.0001
+
 ## Types de piece consideres comme "feuillage" - seuls ceux-la sont reteints
 ## a chaque changement de saison (voir apply_season_tint), exactement comme
 ## avant (le tronc/les racines/les branches/les fruits ne changent jamais de
@@ -106,8 +124,30 @@ enum PartType { ROOTS, TRUNK, BRANCH, CONE, BLOB, LEAF }
 const _FOLIAGE_PART_TYPES := [PartType.CONE, PartType.BLOB, PartType.LEAF]
 
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
-var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
+var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D] (transform D'ORIGINE au moment du spawn, jamais modifie ensuite)
 var _pending_colors: Dictionary = {}   # PartType -> Array[Color]
+## 2026-07-06 (regression "repousse d'arbre efface les autres arbres") :
+## contrairement a _pending_xforms (toujours la transform D'ORIGINE), ce
+## tableau retient la transform REELLEMENT AFFICHEE en ce moment pour chaque
+## instance (visible normalement, cachee via HIDDEN_INSTANCE_SCALE si l'arbre
+## a ete coupe, ou cachee/restauree selon le niveau de vue - voir
+## hide_tree_visuals/update_view_level, qui ecrivent desormais ICI en plus du
+## MultiMesh lui-meme). Necessaire car Godot reinitialise TOUTES les
+## instances existantes d'un MultiMesh a leur valeur par defaut des que son
+## "instance_count" est agrandi (comportement documente du moteur, confirme
+## sur le tracker officiel, issue #76180) - _spawn_new_tree_and_apply doit
+## donc reappliquer explicitement CET etat (pas _pending_xforms, qui ferait
+## reapparaitre a tort un arbre coupe) sur TOUTES les instances a chaque fois
+## qu'un agrandissement se produit, pas seulement sur les nouvelles.
+var _live_xforms: Dictionary = {}      # PartType -> Array[Transform3D]
+## Meme principe que _live_xforms, mais pour la couleur actuellement affichee
+## (peut differer de _pending_colors a cause de la teinte de saison sur le
+## feuillage - voir apply_season_tint/_tinted_foliage_color).
+var _live_colors: Dictionary = {}      # PartType -> Array[Color]
+## Derniere saison appliquee (voir apply_season_tint) - retenue ici pour que
+## _spawn_new_tree_and_apply puisse recalculer la bonne teinte de feuillage
+## apres un agrandissement, sans dependre de SeasonSystem.gd.
+var _current_season_id: String = "ete"
 # Sprint 33 (adapte Sprint 34) : couleur de BASE (avant teinte de saison) de
 # chaque instance de feuillage, index-alignee avec le multimesh final -
 # permet a apply_season_tint() de reteindre a partir de la couleur d'origine
@@ -135,10 +175,18 @@ var _foliage_base_colors: Dictionary = {}  # PartType -> Array[Color]
 # independamment de la saison (voir leurs docstrings).
 const SEASON_FOLIAGE_TINT := {  # BLOB + LEAF (chene/bouleau/arbres fruitiers)
 	"ete": Color(1.0, 1.0, 1.0, 1.0),
-	"automne": Color(1.35, 0.85, 0.45, 1.0),
 	"hiver": Color(0.55, 0.5, 0.48, 0.12),
 	"printemps": Color(1.15, 1.2, 1.05, 1.0),
 }
+# 2026-07-06 (Francois : "les arbres... ne sont pas assez rouges en automne,
+# surtout les chenes") : une teinte MULTIPLICATIVE (couleur * facteur) ne peut
+# pas faire dominer le rouge quand la couleur de base est deja tres sombre et
+# tres verte (chene : Color(0.04, 0.16, 0.06) - meme multipliee par un grand
+# facteur rouge, le canal vert de depart reste plus fort). L'automne utilise
+# donc un MELANGE (lerp) vers une couleur cible rouge/orange, qui garantit un
+# resultat rouge quelle que soit la couleur de depart - voir apply_season_tint.
+const AUTOMNE_LEAF_TARGET := Color(0.55, 0.10, 0.05)
+const AUTOMNE_LEAF_STRENGTH := 0.65
 const SEASON_CONE_TINT := {  # CONE (sapin uniquement) - jamais rougi/transparent
 	"ete": Color(1.0, 1.0, 1.0),
 	"automne": Color(1.0, 1.0, 1.0),
@@ -208,15 +256,33 @@ func _maybe_regrow_tree() -> void:
 		_spawn_new_tree_and_apply(TreeSpecies.random_fruit_species())
 
 
-## Fait pousser un seul arbre APRES la generation initiale, sans reappliquer
-## _apply_pending_instances() sur la totalite des tableaux _pending_* : un
-## arbre coupe a deja mis a zero sa transform directement dans le
-## MultiMeshInstance3D (voir hide_tree_visuals), sans jamais toucher aux
-## tableaux _pending_* - rejouer tout _apply_pending_instances() ecraserait
-## donc ce zero et ferait "reapparaitre" l'arbre coupe. On ne pousse ici QUE
-## les nouvelles instances de ce nouvel arbre (a partir de leur index de
-## depart) dans les MultiMesh partages, en grandissant instance_count au
-## besoin, sans jamais reecrire les instances existantes.
+## Fait pousser un seul arbre APRES la generation initiale.
+## 2026-07-06 (regression "repousse d'arbre efface les autres arbres",
+## corrigee) : la version precedente de cette fonction supposait qu'agrandir
+## "multimesh.instance_count" pour loger les nouvelles instances de CE nouvel
+## arbre n'affectait jamais les instances deja existantes des AUTRES arbres.
+## FAUX - confirme sur le tracker officiel de Godot (issue #76180) : chaque
+## fois que "instance_count" est agrandi, Godot reinitialise TOUTES les
+## instances existantes de ce MultiMesh a leur valeur par defaut (transform
+## identite, couleur blanche). Symptome observe : couper un arbre declenchait
+## une repousse ~20s plus tard (_maybe_regrow_tree), qui agrandissait au
+## besoin les MultiMesh racines/tronc/branches/cones/feuillage - UNIQUEMENT
+## ceux dont l'espece du nouvel arbre a besoin (ex : un sapin n'ajoute rien a
+## BLOB/LEAF) - effacant instantanement TOUS les troncs/racines/branches (ou
+## cones) de la carte entiere pour les types agrandis, alors que les types NON
+## agrandis restaient intacts (feuillage boules/petites feuilles, si le nouvel
+## arbre etait un sapin).
+## Fix : des qu'un agrandissement est necessaire pour un type de piece donne,
+## on reapplique EXPLICITEMENT l'etat REEL actuel de TOUTES ses instances
+## (pas seulement celles du nouvel arbre) a partir de _live_xforms/
+## _live_colors - qui retiennent en permanence, pour chaque instance, sa
+## transform/couleur veritablement affichee en ce moment (visible normalement,
+## cachee par une coupe, ou cachee/restauree par le niveau de vue - voir
+## hide_tree_visuals/update_view_level, qui ecrivent desormais aussi dans ces
+## deux tableaux). Si aucun agrandissement n'est necessaire pour un type
+## donne, on se contente comme avant de n'ecrire QUE les nouvelles instances
+## (chemin rapide, aucun risque - Godot ne touche a rien tant que
+## "instance_count" ne change pas).
 func _spawn_new_tree_and_apply(species: Dictionary) -> void:
 	var start_indices: Dictionary = {}
 	for part_type in _mmi.keys():
@@ -226,14 +292,26 @@ func _spawn_new_tree_and_apply(species: Dictionary) -> void:
 
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
-		var xforms: Array = _pending_xforms[part_type]
-		var colors: Array = _pending_colors[part_type]
-		var new_count: int = xforms.size()
+		var new_count: int = _pending_xforms[part_type].size()
 		if mmi.multimesh.instance_count < new_count:
 			mmi.multimesh.instance_count = new_count
-		for i in range(start_indices[part_type], new_count):
-			mmi.multimesh.set_instance_transform(i, xforms[i])
-			mmi.multimesh.set_instance_color(i, colors[i])
+			# Agrandissement reel : Godot vient de reinitialiser TOUTES les
+			# instances de ce MultiMesh (0..new_count-1, y compris celles des
+			# autres arbres et la toute nouvelle) - on reapplique donc tout,
+			# a partir de l'etat REEL retenu dans _live_xforms/_live_colors.
+			var live_xforms: Array = _live_xforms[part_type]
+			var live_colors: Array = _live_colors[part_type]
+			for i in range(new_count):
+				mmi.multimesh.set_instance_transform(i, live_xforms[i])
+				mmi.multimesh.set_instance_color(i, live_colors[i])
+		else:
+			# Pas d'agrandissement necessaire : les instances existantes ne
+			# sont pas touchees par Godot, on ne pousse que les nouvelles.
+			var xforms: Array = _pending_xforms[part_type]
+			var live_colors: Array = _live_colors[part_type]
+			for i in range(start_indices[part_type], new_count):
+				mmi.multimesh.set_instance_transform(i, xforms[i])
+				mmi.multimesh.set_instance_color(i, live_colors[i])
 
 
 ## Sprint 34 : cree les 6 MultiMeshInstance3D partages (un par PartType), avec
@@ -260,6 +338,8 @@ func _build_shared_meshes() -> void:
 	for key in _mmi.keys():
 		_pending_xforms[key] = []
 		_pending_colors[key] = []
+		_live_xforms[key] = []
+		_live_colors[key] = []
 	for key in _FOLIAGE_PART_TYPES:
 		_foliage_base_colors[key] = []
 
@@ -372,17 +452,7 @@ func _spawn_tree(species: Dictionary) -> void:
 	# (arrangement des blobs asymetrique/aleatoire).
 	var blob_data: Array = _build_foliage(tree, species, trunk_height, trunk_visual_height, tint_jitter)
 
-	# Sprint 24ter : arbre fruitier - ajoute les fruits + rend l'arbre
-	# recoltable via l'action "Cueillir" (groupe/metadonnees partages avec
-	# BerryBush.gd, voir Dwarf.gd/_complete_task pour la logique commune).
-	# Les fruits restent des noeuds individuels (voir _build_fruits) - pas
-	# touches par la conversion MultiMesh, recoltes un par un a la cueillette.
-	if species.has("fruit_resource"):
-		var fruit_count: int = species.get("fruit_count", 5)
-		tree.add_to_group("cueillette")
-		tree.set_meta("fruit_resource", species["fruit_resource"])
-		tree.set_meta("fruits_left", fruit_count)
-		_build_fruits(tree, species, trunk_height, fruit_count, blob_data)
+	_spawn_fruits_if_applicable(tree, species, trunk_height, blob_data)
 
 	# Sprint 34 : toute la geometrie decorative (racines/tronc/branches/
 	# feuillage) vient d'etre construite comme des noeuds TEMPORAIRES sous
@@ -391,6 +461,23 @@ func _spawn_tree(species: Dictionary) -> void:
 	# MultiMeshInstance3D partages, puis on les supprime (voir
 	# _harvest_and_clear). Seuls les fruits restent de vrais enfants de "tree".
 	_harvest_and_clear(tree)
+
+
+## 2026-07-06 (revue de code, paquet E, I57) : extrait de _spawn_tree() -
+## Sprint 24ter, arbre fruitier - ajoute les fruits + rend l'arbre recoltable
+## via l'action "Cueillir" (groupe/metadonnees partages avec BerryBush.gd,
+## voir Dwarf.gd/_complete_task pour la logique commune). Les fruits restent
+## des noeuds individuels (voir _build_fruits) - pas touches par la
+## conversion MultiMesh, recoltes un par un a la cueillette. Ne fait rien si
+## l'espece n'est pas fruitiere (pas de cle "fruit_resource").
+func _spawn_fruits_if_applicable(tree: Node3D, species: Dictionary, trunk_height: float, blob_data: Array) -> void:
+	if not species.has("fruit_resource"):
+		return
+	var fruit_count: int = species.get("fruit_count", 5)
+	tree.add_to_group("cueillette")
+	tree.set_meta("fruit_resource", species["fruit_resource"])
+	tree.set_meta("fruits_left", fruit_count)
+	_build_fruits(tree, species, trunk_height, fruit_count, blob_data)
 
 
 ## Petite base evasee au pied du tronc (racines), pour eviter l'effet
@@ -734,6 +821,15 @@ func _harvest_and_clear(tree: Node3D) -> void:
 		_pending_colors[part_type].append(color)
 		if part_type in _FOLIAGE_PART_TYPES:
 			_foliage_base_colors[part_type].append(color)
+		# 2026-07-06 (regression "repousse d'arbre efface les autres arbres") :
+		# _live_xforms/_live_colors retiennent l'etat REELLEMENT affiche (ici,
+		# celui d'un arbre qui vient d'etre plante : visible, teinte de saison
+		# courante deja appliquee si feuillage) - voir la doc de _live_xforms.
+		_live_xforms[part_type].append(xform)
+		if part_type in _FOLIAGE_PART_TYPES:
+			_live_colors[part_type].append(_tinted_foliage_color(part_type, color, _current_season_id))
+		else:
+			_live_colors[part_type].append(color)
 		refs.append([part_type, _pending_xforms[part_type].size() - 1])
 
 	tree.set_meta("visual_refs", refs)
@@ -797,16 +893,34 @@ func _flat_material(color: Color) -> StandardMaterial3D:
 ## de la couleur par instance des MultiMeshInstance3D partages - plus rapide
 ## (pas de creation de materiau) et coherent avec le reste de la refonte.
 func apply_season_tint(season_id: String) -> void:
-	var tint: Color = SEASON_FOLIAGE_TINT.get(season_id, Color(1.0, 1.0, 1.0, 1.0))
-	var cone_tint: Color = SEASON_CONE_TINT.get(season_id, Color(1.0, 1.0, 1.0))
+	_current_season_id = season_id
 	for part_type in _FOLIAGE_PART_TYPES:
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var base_colors: Array = _foliage_base_colors[part_type]
-		# 2026-07-05 (cycle des saisons, "sauf les sapins" en automne/hiver) :
-		# CONE (sapin) suit sa propre table, jamais SEASON_FOLIAGE_TINT.
-		var t: Color = cone_tint if part_type == PartType.CONE else tint
 		for i in range(base_colors.size()):
-			mmi.multimesh.set_instance_color(i, base_colors[i] * t)
+			var final_color: Color = _tinted_foliage_color(part_type, base_colors[i], season_id)
+			mmi.multimesh.set_instance_color(i, final_color)
+			_live_colors[part_type][i] = final_color
+
+
+## 2026-07-06 (regression "repousse d'arbre efface les autres arbres") :
+## extrait de apply_season_tint() pour etre reutilisable par
+## _spawn_new_tree_and_apply (qui doit pouvoir recalculer la couleur actuelle
+## de chaque instance de feuillage apres un agrandissement de MultiMesh, sans
+## dupliquer cette logique). Comportement de calcul strictement identique a
+## avant.
+func _tinted_foliage_color(part_type: int, base_color: Color, season_id: String) -> Color:
+	# 2026-07-05 (cycle des saisons, "sauf les sapins" en automne/hiver) :
+	# CONE (sapin) suit sa propre table, jamais SEASON_FOLIAGE_TINT/l'automne.
+	if part_type == PartType.CONE:
+		var cone_tint: Color = SEASON_CONE_TINT.get(season_id, Color(1.0, 1.0, 1.0))
+		return base_color * cone_tint
+	# 2026-07-06 : l'automne n'est plus dans SEASON_FOLIAGE_TINT (voir sa
+	# declaration) - traite a part ci-dessous via un lerp vers du rouge/orange.
+	if season_id == "automne":
+		return base_color.lerp(AUTOMNE_LEAF_TARGET, AUTOMNE_LEAF_STRENGTH)
+	var tint: Color = SEASON_FOLIAGE_TINT.get(season_id, Color(1.0, 1.0, 1.0, 1.0))
+	return base_color * tint
 
 
 ## Sprint 34 : rend invisibles toutes les instances de mesh partagees
@@ -822,11 +936,16 @@ func hide_tree_visuals(tree: Node3D) -> void:
 	if not tree.has_meta("visual_refs"):
 		return
 	var refs: Array = tree.get_meta("visual_refs")
-	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for ref in refs:
 		var part_type: int = ref[0]
 		var idx: int = ref[1]
 		_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+		# 2026-07-06 (regression "repousse d'arbre efface les autres arbres") :
+		# retient l'etat "cache" ici aussi, sinon _spawn_new_tree_and_apply
+		# ferait REAPPARAITRE cet arbre coupe au prochain agrandissement du
+		# MultiMesh (voir doc de _live_xforms).
+		_live_xforms[part_type][idx] = zero_xform
 
 
 ## Sprint 85 (2026-07-04, demande explicite de Francois : "quand je descends
@@ -848,8 +967,22 @@ func hide_tree_visuals(tree: Node3D) -> void:
 ## erreur ici.
 ## Les fruits (seuls enfants restants de "tree", noms "Fruit_*", pas geres par
 ## le MultiMesh partage) sont bascules directement via leur propre "visible".
+## 2026-07-06 (correctif bug "les fruits ne disparaissent pas en hiver") :
+## SeasonSystem.gd cachait bien les fruits (visible=false) au debut de
+## l'hiver, MAIS appelait ensuite update_view_level() pour reconcilier avec
+## le niveau de vue courant - et cette fonction remettait "visible = not
+## hidden" SANS savoir que c'etait l'hiver, annulant donc immediatement le
+## masquage. update_view_level() doit desormais lui-meme connaitre l'etat
+## hiver (voir set_winter_fruits_hidden), pour rester correct quel que soit
+## qui l'appelle et dans quel ordre (changement de niveau de vue OU de saison).
+var _winter_fruits_hidden: bool = false
+
+func set_winter_fruits_hidden(hidden: bool) -> void:
+	_winter_fruits_hidden = hidden
+
+
 func update_view_level(level: int) -> void:
-	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for tree in get_tree().get_nodes_in_group("trees"):
 		var ground_block_y: float = tree.position.y - 1.0
 		var hidden: bool = ground_block_y > float(level)
@@ -858,10 +991,14 @@ func update_view_level(level: int) -> void:
 			for ref in refs:
 				var part_type: int = ref[0]
 				var idx: int = ref[1]
+				# 2026-07-06 (regression "repousse d'arbre efface les autres
+				# arbres") : _live_xforms mis a jour ici aussi (voir sa doc).
 				if hidden:
 					_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+					_live_xforms[part_type][idx] = zero_xform
 				else:
 					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
+					_live_xforms[part_type][idx] = _pending_xforms[part_type][idx]
 		for child in tree.get_children():
 			if (child.name as String).begins_with("Fruit_"):
-				child.visible = not hidden
+				child.visible = not hidden and not _winter_fruits_hidden

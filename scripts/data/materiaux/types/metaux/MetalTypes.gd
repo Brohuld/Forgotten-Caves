@@ -1,4 +1,8 @@
 extends RefCounted
+## 2026-07-06 (revue de code, paquet B, M17) : get_type() delegue desormais a
+## DataTableUtils.find_by_id() (motif duplique aussi dans GemTypes.gd/
+## BerryTypes.gd) - comportement inchange.
+const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
 ## Sprint 23 : table des metaux trouvables en filons dans la pierre (voir
 ## VoxelWorld.gd/_setup_vein_noises et VeinMaterials.gd pour la generation).
 ## Meme pattern que TreeSpecies.gd/ClimateDefinitions.gd : const TABLE +
@@ -26,7 +30,4 @@ const TABLE := [
 
 ## Renvoie la definition d'un metal par id, ou un dictionnaire vide si inconnu
 static func get_type(id: String) -> Dictionary:
-	for entry in TABLE:
-		if entry["id"] == id:
-			return entry
-	return {}
+	return DataTableUtils.find_by_id(TABLE, id)

@@ -23,6 +23,21 @@ extends Node3D
 ## global_transform + couleur + taille dans _harvest_and_clear, instances
 ## dans des MultiMeshInstance3D partages (voir PartType), et PAS besoin d'un
 ## equivalent de hide_tree_visuals() puisque rien n'est jamais retire.
+##
+## 2026-07-06 (revue de code, paquet E, I39 - "428 lignes cumulant 4
+## responsabilites") : evalue et volontairement NON decoupe en plusieurs
+## fichiers. Generation initiale / cycle des saisons / niveau de vue /
+## suppression au minage partagent tous le meme etat par-instance
+## (_pending_xforms/_pending_colors/_pending_ground_y/_removed_instances/
+## _pending_printemps_seulement/_pending_masque_en_ete) et se combinent dans
+## UNE SEULE fonction critique (_refresh_all_visibility) qui doit connaitre
+## simultanement retrait/niveau de vue/saison pour decider de la visibilite
+## d'une instance. Un decoupage en plusieurs fichiers obligerait a faire
+## circuler ces 7 dictionnaires entre scripts, pour un gain de lisibilite
+## marginal et un risque reel de regression dans une logique de visibilite
+## deja fragile par le passe (meme famille de bugs que Forest.gd/
+## BerryBushes.gd, qui ont le meme motif saison+niveau de vue combines et ne
+## sont eux non plus jamais decoupes pour cette raison).
 
 const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 ## Sprint 34bis : uniquement pour lire VoxelWorldScript.world_gen_start_ms
@@ -48,6 +63,14 @@ const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 ## Un type par "piece" de decoration, chacun associe a un MultiMeshInstance3D
 ## partage (voir _mmi) et un maillage de base "unite" (voir _build_shared_meshes).
 enum PartType { GRASS_BLADE, FLOWER_STEM, FLOWER_BLOOM, PEBBLE }
+
+## 2026-07-06 (meme correctif que Forest.gd, voir ses commentaires pour le
+## detail complet) : cacher une instance de MultiMesh avec une echelle
+## Vector3.ZERO PILE (Basis totalement degenere) peut corrompre le rendu de
+## TOUT le MultiMesh concerne avec un materiau a eclairage reel - jamais
+## reproduit ici, mais meme code a risque (voir les deux fonctions plus bas
+## qui construisent zero_xform) - corrige preventivement.
+const HIDDEN_INSTANCE_SCALE := 0.0001
 
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
 var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
@@ -381,7 +404,7 @@ func apply_season(season_id: String) -> void:
 ## ci-dessus) et met a jour les transforms de TOUTES les instances - appele
 ## par les deux, jamais directement.
 func _refresh_all_visibility() -> void:
-	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var xforms: Array = _pending_xforms[part_type]
@@ -413,7 +436,7 @@ func _refresh_all_visibility() -> void:
 ## _spawn_grass_tuft/_spawn_flower/_spawn_pebble) et on les met a l'echelle
 ## zero de façon PERMANENTE (voir _removed_instances/update_view_level).
 func remove_decoration_at(bx: int, bz: int) -> void:
-	var zero_xform := Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var xforms: Array = _pending_xforms[part_type]

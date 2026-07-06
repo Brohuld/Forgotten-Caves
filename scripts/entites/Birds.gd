@@ -31,6 +31,13 @@ const BODY_COLOR := Color(0.16, 0.16, 0.18)
 var _birds: Array = []   # Array[Dictionary] : node, center, radius, height, angle, angular_speed, wing_left, wing_right, phase
 var _sim_time: float = 0.0
 
+# 2026-07-06 (revue de code, paquet G, M19) : materiau partage entre TOUS les
+# oiseaux (corps + 2 ailes de chacun) - tous utilisent la meme BODY_COLOR
+# constante, un StandardMaterial3D distinct par mesh instance (24 pour 8
+# oiseaux) n'apportait donc aucune variation, juste des allocations en trop.
+# Cree une seule fois au premier appel de _apply_unshaded (voir plus bas).
+var _shared_body_material: StandardMaterial3D
+
 
 func _ready() -> void:
 	# 2026-07-05 (meme correctif que C2-C6/I9, decouvert incidemment lors de
@@ -43,15 +50,18 @@ func _ready() -> void:
 		_spawn_bird(i)
 
 
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie "oiseaux" au
+## lieu de randf()/randf_range() globaux - voir GameRandom.gd.
 func _spawn_bird(index: int) -> void:
+	var rng: RandomNumberGenerator = GameRandom.get_rng("oiseaux")
 	var margin := 15.0
-	var cx: float = randf_range(margin, float(VoxelWorldScript.WIDTH) - margin)
-	var cz: float = randf_range(margin, float(VoxelWorldScript.DEPTH) - margin)
+	var cx: float = rng.randf_range(margin, float(VoxelWorldScript.WIDTH) - margin)
+	var cz: float = rng.randf_range(margin, float(VoxelWorldScript.DEPTH) - margin)
 	var center := Vector3(cx, 0.0, cz)
-	var radius: float = randf_range(min_radius, max_radius)
-	var height: float = float(VoxelWorldScript.HEIGHT - 1) + randf_range(min_height, max_height)
-	var angle: float = randf_range(0.0, TAU)
-	var angular_speed: float = randf_range(min_angular_speed, max_angular_speed) * (1.0 if randf() < 0.5 else -1.0)
+	var radius: float = rng.randf_range(min_radius, max_radius)
+	var height: float = float(VoxelWorldScript.HEIGHT - 1) + rng.randf_range(min_height, max_height)
+	var angle: float = rng.randf_range(0.0, TAU)
+	var angular_speed: float = rng.randf_range(min_angular_speed, max_angular_speed) * (1.0 if rng.randf() < 0.5 else -1.0)
 
 	var bird := Node3D.new()
 	bird.name = "Bird_%d" % index
@@ -80,7 +90,7 @@ func _spawn_bird(index: int) -> void:
 		"angular_speed": angular_speed,
 		"wing_left": wing_left,
 		"wing_right": wing_right,
-		"phase": randf_range(0.0, TAU),
+		"phase": rng.randf_range(0.0, TAU),
 	})
 
 
@@ -103,10 +113,17 @@ func _make_wing(side: float) -> Node3D:
 
 
 func _apply_unshaded(mesh_instance: MeshInstance3D, color: Color) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = color
-	mesh_instance.material_override = mat
+	# 2026-07-06 (revue de code, paquet G, M19) : un seul StandardMaterial3D
+	# reutilise pour tous les oiseaux au lieu d'un nouveau a chaque appel -
+	# voir _shared_body_material plus haut. "color" reste en parametre (aucun
+	# changement de signature) mais n'est utilise que pour construire le
+	# materiau la toute premiere fois - tous les appels actuels passent de
+	# toute facon la meme BODY_COLOR.
+	if _shared_body_material == null:
+		_shared_body_material = StandardMaterial3D.new()
+		_shared_body_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_shared_body_material.albedo_color = color
+	mesh_instance.material_override = _shared_body_material
 
 
 func _process(delta: float) -> void:

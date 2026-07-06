@@ -94,6 +94,16 @@ const SEASONS := ["ete", "automne", "hiver", "printemps"]
 const DEFAULT_SEASON := "ete"
 
 
+## 2026-07-06 (revue de code, paquet B, I50) : factorise le motif duplique 3x
+## ("saison courante si un SeasonSystem valide est fourni, sinon la saison par
+## defaut") entre DayNightCycle.gd/TemperatureSystem.gd/WeatherSystem.gd -
+## chacun lisait _season_system.current_season_id() avec son propre repli en
+## dur ("ete" ou DEFAULT_SEASON, deja identiques en pratique). "season_system"
+## peut etre null ou n'importe quel noeud exposant current_season_id().
+static func season_id_or_default(season_system) -> String:
+	return season_system.current_season_id() if season_system else DEFAULT_SEASON
+
+
 ## Renvoie la definition d'un climat par id, ou celle du climat par defaut
 ## si l'id est inconnu (evite un crash si le champ climate_id est mal saisi)
 static func get_climate(id: String) -> Dictionary:

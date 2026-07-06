@@ -198,11 +198,30 @@ static var world_gen_start_ms: int = 0
 ## comme world_gen_start_ms ci-dessus. Si use_fixed_seed est faux, une
 ## graine aleatoire est tiree ET affichee en console (pour pouvoir la
 ## reutiliser plus tard si un bug interessant apparait).
+## 2026-07-06 (revue de code, paquet H, I47) : contrat explicite - SEUL
+## StartMenu.gd a le droit d'ECRIRE ces 2 variables (juste avant de changer de
+## scene vers Main.tscn). Tout autre script peut les LIRE mais ne doit jamais
+## les modifier - un futur second point d'entree (ex: regeneration de carte
+## en jeu) qui les ecrirait aussi entrerait en conflit silencieux avec
+## StartMenu.gd.
 static var use_fixed_seed: bool = false
 static var requested_seed: int = 0
 
 
 func _ready() -> void:
+	# 2026-07-06 (revue de code, paquet H, I33) : VoxelMeshBuilder.gd duplique
+	# manuellement cet enum BlockType (necessaire pour eviter une reference
+	# typee croisee dans l'autre sens - voir son commentaire). Verification
+	# de coherence legere ici (le sens VoxelWorld -> VoxelMeshBuilder est deja
+	# un preload existant, aucune nouvelle dependance circulaire introduite) :
+	# compare quelques valeurs connues, avertit sans bloquer si desynchronise.
+	if VoxelMeshBuilderScript.BlockType.EMPTY != BlockType.EMPTY \
+	or VoxelMeshBuilderScript.BlockType.DIRT != BlockType.DIRT \
+	or VoxelMeshBuilderScript.BlockType.STONE != BlockType.STONE \
+	or VoxelMeshBuilderScript.BlockType.WOOD_WALL != BlockType.WOOD_WALL \
+	or VoxelMeshBuilderScript.BlockType.STONE_WALL != BlockType.STONE_WALL \
+	or VoxelMeshBuilderScript.BlockType.WATER != BlockType.WATER:
+		push_warning("VoxelWorld: BlockType desynchronise avec la copie dans VoxelMeshBuilder.gd - le rendu des blocs risque d'etre incorrect.")
 	world_gen_start_ms = Time.get_ticks_msec()
 	var active_seed: int = requested_seed
 	if not use_fixed_seed:
@@ -223,13 +242,31 @@ func _ready() -> void:
 	# desormais vraie.
 	seed(active_seed)
 	print("Forgotten Caves - graine de la carte utilisee : ", active_seed)
-	terrain_noise.seed = randi()
+	# 2026-07-06 (revue de code, paquet A) : initialise le systeme de flux
+	# aleatoires dedies (voir GameRandom.gd) avec la MEME graine de partie -
+	# doit rester le plus tot possible, avant tout premier appel a
+	# GameRandom.get_rng() (noms des nains, types de baies/arbres, oiseaux,
+	# competences, bruit des filons, rivieres/lacs...).
+	GameRandom.setup(active_seed)
+	# 2026-07-06 (revue de code, paquet F, I37) : le bruit de terrain (les 4
+	# lignes ci-dessous) utilisait encore le flux global randi() plutot qu'un
+	# flux GameRandom dedie, contrairement a tous les autres systemes du jeu
+	# depuis le paquet A - meme risque de decalage silencieux si un futur
+	# tirage aleatoire global s'intercale avant ces lignes. Migre vers le
+	# flux dedie "terrain" (get_rng() cree son propre RandomNumberGenerator
+	# independant, derive du seed de partie + du nom du flux - voir
+	# GameRandom.gd). ATTENTION : ce changement modifie la carte generee a
+	# graine egale par rapport aux parties precedentes (le flux "terrain" ne
+	# tire pas les memes nombres que l'ancien randi() global) - a valider en
+	# jeu.
+	var terrain_rng: RandomNumberGenerator = GameRandom.get_rng("terrain")
+	terrain_noise.seed = terrain_rng.randi()
 	terrain_noise.frequency = 0.18
-	stone_noise.seed = randi()
+	stone_noise.seed = terrain_rng.randi()
 	stone_noise.frequency = 0.18
-	water_noise.seed = randi()
+	water_noise.seed = terrain_rng.randi()
 	water_noise.frequency = 0.15
-	hill_noise.seed = randi()
+	hill_noise.seed = terrain_rng.randi()
 	hill_noise.frequency = 0.02
 	# Sprint 38 : le niveau de coupe par defaut doit couvrir toute l'amplitude
 	# des collines (sinon leur sommet, plus haut que HEIGHT-1, resterait
@@ -383,6 +420,20 @@ func get_block_info(x: int, z: int) -> Dictionary:
 ## Construit un mur (bois, pierre ou terre) au sommet de la colonne (x,z), en
 ## empilant sur ce qui existe deja (fonctionne aussi bien pour reboucher
 ## un trou mine que pour construire en hauteur sur un sol plein)
+## 2026-07-06 (revue de code, paquet G, I36, verifie avec Francois - aucun
+## changement de code) : build_block()/remove_block() declenchent chacun un
+## rebuild_mesh() complet, ce qui pourrait couter cher si beaucoup d'appels
+## arrivaient dans la MEME frame (ex: un minage de rectangle applique
+## instantanement en boucle). Ce n'est PAS le cas ici : "miner un rectangle"
+## cree une tache separee par case (voir ActionValidator.valid_mine_rect_cells/
+## TaskQueue), et chaque tache n'appelle remove_block() qu'une fois, quand UN
+## nain (parmi potentiellement plusieurs en parallele) la termine reellement -
+## jamais toutes les cases d'un coup dans la meme frame. Meme avec plusieurs
+## nains qui terminent des cases voisines a des instants proches, ca reste
+## quelques rebuild_mesh() par seconde au pire, pas des centaines d'un coup.
+## Pas de risque de performance reel avec ce design - a reevaluer seulement si
+## un futur mode de minage/construction instantane (sans tache de nain) est
+## ajoute un jour.
 func build_block(x: int, z: int, material: String) -> void:
 	var target_y := get_top_block_y(x, z) + 1
 	if target_y >= BUILD_CEILING:
@@ -411,6 +462,11 @@ func build_block(x: int, z: int, material: String) -> void:
 func remove_block(x: int, y: int, z: int) -> String:
 	var pos := Vector3i(x, y, z)
 	if not grid.has(pos):
+		# 2026-07-06 (revue de code, paquet C, M29) : un appel sur une case
+		# deja vide (double-minage, desynchronisation d'etat depuis un autre
+		# script) passait inapercu - avertissement pour le reperer sans
+		# changer le comportement (retourne toujours "").
+		push_warning("VoxelWorld.remove_block: case deja vide a (%d, %d, %d)" % [x, y, z])
 		return ""
 	var type: int = grid[pos]
 	grid.erase(pos)

@@ -87,6 +87,14 @@ func _ready() -> void:
 ## independamment des autres, avec un numero flottant au-dessus (pour
 ## pouvoir dire "le numero 5 a tel probleme" sans ambiguite).
 func _regenerate() -> void:
+	# 2026-07-06 (revue de code, paquet H, I40) : child.free() (liberation
+	# IMMEDIATE) est un choix volontaire ici, pas un oubli de queue_free() -
+	# necessaire pour repeupler la grille tout de suite dans la meme fonction
+	# sans doublons visibles a la frame suivante (contrairement a
+	# Forest.gd/BerryBushes.gd, qui utilisent queue_free() car rien ne
+	# repeuple leur zone dans la meme frame). Aucune reference externe n'est
+	# conservee vers ces enfants. Ne pas "corriger" vers queue_free() sans
+	# revoir cette raison - ca reintroduirait un flash de doublons.
 	for child in get_children():
 		remove_child(child)
 		child.free()
@@ -149,6 +157,11 @@ func _regenerate() -> void:
 ## afficher sous le modele (numero + description courte de la config).
 func _apply_weapon_demo(dwarf: Node3D, index: int) -> String:
 	if index > WEAPON_DEMO_CONFIGS.size():
+		# 2026-07-06 (revue de code, paquet H, M32) : la grille configuree a
+		# plus de cases que WEAPON_DEMO_CONFIGS n'a d'entrees en mode
+		# "Demonstration armes" - avertit plutot que de renvoyer silencieusement
+		# un simple numero sans description.
+		push_warning("DwarfVariationGrid._apply_weapon_demo : index %d depasse WEAPON_DEMO_CONFIGS (%d configs) - grille configuree trop grande pour ce mode." % [index, WEAPON_DEMO_CONFIGS.size()])
 		return str(index)
 	var cfg: Dictionary = WEAPON_DEMO_CONFIGS[index - 1]
 	dwarf.weapon_loadout = cfg.get("weapon_loadout", "Aucune")

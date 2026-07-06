@@ -63,10 +63,13 @@ var gem_pepites: MultiMeshInstance3D
 ## Cree un bruit 3D par materiau de filon (voir vein_noises). Frequence assez
 ## basse pour former des petits amas coherents plutot qu'un bruit poivre-et-
 ## sel bloc par bloc.
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
+## "filons_bruit" au lieu de randi() global - voir GameRandom.gd.
 func setup_vein_noises() -> void:
+	var rng: RandomNumberGenerator = GameRandom.get_rng("filons_bruit")
 	for entry in VeinMaterials.all():
 		var n := FastNoiseLite.new()
-		n.seed = randi()
+		n.seed = rng.randi()
 		n.frequency = 0.16
 		vein_noises[entry["id"]] = n
 
@@ -133,6 +136,12 @@ func _make_pepite_material(is_metal: bool) -> StandardMaterial3D:
 func maybe_place_vein(pos: Vector3i, veins: Array) -> void:
 	for entry in veins:
 		var id: String = entry["id"]
+		# 2026-07-06 (revue de code, paquet C, I29) : si "id" n'a pas ete
+		# enregistre via setup_vein_noises() (materiau absent/mal configure),
+		# on l'ignore avec un avertissement plutot que de planter.
+		if not vein_noises.has(id):
+			push_warning("VoxelVeins: materiau de filon inconnu '%s' (non enregistre via setup_vein_noises)" % id)
+			continue
 		var threshold: float = RARITY_THRESHOLDS.get(entry["rarete"], 0.7)
 		var noise: FastNoiseLite = vein_noises[id]
 		var n: float = noise.get_noise_3d(float(pos.x), float(pos.y), float(pos.z))  # -1..1

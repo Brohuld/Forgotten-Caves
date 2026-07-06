@@ -19,6 +19,13 @@ extends Node3D
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
+## 2026-07-06 (meme correctif que Forest.gd, voir ses commentaires pour le
+## detail complet) : cacher une instance de MultiMesh avec une echelle
+## Vector3.ZERO PILE (Basis totalement degenere) peut corrompre le rendu de
+## TOUT le MultiMesh concerne - jamais reproduit ici, mais meme code a risque
+## (voir _update_all_transforms plus bas) - corrige preventivement.
+const HIDDEN_INSTANCE_SCALE := 0.0001
+
 @onready var voxel_world: Node3D = %VoxelWorld
 ## Sprint 81 (suite, 2026-07-04, demande explicite de Francois : "l'ecume doit
 ## etre obscurcie par la meteo et l'heure, comme les nuages") - memes sources
@@ -208,7 +215,7 @@ func _update_all_transforms() -> void:
 		# niveau de vue courant - meme convention que VoxelWorld ("y >
 		# view_level" = cache).
 		if _col_top[idx] > float(_view_level):
-			_mmi.multimesh.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3.ZERO), Vector3.ZERO))
+			_mmi.multimesh.set_instance_transform(idx, Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO))
 			continue
 		var anchor: Vector3 = _anchor[idx]
 		var phase: float = _phase[idx]

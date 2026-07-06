@@ -76,12 +76,16 @@ func compute_water_columns(p_water_noise: FastNoiseLite, p_hill_height_at: Calla
 ## tout le rectangle englobant du lac (pas seulement le cercle d'eau) - un lac
 ## a une surface plate par nature, meme entoure de collines ; simplification
 ## assumee pour cette premiere version du relief (pas de vraie berge en pente).
+## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
+## "hydrologie" au lieu de randi_range()/randf_range() globaux (idem dans
+## _place_river ci-dessous) - voir GameRandom.gd.
 func _place_lakes(cols: Dictionary, hill_overrides: Dictionary) -> void:
+	var rng: RandomNumberGenerator = GameRandom.get_rng("hydrologie")
 	for i in range(LAKE_COUNT):
-		var cx := randi_range(12, WIDTH - 12)
-		var cz := randi_range(12, DEPTH - 12)
-		var radius := randf_range(LAKE_RADIUS_MIN, LAKE_RADIUS_MAX)
-		var depth := randi_range(LAKE_DEPTH_MIN, LAKE_DEPTH_MAX)
+		var cx := rng.randi_range(12, WIDTH - 12)
+		var cz := rng.randi_range(12, DEPTH - 12)
+		var radius := rng.randf_range(LAKE_RADIUS_MIN, LAKE_RADIUS_MAX)
+		var depth := rng.randi_range(LAKE_DEPTH_MIN, LAKE_DEPTH_MAX)
 		var margin := int(radius) + 3
 		var min_x := maxi(0, cx - margin)
 		var max_x := mini(WIDTH - 1, cx + margin)
@@ -99,85 +103,43 @@ func _place_lakes(cols: Dictionary, hill_overrides: Dictionary) -> void:
 					cols[pos] = maxi(int(cols.get(pos, 0)), depth)
 
 
-## Sprint 36 : une riviere qui traverse la carte d'un bord a l'autre, au hasard
-## en X (ouest-est) ou en Z (nord-sud), avec une legere ondulation (sinus)
-## plutot qu'une ligne parfaitement droite. RIVER_HALF_WIDTH blocs de part et
-## d'autre du centre du lit a chaque "tranche" traversee. Sprint 36bis :
-## profondeur fixe RIVER_DEPTH (demande explicite, moins profonde qu'un lac).
+## Riviere traversant la carte d'un bord a l'autre (X ou Z au hasard), legere
+## ondulation sinusoidale, RIVER_HALF_WIDTH blocs de large, profondeur fixe
+## RIVER_DEPTH.
 ##
-## Sprint 75 (2026-07-04, reecriture complete demandee par Francois) : bug
-## identifie ou l'eau du trace pouvait se retrouver plus haute que le relief
-## naturel environnant, faute de verifier ce relief le long du trajet.
-##
-## Sprint 78 (2026-07-04, demande explicite de Francois : "cascade alignee et
-## pas avec des blocs qui avancent comme maintenant") : le Sprint 77 (relief
-## independant par bande de largeur) provoquait des cascades en escalier
-## decalees d'une bande a l'autre (visible sur capture d'ecran - plusieurs
-## quarts de cylindre a des rangees differentes). Retour a UNE seule rupture
-## de niveau par rangee, valable pour TOUTE la largeur du lit a la fois - donc
-## une cascade toujours alignee, jamais en escalier.
-## Algorithme (3 etapes demandees par Francois) :
-## 1. tracer le centre du lit, rangee par rangee, sans cascade.
+## Algorithme en 3 etapes :
+## 1. tracer le centre du lit, rangee par rangee, sans cascade (ondulation
+##    sinusoidale, cross_size = largeur perpendiculaire au trajet).
 ## 2. reperer les ruptures de niveau le long du trajet (relief le plus bas
-##    sur la largeur totale + berges, palier en escalier depuis la source).
-## 3. pour chaque rangee du haut (juste avant une rupture), tracer UNE
-##    colonne de cascade valable pour toute la largeur du lit ce jour-la.
+##    sonde sur la largeur du lit + berges) - un seul palier par rangee,
+##    valable pour toute la largeur (jamais d'escalier entre rangees d'une
+##    meme cascade), calcule en un seul sens depuis l'extremite au relief le
+##    plus haut vers l'extremite la plus basse (jamais un point milieu).
+## 3. a chaque rangee ou le palier vient de baisser par rapport a la rangee
+##    juste en amont : poser une cascade en reprenant EXACTEMENT les colonnes
+##    reellement posees a la rangee du dessus (used_columns), jamais un
+##    nouveau centre recalcule pour cette rangee - condition necessaire pour
+##    garantir les regles C2/C3/C5 ci-dessous.
 ##
-## Meme sprint (suite, 2026-07-04, bug signale par Francois via capture
-## d'ecran : un bloc d'eau sans berge a cote de la cascade) : regle physique
-## rappelee par Francois - un bloc d'eau ne peut JAMAIS se retrouver sans
-## berge (mur) de chaque cote. Le sondage du relief ne portait QUE sur la
-## largeur exacte de la riviere, jamais au-dela - rien ne garantissait donc
-## que le terrain juste a l'exterieur de cette largeur (la future berge)
-## soit bien plus haut que le niveau d'eau choisi. Fix : le sondage du
-## relief (pour decider le palier de chaque rangee) regarde maintenant
-## aussi 1 case de plus de chaque cote de la largeur du lit (BANK_MARGIN=1)
-## - le niveau d'eau choisi ne peut donc plus jamais depasser le terrain de
-## la berge elle-meme. Seul le sondage est elargi ; la largeur d'eau posee
-## reste exactement RIVER_HALF_WIDTH comme avant.
-##
-## Meme sprint (suite, 2026-07-04, bug signale par Francois via capture
-## d'ecran : une cascade isolee qui ne tombe d'aucune riviere) : l'ancienne
-## version cherchait une "source" comme le point le plus haut de TOUT le
-## trajet (recherche globale), puis descendait en escalier dans les 2 sens a
-## partir de ce point - un point interne pouvait ainsi etre choisi comme
-## source sans etre reellement rattache a un ecoulement coherent, produisant
-## une cascade "orpheline". Fix, conforme a la demande explicite de
-## Francois ("calculer le point de cascade pour chaque case de riviere en
-## haut, une par une") : le calcul se fait maintenant en UN SEUL SENS, du
-## bout du trajet le plus haut vers l'autre bout, rangee par rangee, chaque
-## palier ne dependant que de la rangee immediatement precedente (jamais
-## d'un point milieu). Le trajet entier est donc toujours connecte d'un
-## bout a l'autre, plus aucune cascade ne peut apparaitre sans riviere
-## continue juste en amont.
-##
-## Meme sprint (suite, 2026-07-04, "mur gris" puis "cascade sans eau au-
-## dessus" reapparus - Francois a reconstruit ma comprehension pas a pas
-## jusqu'a la vraie root cause, memoire "regles riviere/cascade" reorganisee
-## en R1-R3 (rivieres) et C1-C5 (cascades)) : la largeur de CHAQUE rangee
-## etait recalculee independamment a partir de SON PROPRE centre (ondulation
-## sinusoidale, R3) - a la rangee de cascade specifiquement, ce nouveau
-## centre n'est presque jamais parfaitement aligne avec celui de la rangee
-## du dessus, violant C2 (case d'eau du haut sans case en dessous) sur un
-## bord de la largeur ET le corollaire C3 (cascade sans eau au-dessus) sur
-## l'autre bord. Francois a explicitement rejete l'idee de "faire
-## correspondre les centres" - le concept meme de centre recalcule par
-## rangee est le probleme a la transition.
-## Vrai correctif : les colonnes cross de CHAQUE rangee sont desormais
-## calculees UNE SEULE FOIS (row_columns[i], Etape 1) a partir du centre de
-## cette rangee - utilisees telles quelles pour une rangee normale (R3 :
-## l'ondulation reste OK sans changement de niveau). Mais a une rangee de
-## cascade, on n'utilise PLUS row_columns[i] : on reprend LITTERALEMENT
-## row_columns[upstream_i], les colonnes REELLES de la rangee du dessus,
-## une par une - jamais un nouveau centre pour cette rangee-la. Ca garantit
-## par construction C2/C3/C5 : impossible d'avoir de l'eau sans cascade en
-## dessous, ou une cascade sans eau au-dessus.
+## GEOMETRIE GELEE : le resultat de plusieurs dizaines d'iterations avec
+## Francois (bugs de berge manquante, cascade orpheline, cascade en escalier,
+## cascade sans eau au-dessus - tous caracterises et corriges). Ne pas
+## modifier sans autorisation explicite. Regles physiques completes R1-R3
+## (riviere)/C1-C5 (cascade) et historique des bugs deja rencontres : voir
+## [[project_forgotten_caves_river_rules]] (memoire dediee, ne pas dupliquer
+## ce contenu ici).
 func _place_river(cols: Dictionary, hill_overrides: Dictionary, waterfalls: Dictionary, bank_faces: Dictionary) -> void:
-	var horizontal: bool = randf() < 0.5
+	# 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
+	# "hydrologie" (meme flux que _place_lakes) au lieu de randf()/
+	# randf_range() globaux, UNIQUEMENT sur ces 3 tirages initiaux - le reste
+	# de la fonction (geometrie riviere/cascade R1-R3/C1-C5, GELEE) est
+	# inchange, voir GameRandom.gd.
+	var rng: RandomNumberGenerator = GameRandom.get_rng("hydrologie")
+	var horizontal: bool = rng.randf() < 0.5
 	var length: int = WIDTH if horizontal else DEPTH
 	var cross_size: int = DEPTH if horizontal else WIDTH
-	var start: float = randf_range(cross_size * 0.25, cross_size * 0.75)
-	var end: float = randf_range(cross_size * 0.25, cross_size * 0.75)
+	var start: float = rng.randf_range(cross_size * 0.25, cross_size * 0.75)
+	var end: float = rng.randf_range(cross_size * 0.25, cross_size * 0.75)
 	const BANK_MARGIN: int = RIVER_HALF_WIDTH
 
 	# Etape 1 : centre du lit, rangee par rangee (meme sinusoide qu'avant,

@@ -12,6 +12,11 @@ extends Node
 ## SeasonSystem.gd, dont season_duration_seconds doit rester un multiple
 ## exact de cette valeur pour que jour/mois/saison restent synchronises).
 
+## 2026-07-06 (revue de code, paquet B, I50) : pour season_id_or_default(),
+## qui factorise le repli "saison introuvable" duplique dans ce fichier/
+## TemperatureSystem.gd/WeatherSystem.gd.
+const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
+
 @export var cycle_duration_seconds: float = 120.0
 
 ## Inclinaison fixe (lacet) de l'axe de rotation du soleil, pour donner un
@@ -219,6 +224,10 @@ var day_count: int = 1
 # visible. Voir _season_system/SUNRISE_HOUR/SUNSET_HOUR/_solar_phase plus bas.
 @onready var _season_system: Node = %SeasonSystem
 
+## 2026-07-06 (revue de code, paquet C, M42) : evite de repeter l'avertissement
+## de reference(s) visuelle(s) manquante(s) a chaque frame - voir _process().
+var _warned_missing_visual_refs: bool = false
+
 ## Sprint 34ter (2026-07-03) : mesure de duree de chargement - ce script est
 ## le premier avec code a s'executer dans Main.tscn (voir l'ordre des noeuds),
 ## donc le meilleur point de depart pour mesurer tout le temps passe DANS la
@@ -238,12 +247,38 @@ static var scene_start_ms: int = 0
 ## a CameraRig.gd : la camera doit rester utilisable meme en pause.
 static var game_speed: float = 1.0
 
+## 2026-07-06 (revue de code Phase 2, C8/C10/I49/I56) : valeurs "de base"
+## (avant tout ajout de WeatherSystem.gd) exposees publiquement, mises a jour
+## chaque frame dans _process() juste avant d'etre appliquees a _light/
+## _sky_material. WeatherSystem lit desormais CES champs directement au lieu
+## de relire _light.light_energy/_sky_material.*_color (qui peuvent deja avoir
+## ete modifies par WeatherSystem CE MEME FRAME si son _process() tournait
+## avant celui-ci) - supprime la dependance a l'ordre des noeuds dans
+## Main.tscn pour une composition correcte (au pire un frame de retard si
+## l'ordre change un jour, jamais une composition cassee silencieusement).
+var base_light_energy: float = 1.0
+var base_sky_top_color: Color = SKY_TOP[1]
+var base_sky_horizon_color: Color = SKY_HORIZON[1]
+var base_ground_bottom_color: Color = GROUND_BOTTOM[1]
+var base_ground_horizon_color: Color = GROUND_HORIZON[1]
+
 
 func _ready() -> void:
 	scene_start_ms = Time.get_ticks_msec()
 
 
 func _process(delta: float) -> void:
+	# 2026-07-06 (revue de code, paquet C, M42) : _light/_world_environment/
+	# _moon/_sky_material etaient utilises sans verification de nullite dans
+	# tout le reste de cette fonction, alors que _moon_material est deja
+	# garde par un "if" plus bas - meme rigueur ici : un seul avertissement
+	# (pas a chaque frame) puis on saute la mise a jour visuelle plutot que
+	# de planter.
+	if not _warned_missing_visual_refs and (_light == null or _world_environment == null or _moon == null or _sky_material == null):
+		push_warning("DayNightCycle: reference(s) visuelle(s) manquante(s) (Light=%s, WorldEnvironment=%s, Moon=%s, SkyMaterial=%s)" % [_light != null, _world_environment != null, _moon != null, _sky_material != null])
+		_warned_missing_visual_refs = true
+	if _light == null or _world_environment == null or _moon == null or _sky_material == null:
+		return
 	var previous_time_of_day := time_of_day
 	time_of_day = fmod(time_of_day + (delta * game_speed) / cycle_duration_seconds, 1.0)
 	if time_of_day < previous_time_of_day:
@@ -266,13 +301,18 @@ func _process(delta: float) -> void:
 	# continu sur tout le cycle, decouple du plateau jour/nuit ci-dessus.
 	var w: float = _solar_phase(time_of_day, sunrise, sunset)
 
-	_sky_material.sky_top_color = SKY_TOP[idx0].lerp(SKY_TOP[idx1], t)
-	_sky_material.sky_horizon_color = SKY_HORIZON[idx0].lerp(SKY_HORIZON[idx1], t)
-	_sky_material.ground_bottom_color = GROUND_BOTTOM[idx0].lerp(GROUND_BOTTOM[idx1], t)
-	_sky_material.ground_horizon_color = GROUND_HORIZON[idx0].lerp(GROUND_HORIZON[idx1], t)
+	base_sky_top_color = SKY_TOP[idx0].lerp(SKY_TOP[idx1], t)
+	base_sky_horizon_color = SKY_HORIZON[idx0].lerp(SKY_HORIZON[idx1], t)
+	base_ground_bottom_color = GROUND_BOTTOM[idx0].lerp(GROUND_BOTTOM[idx1], t)
+	base_ground_horizon_color = GROUND_HORIZON[idx0].lerp(GROUND_HORIZON[idx1], t)
+	_sky_material.sky_top_color = base_sky_top_color
+	_sky_material.sky_horizon_color = base_sky_horizon_color
+	_sky_material.ground_bottom_color = base_ground_bottom_color
+	_sky_material.ground_horizon_color = base_ground_horizon_color
 
 	_light.light_color = LIGHT_COLOR[idx0].lerp(LIGHT_COLOR[idx1], t)
-	_light.light_energy = lerp(LIGHT_ENERGY[idx0], LIGHT_ENERGY[idx1], t)
+	base_light_energy = lerp(LIGHT_ENERGY[idx0], LIGHT_ENERGY[idx1], t)
+	_light.light_energy = base_light_energy
 	# Rotation continue (voir commentaire de SUN_YAW_DEGREES) : basee sur "w"
 	# (et non plus time_of_day directement) pour que le soleil soit reellement
 	# horizontal (lever/coucher) aux heures de lever/coucher de la saison
@@ -293,18 +333,29 @@ func _process(delta: float) -> void:
 		_moon_material.albedo_color.a = moon_alpha
 
 
-## Sprint 37quinquies : heure de lever/coucher (0-24) pour la saison courante -
-## repli sur "ete" si la saison est introuvable (ne devrait pas arriver).
-func _sunrise_fraction() -> float:
-	var season_id: String = _season_system.current_season_id() if _season_system else "ete"
+## 2026-07-06 (revue de code, paquet B, I51) : lookup extrait en fonctions
+## statiques reutilisables (ClimateUI.gd dupliquait exactement ce meme calcul
+## via DayNightCycleScript.SUNRISE_HOUR/SUNSET_HOUR - voir sunrise_fraction_for/
+## sunset_fraction_for ci-dessous, qu'il appelle desormais directement).
+static func sunrise_fraction_for(season_id: String) -> float:
 	var hour: float = SUNRISE_HOUR.get(season_id, SUNRISE_HOUR["ete"])
 	return hour / 24.0
 
 
-func _sunset_fraction() -> float:
-	var season_id: String = _season_system.current_season_id() if _season_system else "ete"
+static func sunset_fraction_for(season_id: String) -> float:
 	var hour: float = SUNSET_HOUR.get(season_id, SUNSET_HOUR["ete"])
 	return hour / 24.0
+
+
+## Sprint 37quinquies : heure de lever/coucher (0-24) pour la saison courante -
+## repli sur "ete" si la saison est introuvable (ne devrait pas arriver).
+## 2026-07-06 (paquet B, I50) : repli factorise via ClimateDefs.season_id_or_default.
+func _sunrise_fraction() -> float:
+	return sunrise_fraction_for(ClimateDefs.season_id_or_default(_season_system))
+
+
+func _sunset_fraction() -> float:
+	return sunset_fraction_for(ClimateDefs.season_id_or_default(_season_system))
 
 
 ## Sprint 37quinquies : deforme time_of_day (horloge lineaire 0-1) en une

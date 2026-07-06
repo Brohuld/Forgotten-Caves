@@ -293,16 +293,12 @@ func _fill_rect_px(img: Image, x: float, y: float, w: float, h: float, color: Co
 			_set_pixel_safe(img, px, py, color)
 
 
-## Trace un trait epais entre deux points (utilise pour les manches d'outils).
-## thickness (rayon du trait, en pixels) : parametre optionnel, garde 1 par
-## defaut pour les appels existants (paniers/icones de temps).
-func _draw_thick_line(img: Image, from: Vector2, to: Vector2, color: Color, thickness: int = 1) -> void:
-	var dist := from.distance_to(to)
-	var steps := int(dist) * 2 + 1
-	for i in range(steps + 1):
-		var t := float(i) / float(steps)
-		var p := from.lerp(to, t)
-		_plot_blob(img, p, thickness, color)
+## 2026-07-06 (revue de code, paquet H, M39) : _draw_thick_line() supprimee -
+## confirmee non appelee nulle part dans tout le depot (grep sur l'ensemble du
+## repo, seule sa propre declaration + une mention en commentaire subsistaient).
+## Code mort laisse apres le correctif du recouvrement documente plus haut -
+## les manches d'outils/paniers utilisent desormais _stroke_segment/_plot_blob
+## directement.
 
 
 ## Peint un petit disque de pixels autour de "center" (rayon en pixels)

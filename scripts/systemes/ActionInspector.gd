@@ -1,8 +1,8 @@
 extends RefCounted
-## 2026-07-06 (dette d'architecture A1, I58 - revue de code) : groupe
-## "inspection/survol" extrait mecaniquement de ActionController.gd - lecture
-## seule, aucun etat de glisser/tache partage (voir ActionDragController.gd
-## pour l'autre moitie de l'extraction I58, plus complexe car stateful).
+## Inspection/survol en lecture seule (clic Inspecter, panneau d'info survole)
+## - aucun etat de glisser/tache partage (voir ActionDragController.gd pour
+## l'autre moitie, plus complexe car stateful).
+##
 ## Meme motif que Model3DUtils.gd/DwarfWeaponBuilder.gd : "controller" recoit
 ## le ActionController via parametre (type generique CanvasLayer pour eviter
 ## un preload circulaire), proprietes lues via controller.get() (acces
@@ -22,9 +22,9 @@ const ActionDragControllerScript := preload("res://scripts/systemes/ActionDragCo
 const DWARF_CLICK_RADIUS_PX := 28.0
 
 
-## Sprint 25 : point d'entree de l'inspection (clic gauche quand aucun mode
-## d'action n'est actif). Sprint 37 (backlog Phase 1 item 9) : ne gere plus
-## que la selection/ouverture de fiche d'un nain clique directement.
+## Point d'entree de l'inspection (clic gauche quand aucun mode d'action
+## n'est actif) : ne gere que la selection/ouverture de fiche d'un nain
+## clique directement.
 static func handle_inspect_click(controller: CanvasLayer, screen_pos: Vector2) -> void:
 	var clicked_dwarf: Node = dwarf_at_screen_pos(controller, screen_pos)
 	if clicked_dwarf == null:
@@ -34,8 +34,8 @@ static func handle_inspect_click(controller: CanvasLayer, screen_pos: Vector2) -
 	character_sheet_ui.select_and_open_dwarf(clicked_dwarf, additive)
 
 
-## Sprint 37 (backlog Phase 1 item 9) : nain le plus proche d'une position
-## ECRAN (pas monde), dans un rayon de DWARF_CLICK_RADIUS_PX pixels.
+## Nain le plus proche d'une position ECRAN (pas monde), dans un rayon de
+## DWARF_CLICK_RADIUS_PX pixels.
 static func dwarf_at_screen_pos(controller: CanvasLayer, screen_pos: Vector2) -> Node:
 	var camera: Camera3D = controller.get("camera")
 	var closest: Node = null
@@ -49,9 +49,8 @@ static func dwarf_at_screen_pos(controller: CanvasLayer, screen_pos: Vector2) ->
 	return closest
 
 
-## Sprint 37 (backlog Phase 1 item 11, "piles d'objets") : les tas de
-## ressources au sol (groupe "resource_piles") sont detectes en priorite,
-## avant les arbres/buissons.
+## Les tas de ressources au sol (groupe "resource_piles") sont detectes en
+## priorite, avant les arbres/buissons.
 static func closest_resource_pile(controller: CanvasLayer, hit: Vector3) -> Node3D:
 	var closest: Node3D = null
 	var closest_dist := 1.0
@@ -69,9 +68,9 @@ static func describe_resource_pile(pile: Node3D) -> String:
 	return "Pile de %d %s" % [count, resource_name.capitalize()]
 
 
-## 2026-07-06 (revue de code, paquet B, M53) : reutilise
-## action_validator.closest_in_group (deja utilise pour Couper/Cueillir dans
-## ActionDragController.gd) au lieu de refaire a la main la meme recherche.
+## Reutilise action_validator.closest_in_group (deja utilise pour Couper/
+## Cueillir dans ActionDragController.gd) au lieu de refaire a la main la
+## meme recherche.
 static func inspect_label_for(controller: CanvasLayer, hit: Vector3) -> String:
 	var pile := closest_resource_pile(controller, hit)
 	if pile != null:
@@ -95,44 +94,51 @@ static func inspect_label_for(controller: CanvasLayer, hit: Vector3) -> String:
 
 ## Nom + etat de recolte d'un arbre/buisson/plante, via les metadonnees deja
 ## posees par Forest.gd/BerryBushes.gd ("species_name", "fruits_left").
+## Suffixe "[Interdit]" si toggle_interdit_entity (ActionDragController.gd) a
+## marque ce noeud - sans ca, rien ne permet au joueur de savoir qu'un arbre
+## est interdit (Couper/Cueillir echouent silencieusement dessus, voir
+## handle_chop_click/handle_gather_click).
 static func describe_gatherable(node: Node) -> String:
 	var species_name: String = node.get_meta("species_name", "?")
+	var suffix: String = "  [Interdit]" if node.get_meta("interdit", false) else ""
 	if not node.is_in_group("cueillette"):
-		return species_name
+		return species_name + suffix
 	var fruits_left: int = node.get_meta("fruits_left", -1)
 	if fruits_left < 0:
-		return species_name
+		return species_name + suffix
 	if fruits_left == 0:
-		return "%s (vide)" % species_name
-	return "%s - %d fruit(s) restant(s)" % [species_name, fruits_left]
+		return "%s (vide)%s" % [species_name, suffix]
+	return "%s - %d fruit(s) restant(s)%s" % [species_name, fruits_left, suffix]
 
 
 ## Nom d'un bloc de sol (terre/pierre/mur), via VoxelWorld.get_block_info().
 ## Si le bloc de pierre contient un filon, affiche son nom (VeinMaterials).
+## Meme suffixe "[Interdit]" que describe_gatherable ci-dessus, si
+## VoxelWorld.is_cell_forbidden(gx,gz).
 static func describe_block(voxel_world: Node3D, gx: int, gz: int) -> String:
 	var info: Dictionary = voxel_world.get_block_info(gx, gz)
+	var suffix: String = "  [Interdit]" if voxel_world.is_cell_forbidden(gx, gz) else ""
 	match info["type"]:
 		"terre":
-			return "Terre"
+			return "Terre" + suffix
 		"pierre":
 			var materiau: String = info["materiau"]
 			if materiau != "":
 				var mat: Dictionary = VeinMaterials.get_type(materiau)
-				return "Filon de %s" % mat.get("nom", materiau)
-			return "Pierre"
+				return "Filon de %s%s" % [mat.get("nom", materiau), suffix]
+			return "Pierre" + suffix
 		"mur_bois":
-			return "Mur en bois"
+			return "Mur en bois" + suffix
 		"mur_pierre":
-			return "Mur en pierre"
+			return "Mur en pierre" + suffix
 		"eau":
 			return "Eau"
 		_:
 			return ""
 
 
-## Sprint 37 (backlog Phase 1 item 12) : mis a jour chaque frame - decrit ce
-## qui se trouve sous la souris (nain, arbre/buisson, bloc de sol), quel que
-## soit le mode courant.
+## Mis a jour chaque frame - decrit ce qui se trouve sous la souris (nain,
+## arbre/buisson, bloc de sol), quel que soit le mode courant.
 static func update_hover_info_panel(controller: CanvasLayer) -> void:
 	var info_label: Label = controller.get("info_label")
 	var screen_pos: Vector2 = controller.get_viewport().get_mouse_position()

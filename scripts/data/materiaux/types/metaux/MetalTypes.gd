@@ -1,9 +1,5 @@
 extends RefCounted
-## 2026-07-06 (revue de code, paquet B, M17) : get_type() delegue desormais a
-## DataTableUtils.find_by_id() (motif duplique aussi dans GemTypes.gd/
-## BerryTypes.gd) - comportement inchange.
-const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
-## Sprint 23 : table des metaux trouvables en filons dans la pierre (voir
+## Table des metaux trouvables en filons dans la pierre (voir
 ## VoxelWorld.gd/_setup_vein_noises et VeinMaterials.gd pour la generation).
 ## Meme pattern que TreeSpecies.gd/ClimateDefinitions.gd : const TABLE +
 ## static func, facile a etendre (il suffit d'ajouter une entree).
@@ -14,6 +10,7 @@ const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUti
 ## - rarete  : "commun", "rare" ou "tres_rare" (determine la frequence du filon,
 ##             voir VoxelWorld.RARITY_THRESHOLDS)
 ## - couleur : couleur du bloc de filon dans la roche + de l'item recolte au sol
+const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
 
 const TABLE := [
 	{"id": "fer", "nom": "Fer", "rarete": "commun", "couleur": Color(0.55, 0.30, 0.22)},

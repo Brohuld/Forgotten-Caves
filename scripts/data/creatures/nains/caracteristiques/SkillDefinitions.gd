@@ -1,5 +1,5 @@
 extends RefCounted
-## Sprint 18 : table centrale des competences des nains.
+## Table centrale des competences des nains.
 ##
 ## Pour AJOUTER une nouvelle competence, il suffit d'ajouter une entree dans
 ## le tableau SKILLS ci-dessous (aucune autre modification de code n'est
@@ -8,21 +8,15 @@ extends RefCounted
 ## gameplay (vitesse de travail + bonus de recolte), il faut relier son champ
 ## "tache" a un type de tache existant ("miner", "couper", "construire" ou
 ## "cueillir") ; laisser "tache": "" pour une competence purement affichee,
-## sans effet pour l'instant. (2026-07-06, revue de code I16 : les 4
-## competences actuelles sont TOUTES reliees a une tache - ce cas "tache": ""
-## n'est donc pas encore utilise dans SKILLS, mais reste disponible pour une
-## future competence purement affichee, ex: Combat, tant qu'aucune mecanique
-## ne lui est associee.)
+## sans effet sur le gameplay (aucune des competences actuelles n'utilise ce
+## cas pour l'instant, mais il reste disponible - ex: une future competence
+## Combat, tant qu'aucune mecanique ne lui est associee).
 ##
 ## Champs de chaque entree :
 ## - id    : identifiant interne stable (utilise pour stocker niveau/xp)
 ## - nom   : nom affiche dans la fiche personnage
 ## - tache : type de tache qui fait progresser cette competence, ou "" si
 ##           aucune tache ne lui correspond encore
-##
-## Sprint 24septies : Agriculture reliee a "cueillir" - augmente la vitesse de
-## cueillette et la chance de recolter un fruit bonus (meme mecanique que
-## Minage/Bucheronnage, voir Dwarf.gd/_complete_task).
 
 const SKILLS := [
 	{"id": "minage", "nom": "Minage", "tache": "miner"},

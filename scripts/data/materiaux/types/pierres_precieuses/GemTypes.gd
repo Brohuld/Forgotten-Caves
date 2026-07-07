@@ -1,14 +1,11 @@
 extends RefCounted
-## Sprint 23 : table des pierres precieuses trouvables en filons dans la
-## pierre (voir VoxelWorld.gd/_setup_vein_noises et VeinMaterials.gd pour la
-## generation). Meme pattern que MetalTypes.gd/TreeSpecies.gd : const TABLE +
-## static func, facile a etendre.
+## Table des pierres precieuses trouvables en filons dans la pierre (voir
+## VoxelWorld.gd/_setup_vein_noises et VeinMaterials.gd pour la generation).
+## Meme pattern que MetalTypes.gd/TreeSpecies.gd : const TABLE + static func,
+## facile a etendre.
 ##
 ## Champs : voir MetalTypes.gd (memes champs id/nom/rarete/couleur).
 ## Rarete par defaut "rare" pour cette categorie, sauf exceptions ("tres_rare").
-## 2026-07-06 (revue de code, paquet B, M17) : get_type() delegue desormais a
-## DataTableUtils.find_by_id() (motif duplique aussi dans MetalTypes.gd/
-## BerryTypes.gd) - comportement inchange.
 const DataTableUtils := preload("res://scripts/data/materiaux/types/DataTableUtils.gd")
 
 const TABLE := [

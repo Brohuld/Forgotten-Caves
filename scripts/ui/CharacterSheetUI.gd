@@ -1,53 +1,45 @@
 extends CanvasLayer
-## Sprint 9 : icone du nain en haut de l'ecran, cliquable, qui ouvre une
-## fiche de personnage basique (PV factice, Faim, Energie, tache en cours).
-## Sprint 11 : generalise a plusieurs nains. Une icone par nain, empilees en
-## haut a droite ; cliquer sur une icone ouvre/ferme la fiche du nain
-## correspondant (une seule fiche visible a la fois pour ne pas encombrer
-## l'ecran). Tout est cree dynamiquement au demarrage, donc ca s'adapte
-## automatiquement si on change le nombre de nains plus tard.
-## Sprint 12 : affiche aussi les caracteristiques de base du nain (Force,
-## Agilite, Constitution, Intelligence, Beaute, Bonheur) sous son nom.
-## Sprint 18 : affiche aussi les competences (liste dans SkillDefinitions.gd)
-## et leur niveau, qui evolue avec le temps (contrairement aux caracteristiques
-## du Sprint 12) : rafraichi a chaque frame comme faim/energie.
-## 2026-07-02 : chaque bouton affiche desormais un vrai portrait 3D du nain
-## (mini SubViewport + camera cadree sur la tete, voir PortraitRenderer.gd)
-## a la place du cercle colore generique, et son nom en permanence a cote
-## (voir _create_entry) - avant, le nom n'etait visible qu'en ouvrant la
-## fiche complete.
-## 2026-07-02 (2e passe) : fiche de personnage agrandie (police bien plus
-## grosse) et reorganisee en 3 onglets (TabContainer) - "Etat general" (nom,
-## PV/Energie/Faim/Soif, tache en cours), "Caracteristiques", "Competences" -
-## au lieu d'un long panneau vertical unique qui devenait difficile a lire.
-## Sprint 36 (2026-07-03) : "Soif" n'est plus un placeholder - branchee sur
-## dwarf.thirst/thirst_max (meme mecanique que Faim/Energie, voir Dwarf.gd),
-## rafraichie a chaque frame. "PV" reste un placeholder (pas encore de systeme
-## de degats/combat).
+## Icone du nain en haut de l'ecran, cliquable, qui ouvre une fiche de
+## personnage (PV factice, Faim/Energie/Soif, caracteristiques, competences,
+## equipement, tache en cours). Une icone par nain, empilees en haut a
+## droite ; cliquer sur une icone ouvre/ferme la fiche du nain correspondant
+## (une seule fiche visible a la fois pour ne pas encombrer l'ecran). Tout
+## est cree dynamiquement au demarrage, donc ca s'adapte automatiquement si
+## on change le nombre de nains plus tard.
+##
+## Chaque bouton affiche un vrai portrait 3D du nain (mini SubViewport +
+## camera cadree sur la tete, voir PortraitRenderer.gd), et son nom en
+## permanence a cote (voir _create_entry). La fiche complete est organisee en
+## onglets (TabContainer) : "Etat general" (nom, PV/Energie/Faim/Soif, tache
+## en cours), "Caracteristiques", "Competences", "Equipement" - plus lisible
+## qu'un long panneau vertical unique.
+##
+## "PV" reste un placeholder (pas encore de systeme de degats/combat).
+## "Soif" est branchee sur dwarf.thirst/thirst_max (meme mecanique que
+## Faim/Energie, voir Dwarf.gd), rafraichie a chaque frame.
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
-## 2026-07-06 (revue de code, paquet E, I55) : construction du portrait 3D
-## extraite dans son propre script (une des 3 responsabilites identifiees
-## dans ce fichier) - voir PortraitRenderer.gd.
+## Construction du portrait 3D extraite dans son propre script - voir
+## PortraitRenderer.gd.
 const PortraitRendererScript := preload("res://scripts/ui/PortraitRenderer.gd")
-## Sprint 34ter : uniquement pour lire DayNightCycleScript.scene_start_ms - ce
-## script est le DERNIER a finir son _ready() dans l'ordre de Main.tscn (les
-## portraits 3D, construits ici pour chaque nain, sont probablement la partie
-## la plus couteuse du chargement) donc le bon endroit pour afficher le temps
-## total ecoule depuis le tout debut de la scene.
+## Uniquement pour lire DayNightCycleScript.scene_start_ms - ce script est le
+## DERNIER a finir son _ready() dans l'ordre de Main.tscn (les portraits 3D,
+## construits ici pour chaque nain, sont probablement la partie la plus
+## couteuse du chargement) donc le bon endroit pour afficher le temps total
+## ecoule depuis le tout debut de la scene.
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
-const ICON_SIZE := 72  # 2026-07-02 : agrandi (etait 48), jugee trop petite
+const ICON_SIZE := 72
 const ICON_MARGIN := 16
 const ICON_SPACING := 10
-const NAME_LABEL_WIDTH := 260  # 2026-07-02 : elargi (etait 160), la boite ne contenait pas les noms les plus longs (prenom + nom de clan)
+const NAME_LABEL_WIDTH := 260  # assez large pour prenom + nom de clan
 const NAME_LABEL_GAP := 8  # espace entre le texte du nom et l'icone
 
-# Fiche de personnage (panel + onglets) : tailles et polices, nettement
-# agrandies par rapport a l'ancien panneau unique (300x~370 px, police par
-# defaut ~16). PANEL_WIDTH elargi une 2e fois (2026-07-02, 460->640) pour que
-# les 3 onglets (Etat general/Caracteristiques/Competences) soient tous
-# visibles d'un coup dans la barre d'onglets, sans fleches de defilement.
+# Fiche de personnage (panel + onglets) : tailles et polices nettement
+# agrandies par rapport a un panneau unique classique. PANEL_WIDTH est assez
+# large pour que les 4 onglets (Etat general/Caracteristiques/Competences/
+# Equipement) soient tous visibles d'un coup dans la barre d'onglets, sans
+# fleches de defilement.
 const PANEL_WIDTH := 640
 const PANEL_HEIGHT := 460
 const FONT_TITLE := 38       # nom du nain, en haut de la fiche
@@ -55,14 +47,13 @@ const FONT_SECTION := 25     # titres d'onglets + police des labels de contenu
 const FONT_BODY := 25        # texte courant (stats, competences, tache en cours)
 const BAR_HEIGHT := 26        # hauteur des barres PV/Faim/Energie/Soif
 
-# Anneau de selection (2026-07-02, devenu multiple le meme jour) : un rond
-# bleu pose au sol autour des pieds de chaque nain SELECTIONNE, pour voir en
-# un coup d'oeil qui est selectionne. Un anneau par nain (selection_rings,
-# cree dans _create_entry), montre/cache selon l'appartenance a
-# selected_dwarves (Dictionary utilise comme un ensemble) - plus un seul
-# anneau partage comme au depart, puisque plusieurs nains peuvent maintenant
-# etre selectionnes en meme temps (Ctrl/Maj+clic sur les portraits, ou
-# glisser-clic sur la carte via ActionController.set_map_selection).
+# Anneau de selection : un rond bleu pose au sol autour des pieds de chaque
+# nain SELECTIONNE, pour voir en un coup d'oeil qui est selectionne. Un
+# anneau par nain (selection_rings, cree dans _create_entry), montre/cache
+# selon l'appartenance a selected_dwarves (Dictionary utilise comme un
+# ensemble) - plusieurs nains peuvent etre selectionnes en meme temps
+# (Ctrl/Maj+clic sur les portraits, ou glisser-clic sur la carte via
+# ActionController.set_map_selection).
 const SELECTION_RING_INNER_RADIUS := 0.32
 const SELECTION_RING_OUTER_RADIUS := 0.5
 const SELECTION_RING_COLOR := Color(0.25, 0.55, 1.0, 0.85)
@@ -71,25 +62,23 @@ const SELECTION_RING_COLOR := Color(0.25, 0.55, 1.0, 0.85)
 const SELECTED_ICON_TINT := Color(0.55, 0.8, 1.3, 1.0)
 
 var panels: Array = []  # un Panel par nain, meme ordre que le groupe "dwarves"
-# 2026-07-02 : Dictionary utilise comme un ensemble (cle = noeud nain, valeur
-# toujours true) plutot qu'un Array, pour un has()/erase() en O(1) - remplace
-# l'ancien "selected_dwarf" unique (un seul nain a la fois).
+# Dictionary utilise comme un ensemble (cle = noeud nain, valeur toujours
+# true) plutot qu'un Array, pour un has()/erase() en O(1).
 var selected_dwarves: Dictionary = {}
 var selection_rings: Dictionary = {}  # dwarf -> MeshInstance3D (un par nain)
 
 
 func _ready() -> void:
-	# Sprint 34quater : mesure a l'ENTREE de ce script (donc APRES la
-	# generation du monde ET apres la creation des nains eux-memes, qui ont
-	# deja du construire leur propre modele 3D pour exister dans le groupe
-	# "dwarves" - voir Dwarf.gd) - permet d'isoler le cout de la boucle
-	# ci-dessous (_create_entry, qui construit un DEUXIEME modele 3D par nain
-	# pour le portrait, voir PortraitRenderer.gd) du reste du chargement.
-	var elapsed_before_portraits_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
-	# 2026-07-06 (revue de code, paquet D, M44) : les 2 print() de perf de
-	# cette fonction sont conditionnes a OS.is_debug_build() - diagnostic de
-	# l'ecart 7s/17s garde au cas ou il resurgirait, mais ne doit pas
+	# Mesure a l'ENTREE de ce script (donc APRES la generation du monde ET
+	# apres la creation des nains eux-memes, qui ont deja du construire leur
+	# propre modele 3D pour exister dans le groupe "dwarves" - voir Dwarf.gd)
+	# - permet d'isoler le cout de la boucle ci-dessous (_create_entry, qui
+	# construit un DEUXIEME modele 3D par nain pour le portrait, voir
+	# PortraitRenderer.gd) du reste du chargement. Les print() de perf de
+	# cette fonction sont conditionnes a OS.is_debug_build() : diagnostic
+	# garde au cas ou un ecart de chargement resurgirait, mais ne doit pas
 	# s'afficher dans un export final.
+	var elapsed_before_portraits_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
 	if OS.is_debug_build():
 		print("[Perf] Debut de CharacterSheetUI (nains deja crees), temps ecoule : %.1f s" % (elapsed_before_portraits_ms / 1000.0))
 
@@ -98,12 +87,10 @@ func _ready() -> void:
 	for i in range(dwarves.size()):
 		_create_entry(dwarves[i], i)
 
-	# Sprint 34ter : dernier script a finir son _ready() (voir ordre des noeuds
-	# dans Main.tscn) - affiche le temps total ecoule depuis le debut de la
-	# scene, pour comparer avec les mesures de GroundDecoration.gd et voir si
-	# la construction des portraits 3D (PortraitRenderer.gd, appelee juste
-	# au-dessus pour chaque nain) explique l'ecart signale par Francois entre
-	# la generation du monde (~7s) et le lancement complet (~17s).
+	# Dernier script a finir son _ready() (voir ordre des noeuds dans
+	# Main.tscn) - affiche le temps total ecoule depuis le debut de la scene,
+	# pour comparer avec les mesures de GroundDecoration.gd et diagnostiquer
+	# si besoin l'ecart entre la generation du monde et le lancement complet.
 	var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
 	if OS.is_debug_build():
 		print("[Perf] Chargement complet (fiches + portraits 3D) termine, temps total depuis le debut de la scene : %.1f s" % (elapsed_since_scene_start_ms / 1000.0))
@@ -112,12 +99,10 @@ func _ready() -> void:
 ## Construit l'anneau de selection d'UN nain et l'ajoute au parent 3D (Main),
 ## pas a ce CanvasLayer - c'est un objet du monde 3D, pas un element
 ## d'interface. Cache par defaut (aucun nain selectionne au demarrage).
-## 2026-07-02 : anneau plat construit a la main (ArrayMesh, voir
-## _build_ring_mesh) au lieu d'un TorusMesh aplati par scale - l'anneau ne
-## s'affichait pas du tout avec TorusMesh (tres probablement un souci de nom
-## de propriete cote moteur), cette approche est la meme technique deja
-## utilisee ailleurs dans le projet pour des formes generees par code (pas de
-## dependance a l'API exacte d'un mesh primitif).
+## Anneau plat construit a la main (ArrayMesh, voir _build_ring_mesh) plutot
+## qu'un TorusMesh aplati par scale, pour un rendu garanti sans dependre des
+## noms de proprietes exacts d'un mesh primitif - meme technique deja
+## utilisee ailleurs dans le projet pour des formes generees par code.
 func _create_selection_ring_for(dwarf: Node3D) -> MeshInstance3D:
 	var ring := MeshInstance3D.new()
 	ring.name = "SelectionRing_%s" % dwarf.name
@@ -127,24 +112,22 @@ func _create_selection_ring_for(dwarf: Node3D) -> MeshInstance3D:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED  # visible de dessus ET de dessous, peu importe le sens des triangles
-	# 2026-07-02 : le nain se tient exactement AU NIVEAU du dessus du terrain
-	# (voir VoxelWorld._add_face, face du haut a world_y = block_y + 1 = 30 =
-	# ground_level) - un anneau colle a 0.03 au-dessus etait probablement
-	# perdu dans un z-fighting avec la face du terrain (memes profondeurs, a
+	# Le nain se tient exactement AU NIVEAU du dessus du terrain (voir
+	# VoxelWorld._add_face, face du haut a world_y = block_y + 1 =
+	# ground_level) - un anneau colle a une hauteur trop proche du sol
+	# risquerait un z-fighting avec la face du terrain (memes profondeurs, a
 	# quelques cm pres). no_depth_test force l'anneau a toujours se dessiner
 	# PAR-DESSUS le reste (meme technique que sleep_indicator dans Dwarf.gd),
 	# donc plus aucune ambiguite de profondeur possible.
 	mat.no_depth_test = true
 	ring.set_surface_override_material(0, mat)
 	ring.visible = false
-	# 2026-07-02 : appele depuis _ready() (via _create_entry), le parent
-	# (Main) est encore en train d'instancier ses propres enfants a ce moment
-	# precis -> add_child() direct echoue silencieusement en erreur ("Parent
-	# node is busy setting up children"), donc l'anneau n'etait jamais
-	# reellement ajoute a la scene (d'ou "toujours rien" malgre plusieurs
-	# corrections avant de trouver la vraie cause). call_deferred() repousse
-	# l'ajout a apres la fin de l'initialisation en cours, ce qui resout le
-	# probleme.
+	# Appele depuis _ready() (via _create_entry), le parent (Main) est encore
+	# en train d'instancier ses propres enfants a ce moment precis ->
+	# add_child() direct echouerait silencieusement en erreur ("Parent node
+	# is busy setting up children"), donc l'anneau ne serait jamais reellement
+	# ajoute a la scene. call_deferred() repousse l'ajout a apres la fin de
+	# l'initialisation en cours, ce qui resout le probleme.
 	get_parent().add_child.call_deferred(ring)
 	return ring
 
@@ -182,12 +165,10 @@ func _build_ring_mesh(inner: float, outer: float, segments: int = 48) -> ArrayMe
 	return array_mesh
 
 
-## Cree le nom, l'icone-portrait + la fiche (masquee au depart) pour un nain donne
-## 2026-07-06 (revue de code Phase 3, C12) : decoupee en sous-fonctions par
-## bloc d'UI (_create_name_chip/_create_portrait_icon/_create_sheet_panel/
-## _build_*_tab) - depassait tres largement le seuil de 50 lignes de l'axe 1.
-## Meme pattern que StartMenu.gd/ClimateUI.gd. Aucun changement de
-## comportement, meme contenu qu'avant.
+## Cree le nom, l'icone-portrait + la fiche (masquee au depart) pour un nain
+## donne. Decoupee en sous-fonctions par bloc d'UI (_create_name_chip/
+## _create_portrait_icon/_create_sheet_panel/_build_*_tab), meme pattern que
+## StartMenu.gd/ClimateUI.gd.
 func _create_entry(dwarf: Node3D, index: int) -> void:
 	selection_rings[dwarf] = _create_selection_ring_for(dwarf)
 
@@ -236,11 +217,10 @@ func _create_entry(dwarf: Node3D, index: int) -> void:
 	icon_button.pressed.connect(_on_icon_pressed.bind(index))
 
 
-## 2026-07-02 : fond sombre semi-transparent derriere le nom - le blanc seul
-## (meme avec un contour noir) restait peu lisible selon ce qu'il y a derriere
-## dans la scene 3D (ciel clair, terrain...). Un "chip" sombre garantit le
-## contraste quel que soit l'arriere-plan.
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
+## Fond sombre semi-transparent derriere le nom - le blanc seul (meme avec un
+## contour noir) reste peu lisible selon ce qu'il y a derriere dans la scene
+## 3D (ciel clair, terrain...). Un "chip" sombre garantit le contraste quel
+## que soit l'arriere-plan.
 func _create_name_chip(dwarf: Node3D, top_offset: float) -> void:
 	var name_bg := ColorRect.new()
 	name_bg.color = Color(0.05, 0.05, 0.07, 0.6)
@@ -272,7 +252,6 @@ func _create_name_chip(dwarf: Node3D, top_offset: float) -> void:
 	add_child(name_label)
 
 
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
 func _create_portrait_icon(dwarf: Node3D, top_offset: float) -> Button:
 	var icon_button := Button.new()
 	icon_button.custom_minimum_size = Vector2(ICON_SIZE, ICON_SIZE)
@@ -289,12 +268,11 @@ func _create_portrait_icon(dwarf: Node3D, top_offset: float) -> Button:
 	return icon_button
 
 
-## 2026-07-02 : fond fonce explicite + theme "texte blanc" pour toute la
-## fiche - le nom (et le reste du texte) restait illisible sur le fond gris
-## clair par defaut du theme Godot. Le Theme assigne ici au panel s'applique
-## en cascade a tous ses enfants (titre, onglets, labels...), pas besoin de
-## repeter la couleur sur chaque Label individuellement.
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
+## Fond fonce explicite + theme "texte blanc" pour toute la fiche - le texte
+## reste illisible sur le fond gris clair par defaut du theme Godot. Le
+## Theme assigne ici au panel s'applique en cascade a tous ses enfants
+## (titre, onglets, labels...), pas besoin de repeter la couleur sur chaque
+## Label individuellement.
 func _create_sheet_panel(top_offset: float) -> Panel:
 	var panel := Panel.new()
 	panel.anchor_left = 1.0
@@ -321,7 +299,6 @@ func _create_sheet_panel(top_offset: float) -> Panel:
 ## juste PV/Energie/Faim/Soif + la tache en cours). Renvoie les refs dont
 ## _process a besoin (barres/labels), pour que _create_entry les pose sur le
 ## Panel via set_meta.
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
 func _build_general_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	var general_tab := VBoxContainer.new()
 	general_tab.add_theme_constant_override("separation", 10)
@@ -331,13 +308,11 @@ func _build_general_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	_make_stat_bar(general_tab, "PV", 100.0, 100.0)
 	var hunger_bar := _make_stat_bar(general_tab, "Faim", dwarf.hunger_max, dwarf.hunger)
 	var energy_bar := _make_stat_bar(general_tab, "Energie", dwarf.energy_max, dwarf.energy)
-	# Sprint 36 : Soif branchee sur dwarf.thirst/thirst_max (voir note en tete
-	# de fichier), rafraichie en _process comme Faim/Energie.
 	var thirst_bar := _make_stat_bar(general_tab, "Soif", dwarf.thirst_max, dwarf.thirst)
 
-	# Sprint 37 (backlog Phase 1 item 6) : confort thermique - purement
-	# informatif pour l'instant (voir Dwarf.temperature_status), aucun effet
-	# sur le gameplay tant qu'il n'y a pas de systeme d'habits.
+	# Confort thermique - purement informatif pour l'instant (voir
+	# Dwarf.temperature_status), aucun effet sur le gameplay tant qu'il n'y a
+	# pas de systeme d'habits.
 	var comfort_label := _make_label("Confort : Normal", FONT_BODY)
 	general_tab.add_child(comfort_label)
 
@@ -354,8 +329,7 @@ func _build_general_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	}
 
 
-## Onglet 2 : Caracteristiques (Sprint 12, fixees a la creation).
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
+## Onglet 2 : Caracteristiques (fixees a la creation du nain).
 func _build_stats_tab(tabs: TabContainer, dwarf: Node3D) -> void:
 	var stats_grid := GridContainer.new()
 	stats_grid.columns = 2
@@ -371,13 +345,12 @@ func _build_stats_tab(tabs: TabContainer, dwarf: Node3D) -> void:
 	_add_stat_label(stats_grid, "Bonheur", "%d%%" % dwarf.bonheur)
 
 
-## Onglet 3 : Competences (Sprint 18) - generees dynamiquement a partir de la
-## table SkillDefinitions.SKILLS, donc s'adapte automatiquement si on en
-## ajoute. Le niveau progresse avec le temps (contrairement aux
-## caracteristiques ci-dessus) : niveau + barre rafraichis dans _process (voir
+## Onglet 3 : Competences, generees dynamiquement a partir de la table
+## SkillDefinitions.SKILLS, donc s'adapte automatiquement si on en ajoute. Le
+## niveau progresse avec le temps (contrairement aux caracteristiques
+## ci-dessus) : niveau + barre rafraichis dans _process (voir
 ## _update_skill_row). 3 colonnes : nom de la competence, niveau (juste le
 ## nombre, sans le mot "niveau"), barre de progression vers le niveau suivant.
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
 func _build_skills_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	var skills_grid := GridContainer.new()
 	skills_grid.columns = 3
@@ -401,11 +374,9 @@ func _build_skills_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	return skill_rows
 
 
-## Onglet 4 : Equipement (Sprint 37, backlog Phase 1 item 11bis) - stub
-## minimal en lecture seule sur dwarf.personal_inventory ; pas de systeme
-## d'equipement/artisanat reel pour l'instant (Phase 2, voir note en tete de
-## dwarf.personal_inventory).
-## 2026-07-06 (revue de code Phase 3, C12) : extrait de _create_entry().
+## Onglet 4 : Equipement - stub minimal en lecture seule sur
+## dwarf.personal_inventory ; pas de systeme d'equipement/artisanat reel pour
+## l'instant (Phase 2, voir note en tete de dwarf.personal_inventory).
 func _build_equipment_tab(tabs: TabContainer, dwarf: Node3D) -> Dictionary:
 	var equip_grid := GridContainer.new()
 	equip_grid.columns = 2
@@ -451,8 +422,8 @@ func _make_stat_bar(container: VBoxContainer, label_text: String, max_value: flo
 	return bar
 
 
-## Ajoute un label "Nom : valeur" dans une grille (caracteristiques du Sprint 12,
-## fixees a la creation du nain, donc pas besoin de les rafraichir en _process)
+## Ajoute un label "Nom : valeur" dans une grille (caracteristiques fixees a
+## la creation du nain, donc pas besoin de les rafraichir en _process)
 func _add_stat_label(grid: GridContainer, label_text: String, value) -> void:
 	grid.add_child(_make_label("%s : %s" % [label_text, str(value)], FONT_BODY))
 
@@ -469,13 +440,13 @@ func _update_skill_row(dwarf, skill_id: String, row: Dictionary) -> void:
 	row["bar"].value = xp
 
 
-## 2026-07-02 : Ctrl/Maj+clic sur un portrait ajoute/retire CE nain de la
-## selection multiple courante SANS toucher a sa fiche (la multi-selection
-## reste purement visuelle pour l'instant - anneaux au sol + surbrillance des
-## portraits, voir _process). Un clic simple garde le comportement historique
-## : ouvre/ferme la fiche de ce nain (une seule fiche a la fois, pour ne pas
-## encombrer l'ecran) et remplace toute selection multiple en cours par ce
-## seul nain.
+## Ctrl/Maj+clic sur un portrait ajoute/retire CE nain de la selection
+## multiple courante SANS toucher a sa fiche (la multi-selection reste
+## purement visuelle pour l'instant - anneaux au sol + surbrillance des
+## portraits, voir _process). Un clic simple garde le comportement
+## historique : ouvre/ferme la fiche de ce nain (une seule fiche a la fois,
+## pour ne pas encombrer l'ecran) et remplace toute selection multiple en
+## cours par ce seul nain.
 func _on_icon_pressed(index: int) -> void:
 	var target: Panel = panels[index]
 	var dwarf = target.get_meta("dwarf")
@@ -485,8 +456,8 @@ func _on_icon_pressed(index: int) -> void:
 
 ## Appelee par ActionController lors d'une selection par rectangle sur la
 ## carte (glisser-clic quand aucun mode d'action n'est actif) - voir
-## ActionController._finalize_box_selection. additive = Maj/Ctrl enfonce au
-## relachement du clic = ajoute a la selection existante au lieu de la
+## ActionDragController.finalize_box_selection. additive = Maj/Ctrl enfonce
+## au relachement du clic = ajoute a la selection existante au lieu de la
 ## remplacer (meme convention que Ctrl/Maj+clic sur un portrait ci-dessus).
 ## Purement visuel pour l'instant (anneaux + surbrillance des portraits),
 ## n'ouvre aucune fiche automatiquement.
@@ -499,11 +470,11 @@ func set_map_selection(dwarves: Array, additive: bool) -> void:
 		selected_dwarves[dwarf] = true
 
 
-## Sprint 37 (backlog Phase 1 item 9) : appelee par ActionController quand un
-## clic simple (pas de glisser) tombe directement sur un nain dans le monde
-## (voir ActionController._handle_inspect_click/_dwarf_at_screen_pos) - meme
-## comportement qu'un clic sur son portrait (_on_icon_pressed ci-dessus),
-## juste retrouve via le noeud nain plutot qu'un index de panneau.
+## Appelee par ActionController quand un clic simple (pas de glisser) tombe
+## directement sur un nain dans le monde (voir ActionInspector.
+## handle_inspect_click/dwarf_at_screen_pos) - meme comportement qu'un clic
+## sur son portrait (_on_icon_pressed ci-dessus), juste retrouve via le
+## noeud nain plutot qu'un index de panneau.
 func select_and_open_dwarf(dwarf, additive: bool) -> void:
 	var target: Panel = null
 	for p in panels:
@@ -515,11 +486,10 @@ func select_and_open_dwarf(dwarf, additive: bool) -> void:
 	_toggle_panel_selection(target, dwarf, additive)
 
 
-## 2026-07-06 (revue de code, paquet H, I53) : factorise la logique de
-## bascule de selection/visibilite, dupliquee a l'identique dans
+## Factorise la logique de bascule de selection/visibilite, partagee par
 ## _on_icon_pressed (clic sur portrait) et select_and_open_dwarf (clic sur le
 ## nain dans le monde) - meme comportement exact, seule la facon de trouver
-## "target" differait entre les deux appelants.
+## "target" differe entre les deux appelants.
 func _toggle_panel_selection(target: Panel, dwarf, additive: bool) -> void:
 	if additive:
 		if selected_dwarves.has(dwarf):
@@ -537,8 +507,8 @@ func _toggle_panel_selection(target: Panel, dwarf, additive: bool) -> void:
 		selected_dwarves[dwarf] = true
 
 
-## 2026-07-02 : ferme la fiche actuellement ouverte (s'il y en a une) et vide
-## la selection en appuyant sur Echap - en plus du re-clic sur le portrait
+## Ferme la fiche actuellement ouverte (s'il y en a une) et vide la
+## selection en appuyant sur Echap - en plus du re-clic sur le portrait
 ## (deja pris en charge par _on_icon_pressed ci-dessus, qui referme si on
 ## reclique sur l'icone deja ouverte). "ui_cancel" est l'action Echap par
 ## defaut de Godot.
@@ -579,14 +549,14 @@ func _process(_delta: float) -> void:
 		panel.get_meta("comfort_label").text = "Confort : %s" % dwarf.temperature_status()
 		panel.get_meta("task_label").text = "Tache en cours : %s" % _task_description(dwarf)
 
-		# Competences (Sprint 18) : niveau/xp progressent avec le temps,
-		# contrairement aux caracteristiques du Sprint 12
+		# Competences : niveau/xp progressent avec le temps, contrairement
+		# aux caracteristiques.
 		var skill_rows: Dictionary = panel.get_meta("skill_rows")
 		for skill_id in skill_rows:
 			_update_skill_row(dwarf, skill_id, skill_rows[skill_id])
 
-		# Equipement (Sprint 37, backlog Phase 1 item 11bis) : stub en lecture
-		# seule sur dwarf.personal_inventory, "-" tant qu'un emplacement est vide.
+		# Equipement : stub en lecture seule sur dwarf.personal_inventory,
+		# "-" tant qu'un emplacement est vide.
 		var equip_labels: Dictionary = panel.get_meta("equip_labels")
 		for slot in equip_labels:
 			var value: String = String(dwarf.personal_inventory.get(slot, ""))
@@ -599,19 +569,13 @@ func _task_description(dwarf) -> String:
 	elif dwarf.is_resting:
 		return "Repos"
 	elif dwarf.is_eating:
-		# Sprint 24quater : le nain mange directement depuis l'inventaire (plus
-		# de trajet jusqu'a un buisson, voir Dwarf.gd/_try_start_eating) - un
-		# seul etat "Manger" suffit desormais (l'ancien "Va manger" n'a plus
-		# de sens sans deplacement).
+		# Le nain mange directement depuis l'inventaire (pas de trajet
+		# jusqu'a un buisson, voir Dwarf.gd/_try_start_eating) - un seul etat
+		# "Manger" suffit, sans deplacement associe.
 		return "Manger"
 	elif dwarf.is_drinking:
-		# Sprint 36 : meme principe que "Manger" ci-dessus, pour la soif.
+		# Meme principe que "Manger" ci-dessus, pour la soif.
 		return "Boire"
 	elif not dwarf.current_task.is_empty():
 		return String(dwarf.current_task.get("type", "?")).capitalize()
 	return "Errance"
-
-
-## 2026-07-06 (revue de code, paquet E, I55) : la construction du portrait 3D
-## (mini SubViewport + camera cadree sur la tete) vit desormais dans
-## PortraitRendererScript.make_portrait_texture() - voir PortraitRenderer.gd.

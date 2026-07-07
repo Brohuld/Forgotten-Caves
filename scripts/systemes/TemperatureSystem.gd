@@ -1,35 +1,28 @@
 extends Node
-## Sprint 37 (2026-07-04) : systeme de temperature/gel/neige - backlog Phase 1
-## (items 1-6 : climat/temperature, voir memoire "Forgotten Caves Phase 1
-## backlog"). Minuteur/etat independant, meme esprit que WeatherSystem.gd/
-## SeasonSystem.gd.
-## 2026-07-06 (revue de code Phase 3, C13) : correctif de commentaire - la
-## phrase precedente ("place apres eux dans Main.tscn pour pouvoir les lire")
-## laissait croire que la position de ce noeud dans Main.tscn importe pour la
-## correction du script, ce qui n'est PAS le cas : SeasonSystem/WeatherSystem
+## Systeme de temperature/gel/neige. Minuteur/etat independant, meme esprit
+## que WeatherSystem.gd/SeasonSystem.gd. L'ordre des noeuds dans Main.tscn
+## n'a pas d'impact fonctionnel pour ce script : SeasonSystem/WeatherSystem
 ## sont lus uniquement via les references %SeasonSystem/%WeatherSystem
 ## (resolues par nom unique, pas par ordre) et uniquement dans des fonctions
-## appelees APRES le _ready() de tous les noeuds (_process/_maybe_start_episode/
-## current_temperature) - aucune dependance a leur _ready() deja execute.
-## L'ordre des noeuds dans Main.tscn n'a donc aucun impact fonctionnel connu
-## pour ce script (contrairement au vrai couplage d'ordre corrige entre
-## DayNightCycle.gd et WeatherSystem.gd, voir leurs commentaires).
+## appelees APRES le _ready() de tous les noeuds (_process/
+## _maybe_start_episode/current_temperature).
 ##
-## Simplifications assumees (pas de retour visuel possible pour moi, donc on
-## reste sur des mecaniques simples et sures plutot que fines/par-case) :
+## Simplifications assumees (pas de retour visuel possible pour moi pendant
+## le developpement, donc mecaniques simples et sures plutot que fines/
+## par-case) :
 ## - Le gel/la neige sont des etats GLOBAUX (toute la carte), pas par case -
 ##   un vrai systeme par-case serait bien plus lourd (et couteux en perf, vu
-##   la taille de la carte 100x100, voir memoire perf du Sprint 34/35).
+##   la taille de la carte).
 ## - "Neige au sol" = un voile blanc qui recouvre progressivement la couleur
 ##   du dessus terre/pierre (voir VoxelWorld.snow_coverage), pas un vrai bloc
 ##   de neige separe.
 ## - "Gel de l'eau" = un etat bool global (VoxelWorld.is_frozen) qui change la
 ##   couleur de l'eau (glace) et bloque le bouton Puiser (voir
-##   ActionController._valid_puiser_rect_cells).
+##   ActionValidator.valid_puiser_rect_cells).
 
 const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
-## Sprint 37 (backlog Phase 1 item 8) : voir SeasonSystem.gd/WeatherSystem.gd -
-## meme pattern pour lire DayNightCycleScript.game_speed (pause/x1/x2/x4).
+## Voir SeasonSystem.gd/WeatherSystem.gd - meme pattern pour lire
+## DayNightCycleScript.game_speed (pause/x1/x2/x4).
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
 ## Temperature de base (degres C) par saison, avant oscillation jour/nuit et
@@ -78,13 +71,9 @@ var snow_coverage: float = 0.0  # 0..1, lu par VoxelWorld pour le voile de neige
 var _last_applied_frozen: bool = false
 var _last_applied_snow_step: int = -1
 
-## 2026-07-06 (revue de code, paquet C, M37) : evite de spammer la console a
-## chaque frame si _voxel_world/_season_system restent null (noeud manquant/
-## renomme) - un seul avertissement au premier _process() concerne.
-## 2026-07-06 (revue de code, paquet F, I46) : la garde couvrait seulement
-## _voxel_world/_season_system - etendue a _weather_system/_day_night ci-
-## dessous, qui sont lus plus loin dans ce fichier (is_snowing/time_of_day)
-## sans jamais etre verifies eux-memes.
+## Evite de spammer la console a chaque frame si _voxel_world/_season_system/
+## _weather_system/_day_night restent null (noeud manquant/renomme) - un seul
+## avertissement au premier _process() concerne.
 var _warned_missing_refs: bool = false
 
 @onready var _season_system: Node = %SeasonSystem
@@ -127,8 +116,8 @@ func _process(delta: float) -> void:
 
 ## N'appelle VoxelWorld.set_climate_state (qui reconstruit le mesh) que quand
 ## l'etat gele change, ou que la neige a franchi un palier de SNOW_STEP - un
-## rebuild_mesh a chaque frame serait beaucoup trop couteux sur la carte
-## 100x100 (voir memoire perf Sprint 34/35).
+## rebuild_mesh a chaque frame serait beaucoup trop couteux sur une grande
+## carte.
 func _apply_to_voxel_world(frozen: bool) -> void:
 	if _voxel_world == null:
 		return
@@ -144,9 +133,8 @@ func _maybe_start_episode() -> void:
 	_episode_check_timer = randf_range(episode_check_interval_min, episode_check_interval_max)
 	if randf() > EPISODE_CHANCE_PER_CHECK:
 		return
-	# 2026-07-06 (revue de code, paquet B, I50) : repli factorise via
-	# ClimateDefs.season_id_or_default (motif duplique aussi dans
-	# DayNightCycle.gd/WeatherSystem.gd).
+	# Repli factorise via ClimateDefs.season_id_or_default (motif duplique
+	# aussi dans DayNightCycle.gd/WeatherSystem.gd).
 	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var candidates: Array = []
 	for episode_id in EPISODE_SEASONS:
@@ -178,7 +166,7 @@ func is_frozen() -> bool:
 
 
 ## Libelle affichable de l'episode en cours ("" si aucun) - utilise par
-## ActionController.gd pour l'affichage du climat.
+## ClimateUI.gd pour l'affichage du climat.
 func episode_label() -> String:
 	match current_episode:
 		EPISODE_COLD_WAVE:

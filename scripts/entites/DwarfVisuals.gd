@@ -1,25 +1,19 @@
 extends RefCounted
-## 2026-07-06 (dette d'architecture A1, I60 - revue de code) : accessoires
-## visuels d'action (outils/indicateurs) extraits mecaniquement de Dwarf.gd -
-## fonctions inchangees, seule la signature change ("dwarf" recoit le Dwarf
-## via parametre au lieu d'un "self" implicite, meme motif que
-## Model3DUtils.gd/DwarfWeaponBuilder.gd/ActionDragController.gd).
-## Proprietes lues/ecrites via dwarf.get()/dwarf.set() (acces dynamique
-## Godot, necessaire car "dwarf" est type generiquement Node3D, pas Dwarf,
-## pour eviter un preload circulaire).
-## HEAD_HEIGHT_APPROX duplique ci-dessous (les "const" ne sont pas visibles
-## via get()) - a garder synchronise si la valeur d'origine change dans
-## Dwarf.gd. Egalement duplique dans DwarfNeeds.gd (utilise par
-## _process_resting pour le balancement du "Z z z").
+## Apparence et accessoires visuels d'action (outils/indicateurs) d'un
+## nain, extrait de Dwarf.gd. Chaque fonction recoit le nain via un
+## parametre "dwarf" (Node3D) plutot qu'un "self" implicite, et lit/ecrit
+## ses proprietes via dwarf.get()/dwarf.set() (acces dynamique Godot,
+## necessaire car "dwarf" est type generiquement Node3D, pas Dwarf, pour
+## eviter un preload circulaire).
+## HEAD_HEIGHT_APPROX est aussi declaree dans DwarfNeeds.gd (utilisee par
+## _process_resting pour le balancement du "Z z z") - const non visible via
+## get(), doit donc etre dupliquee la ou elle est utilisee.
 
 const HEAD_HEIGHT_APPROX := 0.95
 const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
 
 
-## --- Apparence (Sprint 28decies) : modele 3D procedural ---
-## Sprint 34duodecies (2026-07-03) : reordonnee pour eviter un aller-retour
-## de construction inutile - voir historique du fichier d'origine pour le
-## detail complet du diagnostic de performance.
+## --- Apparence : modele 3D procedural ---
 static func build_appearance(dwarf: Node3D) -> void:
 	var dwarf_model := Node3D.new()
 	dwarf_model.set_script(load("res://scripts/prototypes/DwarfModel3D.gd"))
@@ -30,8 +24,8 @@ static func build_appearance(dwarf: Node3D) -> void:
 	dwarf_model.beard_color = dwarf.get("beard_color")
 	dwarf_model.clothing_color = dwarf.get("clothing_color")
 	dwarf_model.armor_color = dwarf.get("armor_color")
-	# Pas de systeme de combat dans le jeu principal pour l'instant (Phase 4,
-	# voir README) : on force "sans arme" quel que soit le tirage aleatoire.
+	# Pas de systeme de combat dans le jeu principal pour l'instant : on
+	# force "sans arme" quel que soit le tirage aleatoire.
 	dwarf_model.weapon_loadout = "Aucune"
 
 	var body: Node3D = dwarf.get("body")
@@ -56,12 +50,10 @@ static func reset_pose(dwarf: Node3D) -> void:
 ## (voir show_tool_for_task). Attache a la main droite du modele 3D.
 static func build_tool_accessory(dwarf: Node3D) -> void:
 	var dwarf_model: Node3D = dwarf.get("dwarf_model")
-	# 2026-07-06 (revue de code, paquet H, I64) : couplage avec
-	# DwarfModel3D._build_arms() (qui remplit _hand_r) - fonctionne
-	# aujourd'hui grace a l'ordre interne de _build_model(), mais aucune
-	# garde ne protegeait avant contre une reorganisation future de cet
-	# ordre. Garde de nullite ajoutee plutot qu'un crash silencieux sur
-	# "Nonexistent function/attribute" si _hand_r n'existe pas encore.
+	# Couple a DwarfModel3D._build_arms() (qui remplit _hand_r) - fonctionne
+	# grace a l'ordre interne de _build_model(). Garde de nullite pour
+	# eviter un crash silencieux sur "Nonexistent function/attribute" si
+	# _hand_r n'existe pas encore.
 	if dwarf_model._hand_r == null:
 		push_warning("DwarfVisuals.build_tool_accessory : dwarf_model._hand_r est null - _build_arms() a-t-il ete appele avant ceci ?")
 		return

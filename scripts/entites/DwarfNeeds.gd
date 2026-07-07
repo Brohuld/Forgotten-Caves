@@ -1,15 +1,11 @@
 extends RefCounted
-## 2026-07-06 (dette d'architecture A1, I60 - revue de code) : besoins
-## critiques (repos/repas/boisson) extraits mecaniquement de Dwarf.gd -
-## fonctions inchangees, seule la signature change ("dwarf" recoit le Dwarf
-## via parametre au lieu d'un "self" implicite, meme motif que
-## DwarfVisuals.gd/DwarfMovement.gd).
-## Proprietes lues/ecrites via dwarf.get()/dwarf.set() (acces dynamique
-## Godot, necessaire car "dwarf" est type generiquement Node3D, pas Dwarf).
-## Delegue a DwarfVisuals.gd (reset_pose) et DwarfResourcePile.gd
-## (resource_color) - preloades ci-dessous.
-## HEAD_HEIGHT_APPROX duplique ci-dessous (deja duplique dans
-## DwarfVisuals.gd) - a garder synchronise si la valeur d'origine change.
+## Besoins critiques d'un nain (repos/repas/boisson), extrait de Dwarf.gd.
+## Chaque fonction recoit le nain via un parametre "dwarf" (Node3D) plutot
+## qu'un "self" implicite, et lit/ecrit ses proprietes via
+## dwarf.get()/dwarf.set() (acces dynamique Godot, necessaire car "dwarf"
+## est type generiquement Node3D, pas Dwarf).
+## HEAD_HEIGHT_APPROX est declaree ici et dans DwarfVisuals.gd (const non
+## visible via get(), doit donc etre dupliquee la ou elle est utilisee).
 
 const HEAD_HEIGHT_APPROX := 0.95
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
@@ -49,7 +45,7 @@ static func process_resting(dwarf: Node3D, delta: float) -> void:
 		DwarfVisualsScript.reset_pose(dwarf)
 
 
-## --- Repas depuis l'inventaire (faim critique, Sprint 24quater) ---
+## --- Repas depuis l'inventaire (faim critique) ---
 ## Toutes les ressources considerees comme nourriture (baies + fruits d'arbres)
 static func food_resource_ids() -> Array:
 	var ids: Array = BerryTypes.all_ids()
@@ -58,17 +54,17 @@ static func food_resource_ids() -> Array:
 	return ids
 
 
-## 2026-07-06 (revue de code, paquet B, I62) : extrait de _try_start_eating/
-## _try_start_drinking, qui dupliquaient a l'identique la teinte de
-## l'indicateur, le passage en animation "Manger" et l'interruption de la
-## tache en cours.
+## Factorise la partie commune a try_start_eating/try_start_drinking : teinte
+## l'indicateur selon la ressource consommee, lance l'animation "Manger"
+## (meme geste mains->bouche pour manger ou boire) et interrompt la tache en
+## cours.
 static func begin_meal_animation(dwarf: Node3D, resource_id_for_color: String) -> void:
 	var food_indicator: MeshInstance3D = dwarf.get("food_indicator")
 	var indicator_mat: StandardMaterial3D = food_indicator.get_surface_override_material(0)
 	if indicator_mat:
 		indicator_mat.albedo_color = DwarfResourcePileScript.resource_color(resource_id_for_color)
 	var dwarf_model: Node3D = dwarf.get("dwarf_model")
-	dwarf_model.preview_animation = "Manger"  # meme geste mains->bouche, reutilise aussi pour boire
+	dwarf_model.preview_animation = "Manger"
 	var current_task: Dictionary = dwarf.get("current_task")
 	if not current_task.is_empty():
 		var task_queue: Node = dwarf.get("task_queue")
@@ -76,10 +72,9 @@ static func begin_meal_animation(dwarf: Node3D, resource_id_for_color: String) -
 		dwarf.set("current_task", {})
 
 
-## 2026-07-06 (revue de code, paquet B, I62) : extrait de _process_eating/
-## _process_drinking, qui dupliquaient a l'identique l'avance du timer et le
-## balancement de l'indicateur. Renvoie le timer mis a jour (GDScript ne
-## passe pas les float par reference).
+## Factorise la partie commune a process_eating/process_drinking : avance le
+## timer et fait balancer l'indicateur. Renvoie le timer mis a jour (GDScript
+## ne passe pas les float par reference).
 static func advance_meal_timer(dwarf: Node3D, timer: float, delta: float) -> float:
 	var new_timer: float = timer + delta
 	var food_indicator: MeshInstance3D = dwarf.get("food_indicator")
@@ -125,8 +120,6 @@ static func process_eating(dwarf: Node3D, delta: float) -> void:
 			var hunger: float = dwarf.get("hunger")
 			hunger = min(hunger + food_calories(dwarf, eating_food_id), hunger_max)
 			dwarf.set("hunger", hunger)
-			# 2026-07-06 (revue de code, paquet D, I61) : instrumentation
-			# conditionnee a OS.is_debug_build().
 			if OS.is_debug_build():
 				print("Le nain mange : %s (faim: %d)" % [eating_food_id, int(hunger)])
 		dwarf.set("eating_food_id", "")
@@ -136,7 +129,7 @@ static func process_eating(dwarf: Node3D, delta: float) -> void:
 		DwarfVisualsScript.reset_pose(dwarf)
 
 
-## --- Boisson depuis l'inventaire (soif critique, Sprint 36) ---
+## --- Boisson depuis l'inventaire (soif critique) ---
 ## Tente de commencer a boire ; interrompt la tache en cours (comme la faim)
 ## et lance l'animation depuis l'inventaire. Renvoie false si pas d'eau stockee.
 static func try_start_drinking(dwarf: Node3D) -> bool:
@@ -171,10 +164,10 @@ static func process_drinking(dwarf: Node3D, delta: float) -> void:
 		DwarfVisualsScript.reset_pose(dwarf)
 
 
-## Sprint 24septies : valeur de faim restauree par la nourriture "food_id"
-## (calories propres a chaque fruit/baie) - retombe sur hunger_restore_per_berry
-## (valeur exportee du Dwarf, modifiable dans l'inspecteur) si aucune valeur
-## n'est trouvee (securite, ne devrait pas arriver en pratique).
+## Valeur de faim restauree par la nourriture "food_id" (calories propres a
+## chaque fruit/baie) - retombe sur hunger_restore_per_berry (valeur
+## exportee du Dwarf, modifiable dans l'inspecteur) si aucune valeur n'est
+## trouvee (securite, ne devrait pas arriver en pratique).
 static func food_calories(dwarf: Node3D, food_id: String) -> float:
 	var berry_cal: float = BerryTypes.calories_for(food_id)
 	if berry_cal >= 0.0:

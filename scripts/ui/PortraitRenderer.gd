@@ -1,23 +1,20 @@
 extends RefCounted
-## 2026-07-06 (revue de code, paquet E, I55) : extrait de CharacterSheetUI.gd
-## - construction du portrait 3D d'un nain (mini SubViewport + camera cadree
-## sur la tete), une des 3 responsabilites identifiees dans ce fichier
-## (fiche/UI, selection multiple, portraits 3D). Fonction statique et
-## autonome (aucun etat partage avec CharacterSheetUI.gd) : recoit le noeud
-## "parent" auquel accrocher le SubViewport temporaire (add_child), puisque
-## ce script n'est pas lui-meme un Node et ne peut pas le faire directement -
-## meme pattern que ActionValidator.gd/IconRenderer.gd (aucune reference
-## typee vers le script appelant, tout ce qui est necessaire est passe en
-## parametre).
+## Construction du portrait 3D d'un nain (mini SubViewport + camera cadree
+## sur la tete). Fonction statique et autonome (aucun etat partage avec
+## CharacterSheetUI.gd) : recoit le noeud "parent" auquel accrocher le
+## SubViewport temporaire (add_child), puisque ce script n'est pas lui-meme
+## un Node et ne peut pas le faire directement - meme pattern que
+## ActionValidator.gd/IconRenderer.gd (aucune reference typee vers le script
+## appelant, tout ce qui est necessaire est passe en parametre).
 
 const DwarfModel3DScript := preload("res://scripts/prototypes/DwarfModel3D.gd")
 
 const PORTRAIT_RENDER_SIZE := 128
 const PORTRAIT_CAMERA_FOV := 30.0
-# Sprint 34duodecies : liste explicite des champs d'APPARENCE a copier du
-# vrai modele du nain vers le modele jetable du portrait - une copie totale
-# de toutes les proprietes du noeud (position/rotation/scale...) n'a rien
-# a voir avec l'apparence et provoquerait des erreurs.
+## Liste explicite des champs d'APPARENCE a copier du vrai modele du nain
+## vers le modele jetable du portrait - une copie totale de toutes les
+## proprietes du noeud (position/rotation/scale...) n'a rien a voir avec
+## l'apparence et provoquerait des erreurs.
 const PORTRAIT_APPEARANCE_FIELDS := [
 	"skin_color", "hair_color", "beard_color", "clothing_color", "pants_color",
 	"armor_color", "boot_color", "coat_color", "wear_gloves", "wear_coat",
@@ -32,8 +29,7 @@ const PORTRAIT_APPEARANCE_FIELDS := [
 ## SubViewport temporaire est ajoute comme enfant de "parent" (le CanvasLayer
 ## appelant, voir CharacterSheetUI.gd/_create_portrait_icon), jamais liberé
 ## explicitement ici (reste en vie tant que la texture est utilisee, meme
-## duree de vie que l'icone qui l'affiche - comportement identique a avant
-## l'extraction).
+## duree de vie que l'icone qui l'affiche).
 static func make_portrait_texture(dwarf: Node3D, parent: Node) -> Texture2D:
 	var src_model: Node3D = dwarf.dwarf_model
 
@@ -46,15 +42,14 @@ static func make_portrait_texture(dwarf: Node3D, parent: Node) -> Texture2D:
 	viewport.own_world_3d = true
 	parent.add_child(viewport)
 
-	# Sprint 34duodecies : apparence fixee AVANT d'ajouter le noeud a l'arbre
-	# (meme correction que Dwarf.gd/_build_appearance, voir memoire perf
-	# "lancement lent") - add_child declenche _ready()->_rebuild() qui
-	# construit alors directement le bon portrait, sans passer par un premier
-	# essai jetable (valeurs par defaut) qu'il faudrait ensuite nettoyer via
-	# un 2e appel explicite a _rebuild(). Ce nettoyage inutile (jamais visible
-	# ~0.01-0.02s la plupart du temps) causait une pause de ~5s la toute
-	# premiere fois qu'il se produisait dans une partie (peu importe si
-	# c'etait sur un nain ou sur un portrait).
+	# Apparence fixee AVANT d'ajouter le noeud a l'arbre (meme correction que
+	# Dwarf.gd/_build_appearance, voir memoire perf) - add_child declenche
+	# _ready()->_rebuild() qui construit alors directement le bon portrait,
+	# sans passer par un premier essai jetable (valeurs par defaut) qu'il
+	# faudrait ensuite nettoyer via un 2e appel explicite a _rebuild(). Ce
+	# nettoyage inutile (jamais visible, ~0.01-0.02s la plupart du temps)
+	# causait une pause de ~5s la toute premiere fois qu'il se produisait
+	# dans une partie (peu importe si c'etait sur un nain ou sur un portrait).
 	var portrait_model := Node3D.new()
 	portrait_model.set_script(DwarfModel3DScript)
 	for field in PORTRAIT_APPEARANCE_FIELDS:
@@ -72,21 +67,20 @@ static func make_portrait_texture(dwarf: Node3D, parent: Node) -> Texture2D:
 	camera.fov = PORTRAIT_CAMERA_FOV
 	camera.position = Vector3(0, target_y, portrait_model.head_radius * 3.8)
 	camera.current = true
-	# 2026-07-02 : look_at() a besoin de la transform globale du noeud, donc
-	# le noeud doit deja etre DANS l'arbre de scene (add_child avant, pas
-	# apres) - meme famille de bug que le "Parent node is busy" de l'anneau
-	# de selection, mais ici c'est l'ordre des deux lignes qui etait inverse.
+	# look_at() a besoin de la transform globale du noeud, donc le noeud doit
+	# deja etre DANS l'arbre de scene (add_child avant, pas apres) - meme
+	# famille de bug que le "Parent node is busy" de l'anneau de selection,
+	# mais ici c'est l'ordre des deux lignes qui compte.
 	viewport.add_child(camera)
 	camera.look_at(Vector3(0, target_y, 0), Vector3.UP)
 
-	# 2026-07-06 (revue de code, paquet G, I54) : le contenu du portrait ne
-	# change plus jamais une fois construit (modele jetable, jamais anime,
-	# jamais reconstruit) - sans ce reglage, le SubViewport reste par defaut
-	# en UPDATE_ALWAYS et continue de re-rendre une image identique CHAQUE
-	# frame, pour chaque nain, indefiniment (cout GPU cumulatif inutile qui
-	# grandit avec le nombre de nains). UPDATE_ONCE rend une derniere fois
-	# (le modele/camera venant d'etre ajoutes ci-dessus, deja complets a ce
-	# stade) puis s'arrete.
+	# Le contenu du portrait ne change plus jamais une fois construit (modele
+	# jetable, jamais anime, jamais reconstruit) - sans ce reglage, le
+	# SubViewport reste par defaut en UPDATE_ALWAYS et continue de re-rendre
+	# une image identique CHAQUE frame, pour chaque nain, indefiniment (cout
+	# GPU cumulatif inutile qui grandit avec le nombre de nains). UPDATE_ONCE
+	# rend une derniere fois (le modele/camera venant d'etre ajoutes ci-dessus,
+	# deja complets a ce stade) puis s'arrete.
 	viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 	return viewport.get_texture()

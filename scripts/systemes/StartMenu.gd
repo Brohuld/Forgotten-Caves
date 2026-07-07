@@ -1,14 +1,11 @@
 extends Control
-## Sprint 80 (2026-07-04, demande explicite de Francois : "un menu au
-## lancement pour choisir si on regenere la map, sinon c'est difficile de
-## tester les corrections"). Ecran affiche avant Main.tscn (voir
-## project.godot, run/main_scene) : un champ pour taper une graine (seed)
-## precise, ou le laisser vide pour une carte aleatoire comme avant. Choix
-## explicite de Francois (question posee) : une graine FIXE donnee a la
-## main, pas juste "reprendre la derniere carte automatiquement" - la meme
-## graine tapee deux fois doit toujours produire exactement la meme carte
-## (relief/lacs/riviere/cascades identiques), utile pour reproduire un bug
-## precis a volonte pendant les tests.
+## Ecran affiche avant Main.tscn (voir project.godot, run/main_scene) : un
+## champ pour taper une graine (seed) precise, ou le laisser vide pour une
+## carte aleatoire comme avant. Une graine FIXE est donnee a la main, pas
+## juste "reprendre la derniere carte automatiquement" - la meme graine
+## tapee deux fois doit toujours produire exactement la meme carte (relief/
+## lacs/riviere/cascades identiques), utile pour reproduire un bug precis a
+## volonte pendant les tests.
 ##
 ## Construit entierement par code (aucun noeud dans StartMenu.tscn), meme
 ## convention que les autres UI de ce projet (ActionController.gd,
@@ -16,25 +13,19 @@ extends Control
 ## une interface simple.
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
-## Sprint 83 (2026-07-04, demande explicite de Francois : "la graine est
-## generee a chaque nouveau lancement, on devrait par defaut avoir la valeur
-## precedente") : la derniere graine utilisee est sauvegardee dans ce petit
-## fichier (dossier de sauvegarde du jeu, "user://" - persiste entre les
-## lancements, contrairement a une variable en memoire) et relue au prochain
-## demarrage pour pre-remplir le champ - un nouveau nombre aleatoire n'est
-## genere QUE la toute premiere fois (aucune sauvegarde encore presente).
+## La derniere graine utilisee est sauvegardee dans ce petit fichier (dossier
+## de sauvegarde du jeu, "user://" - persiste entre les lancements,
+## contrairement a une variable en memoire) et relue au prochain demarrage
+## pour pre-remplir le champ - un nouveau nombre aleatoire n'est genere QUE
+## la toute premiere fois (aucune sauvegarde encore presente).
 const LAST_SEED_PATH := "user://last_seed.txt"
 
-## 2026-07-05 (revue de code, item F005) : plage de la graine aleatoire par
-## defaut - etait en dur (1000000) dans _build_seed_field, sans nom.
+## Plage de la graine aleatoire par defaut.
 const DEFAULT_SEED_RANGE := 1000000
 
 var seed_input: LineEdit
 
 
-# 2026-07-05 (revue de code, item F001) : _ready() (~80 lignes) decoupe en
-# sous-fonctions _build_*() - un helper par bloc d'UI, meme contenu qu'avant,
-# rien de fonctionnel ne change.
 func _ready() -> void:
 	anchor_left = 0.0
 	anchor_top = 0.0
@@ -105,13 +96,11 @@ func _build_seed_field(box: VBoxContainer) -> void:
 	seed_input.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	seed_input.custom_minimum_size = Vector2(200, 0)
 	seed_input.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	# Sprint 82 (2026-07-04, demande explicite de Francois : "genere un nombre
-	# aleatoire par defaut dans cette graine") : le champ n'est plus vide au
-	# demarrage, il propose deja un nombre aleatoire, modifiable ou effacable.
-	# Sprint 83 (suite) : cette valeur par defaut est desormais la DERNIERE
-	# graine utilisee (voir LAST_SEED_PATH), pas un nouveau nombre a chaque
-	# fois - un nombre aleatoire n'est genere que s'il n'existe encore aucune
-	# sauvegarde (tout premier lancement).
+	# Le champ n'est pas vide au demarrage, il propose deja un nombre
+	# aleatoire, modifiable ou effacable. Cette valeur par defaut est la
+	# DERNIERE graine utilisee (voir LAST_SEED_PATH), pas un nouveau nombre a
+	# chaque fois - un nombre aleatoire n'est genere que s'il n'existe encore
+	# aucune sauvegarde (tout premier lancement).
 	randomize()
 	var last_seed: String = _load_last_seed()
 	seed_input.text = last_seed if not last_seed.is_empty() else str(randi() % DEFAULT_SEED_RANGE)
@@ -158,14 +147,14 @@ func _on_launch_pressed() -> void:
 	else:
 		VoxelWorldScript.use_fixed_seed = true
 		VoxelWorldScript.requested_seed = int(text)
-		# Sprint 83 : sauvegarde cette graine pour qu'elle soit reproposee par
-		# defaut au prochain lancement (voir LAST_SEED_PATH/_load_last_seed).
+		# Sauvegarde cette graine pour qu'elle soit reproposee par defaut au
+		# prochain lancement (voir LAST_SEED_PATH/_load_last_seed).
 		_save_last_seed(text)
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 
-## Sprint 83 : lit la derniere graine sauvegardee (fichier absent ou vide au
-## tout premier lancement -> chaine vide, gere par l'appelant).
+## Lit la derniere graine sauvegardee (fichier absent ou vide au tout premier
+## lancement -> chaine vide, gere par l'appelant).
 func _load_last_seed() -> String:
 	if not FileAccess.file_exists(LAST_SEED_PATH):
 		return ""
@@ -173,10 +162,10 @@ func _load_last_seed() -> String:
 	if f == null:
 		return ""
 	var raw := f.get_as_text().strip_edges()
-	# 2026-07-06 (revue de code, paquet H, M38) : filtre aux chiffres, meme
-	# regle que _on_seed_text_changed() - un fichier last_seed.txt modifie a
-	# la main (texte non numerique) affichait ce texte tel quel dans le champ
-	# avant la prochaine frappe utilisateur, contrairement a la saisie live.
+	# Filtre aux chiffres, meme regle que _on_seed_text_changed() - un
+	# fichier last_seed.txt modifie a la main (texte non numerique)
+	# afficherait sinon ce texte tel quel dans le champ avant la prochaine
+	# frappe utilisateur, contrairement a la saisie live.
 	var filtered := ""
 	for c in raw:
 		if c >= "0" and c <= "9":
@@ -184,15 +173,15 @@ func _load_last_seed() -> String:
 	return filtered
 
 
-## Sprint 83 : sauvegarde la graine utilisee ce lancement, pour la retrouver
-## par defaut au prochain demarrage.
+## Sauvegarde la graine utilisee ce lancement, pour la retrouver par defaut
+## au prochain demarrage.
 func _save_last_seed(text: String) -> void:
 	var f := FileAccess.open(LAST_SEED_PATH, FileAccess.WRITE)
 	if f != null:
 		f.store_string(text)
 	else:
-		# 2026-07-05 (revue de code, item F004) : echouait silencieusement
-		# (disque plein/permissions) - la graine ne sera simplement pas
-		# reproposee au prochain lancement (defaut : nouveau nombre aleatoire),
-		# rien de bloquant, mais desormais visible dans la console.
+		# Echouait silencieusement (disque plein/permissions) - la graine ne
+		# sera simplement pas reproposee au prochain lancement (defaut :
+		# nouveau nombre aleatoire), rien de bloquant, mais desormais visible
+		# dans la console.
 		push_warning("StartMenu: impossible d'ecrire %s (graine non sauvegardee)" % LAST_SEED_PATH)

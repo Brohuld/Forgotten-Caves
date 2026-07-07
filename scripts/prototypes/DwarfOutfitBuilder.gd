@@ -1,21 +1,17 @@
 extends RefCounted
-## 2026-07-06 (revue de code, paquet E, M58 - etape 2/3) : extrait de
-## DwarfModel3D.gd (9 fonctions liees a la tenue/l'armure - _build_outfit et
-## tout ce qu'elle appelle, plus le manteau et les gants qui sont des
-## accessoires independants de outfit_style). Meme demarche que l'etape 1
-## (armes, voir DwarfWeaponBuilder.gd) : fichier source toujours trop
-## volumineux, decoupe en 3 etapes testees separement. Aucun changement de
-## comportement.
+## Construction de la tenue/armure du modele 3D du nain (build_outfit et
+## tout ce qu'elle appelle), plus le manteau et les gants qui sont des
+## accessoires independants de outfit_style.
 ##
 ## Fonctions STATIQUES, meme pattern que DwarfWeaponBuilder.gd :
 ## - "model" est type Node3D (pas DwarfModel3DScript), lu via get() sur les
 ##   noms de champs (outfit_style, wear_coat, wear_gloves, torso_waist_width,
 ##   corpulence, torso_depth, torso_height, leg_height, torso_shoulder_width,
-##   coat_color, armor_color, boot_color, head_radius) - duck typing, meme
-##   raison qu'en etape 1 (futures races/visiteurs).
+##   coat_color, armor_color, boot_color, head_radius) - duck typing, pour
+##   rester reutilisable par de futures races/visiteurs.
 ## - "parent" est le noeud auquel accrocher les pieces de tenue (le script
-##   appelant passera "self") - contrairement aux armes, aucune piece ici
-##   n'est construite dans un groupe orphelin avant attache : chaque mesh est
+##   appelant passe "self") - contrairement aux armes, aucune piece ici n'est
+##   construite dans un groupe orphelin avant attache : chaque mesh est
 ##   ajoute directement a "parent" (ou a une main pour les gants), donc pas
 ##   besoin de Model3DUtils.adopt_recursive() ici.
 ## - hand_l/hand_r passes explicitement pour build_gloves (comme
@@ -27,9 +23,9 @@ extends RefCounted
 const Model3DUtilsScript := preload("res://scripts/prototypes/Model3DUtils.gd")
 
 
-## Sprint 28unvicies : aiguille vers la construction de la tenue/armure selon
-## "outfit_style" (voir @export_enum dans DwarfModel3D.gd) - "Tunique simple"
-## (defaut) ne construit rien de plus que le torse de base.
+## Aiguille vers la construction de la tenue/armure selon "outfit_style"
+## (voir @export_enum dans DwarfModel3D.gd) - "Tunique simple" (defaut) ne
+## construit rien de plus que le torse de base.
 static func build_outfit(model: Node3D, parent: Node, head_y: float) -> void:
 	match model.get("outfit_style"):
 		"Tunique + cape":
@@ -44,12 +40,11 @@ static func build_outfit(model: Node3D, parent: Node, head_y: float) -> void:
 			pass
 
 
-## Sprint 28sixseptuagesies : manteau - accessoire independant de
-## outfit_style (voir wear_coat, groupe "Accessoires"), peut se porter
-## par-dessus n'importe quelle tenue. Reutilise make_trapezoid_mesh (comme le
-## torse/la cape/le plastron) mais legerement plus large que le torse (pour
-## bien le recouvrir) et surtout plus LONG, descendant sous la taille jusqu'
-## aux cuisses.
+## Manteau - accessoire independant de outfit_style (voir wear_coat, groupe
+## "Accessoires"), peut se porter par-dessus n'importe quelle tenue. Reutilise
+## make_trapezoid_mesh (comme le torse/la cape/le plastron) mais legerement
+## plus large que le torse (pour bien le recouvrir) et surtout plus LONG,
+## descendant sous la taille jusqu'aux cuisses.
 static func build_coat(model: Node3D, parent: Node) -> void:
 	if not model.get("wear_coat"):
 		return
@@ -69,24 +64,19 @@ static func build_coat(model: Node3D, parent: Node) -> void:
 	parent.add_child(coat)
 	coat.owner = Model3DUtilsScript.edited_owner(model)
 
-	# Sprint 28octoseptuagesies : "juste une grosse boite" signale par
-	# l'utilisateur - une petite sphere a chaque coin superieur (epaule) pour
-	# arrondir l'angle vif entre le haut plat du manteau et le bras.
+	# Une petite sphere a chaque coin superieur (epaule) arrondit l'angle vif
+	# entre le haut plat du manteau et le bras.
 	for side in [-1.0, 1.0]:
 		build_coat_shoulder_cap(model, parent, side, depth, top_size, torso_top_y)
 
 	build_coat_buttons(model, parent, torso_top_y, coat_center_y, coat_height, top_size)
 
 
-## 2026-07-06 (revue de code, paquet E, I63) : extrait de _build_coat() - une
-## seule epaulette, aucun changement de comportement.
+## Construit une seule epaulette du manteau (voir la boucle dans build_coat).
 static func build_coat_shoulder_cap(model: Node3D, parent: Node, side: float, depth: float, top_size: Vector2, torso_top_y: float) -> void:
 	var side_name: String = "L" if side < 0.0 else "R"
 	var cap := MeshInstance3D.new()
 	var cap_mesh := SphereMesh.new()
-	# Sprint 28neufseptuagesies : etait depth * 0.55, positionnee tout au
-	# bord (x0.5) - depassait trop, signale par l'utilisateur. Reduite et
-	# rentree legerement vers l'interieur.
 	cap_mesh.radius = depth * 0.32
 	cap_mesh.height = cap_mesh.radius * 2.0
 	cap.mesh = cap_mesh
@@ -97,8 +87,7 @@ static func build_coat_shoulder_cap(model: Node3D, parent: Node, side: float, de
 	cap.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## 2026-07-06 (revue de code, paquet E, I63) : extrait de _build_coat() -
-## rangee de boutons devant, aucun changement de comportement.
+## Rangee de boutons devant le manteau.
 static func build_coat_buttons(model: Node3D, parent: Node, torso_top_y: float, coat_center_y: float, coat_height: float, top_size: Vector2) -> void:
 	var button_count := 4
 	var button_top_y: float = torso_top_y - 0.06
@@ -118,13 +107,13 @@ static func build_coat_buttons(model: Node3D, parent: Node, torso_top_y: float, 
 		button.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## Sprint 28sixseptuagesies : gants - accessoire independant de outfit_style
-## (voir wear_gloves, groupe "Accessoires"). Une petite sphere legerement
-## plus grosse que la main (voir _build_arms dans DwarfModel3D.gd), attachee
-## directement en enfant du noeud Main (hand_l/hand_r) pour suivre
-## automatiquement bras/pivot - meme reference que attach_to_hand pour les
-## armes (DwarfWeaponBuilder.gd). Couleur cuir (boot_color, meme logique que
-## les bottes) plutot qu'une nouvelle couleur dediee.
+## Gants - accessoire independant de outfit_style (voir wear_gloves, groupe
+## "Accessoires"). Une petite sphere legerement plus grosse que la main (voir
+## _build_arms dans DwarfModel3D.gd), attachee directement en enfant du
+## noeud Main (hand_l/hand_r) pour suivre automatiquement bras/pivot - meme
+## reference que attach_to_hand pour les armes (DwarfWeaponBuilder.gd).
+## Couleur cuir (boot_color, meme logique que les bottes) plutot qu'une
+## nouvelle couleur dediee.
 static func build_gloves(model: Node3D, hand_l: Node3D, hand_r: Node3D) -> void:
 	if not model.get("wear_gloves"):
 		return
@@ -142,9 +131,9 @@ static func build_gloves(model: Node3D, hand_l: Node3D, hand_r: Node3D) -> void:
 		glove.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## Sprint 28unvicies : cape plate accrochee aux epaules, tombant le long du
-## dos (armor_color, comme la ceinture - voir _build_belt dans DwarfModel3D.gd
-## - pour rester coherent avec les 4 couleurs personnalisables existantes).
+## Cape plate accrochee aux epaules, tombant le long du dos (armor_color,
+## comme la ceinture - voir _build_belt dans DwarfModel3D.gd - pour rester
+## coherent avec les 4 couleurs personnalisables existantes).
 static func build_cape(model: Node3D, parent: Node) -> void:
 	var shoulder_y: float = float(model.get("leg_height")) + float(model.get("torso_height")) - 0.04
 	var depth: float = float(model.get("torso_depth")) * float(model.get("corpulence"))
@@ -160,10 +149,9 @@ static func build_cape(model: Node3D, parent: Node) -> void:
 	cape.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## Sprint 28unvicies : plastron - reutilise make_trapezoid_mesh (meme forme
-## que le torse, voir _build_torso dans DwarfModel3D.gd) en plus petit/plus
-## plat, plaque devant le torse existant (armor_color) plutot que de
-## remplacer le torse.
+## Plastron - reutilise make_trapezoid_mesh (meme forme que le torse, voir
+## _build_torso dans DwarfModel3D.gd) en plus petit/plus plat, plaque devant
+## le torse existant (armor_color) plutot que de remplacer le torse.
 static func build_chestplate(model: Node3D, parent: Node) -> void:
 	var depth: float = float(model.get("torso_depth")) * float(model.get("corpulence"))
 	var plate := MeshInstance3D.new()
@@ -179,10 +167,9 @@ static func build_chestplate(model: Node3D, parent: Node) -> void:
 	plate.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## Sprint 28unvicies : petites epaulieres (une boite par epaule, armor_color),
-## a la meme position X que le pivot du bras (voir _build_arms dans
-## DwarfModel3D.gd) pour rester bien alignees quelle que soit la largeur
-## d'epaules.
+## Petites epaulieres (une boite par epaule, armor_color), a la meme position
+## X que le pivot du bras (voir _build_arms dans DwarfModel3D.gd) pour rester
+## bien alignees quelle que soit la largeur d'epaules.
 static func build_shoulder_pads(model: Node3D, parent: Node) -> void:
 	var shoulder_y: float = float(model.get("leg_height")) + float(model.get("torso_height")) - 0.04
 	var arm_x_offset: float = float(model.get("torso_shoulder_width")) * 0.5 + 0.04
@@ -199,19 +186,17 @@ static func build_shoulder_pads(model: Node3D, parent: Node) -> void:
 		pad.owner = Model3DUtilsScript.edited_owner(model)
 
 
-## Sprint 28unvicies : casque - sphere aplatie (armor_color) couvrant la tete,
-## posee par-dessus les cheveux/la coiffe choisie (peut legerement chevaucher
-## la coiffe, acceptable pour un prototype - a affiner si ca choque une fois
-## vu dans Godot, par exemple en masquant les cheveux quand un casque est
-## porte).
+## Casque - sphere aplatie (armor_color) couvrant la tete, posee par-dessus
+## les cheveux/la coiffe choisie (peut legerement chevaucher la coiffe,
+## acceptable pour un prototype). Compose de deux pieces : un dome principal
+## et un garde-nuque (voir plus bas).
 static func build_helmet(model: Node3D, parent: Node, head_y: float) -> void:
 	# Dome principal : couvre le dessus/l'avant du crane. Reprend les memes
-	# proportions "surete" que les cheveux courts (_build_hair_short : rayon
-	# ~1.08-1.15x head_radius, recul ~0.20-0.22x) plutot que le centre remonte
-	# + sphere aplatie d'avant, qui laissait le bas-arriere du crane decouvert
-	# (une sphere aplatie et decentree vers le haut retrecit tres vite en Y
-	# des qu'on s'eloigne de son pole, donc son bord a l'arriere ne
-	# descendait pas assez bas pour couvrir jusqu'a la nuque).
+	# proportions "surete" que les cheveux courts (build_hair_short : rayon
+	# ~1.08-1.15x head_radius, recul ~0.20-0.22x) - une sphere aplatie et
+	# decentree vers le haut retrecit tres vite en Y des qu'on s'eloigne de
+	# son pole, donc a elle seule elle ne descendrait pas assez bas a
+	# l'arriere pour couvrir jusqu'a la nuque (d'ou le garde-nuque separe).
 	var head_radius: float = model.get("head_radius")
 	var dome := MeshInstance3D.new()
 	var dome_mesh := SphereMesh.new()
@@ -227,8 +212,7 @@ static func build_helmet(model: Node3D, parent: Node, head_y: float) -> void:
 
 	# Garde-nuque : deuxieme sphere dediee, decalee vers l'arriere ET vers le
 	# bas, pour prolonger explicitement la couverture jusqu'a l'arriere du
-	# crane/la nuque - signale manquant par l'utilisateur avec la 1ere version
-	# (dome seul).
+	# crane/la nuque (le dome seul ne descend pas assez bas a cet endroit).
 	var guard := MeshInstance3D.new()
 	var guard_mesh := SphereMesh.new()
 	var guard_radius: float = head_radius * 0.85

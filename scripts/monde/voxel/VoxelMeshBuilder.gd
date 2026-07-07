@@ -1,25 +1,22 @@
 extends RefCounted
-## Decoupage de VoxelWorld.gd (2026-07-05, revue de code item C1 : fichier
-## trop long / fonctions trop longues - rebuild_mesh() a elle seule depassait
-## 100 lignes). Regroupe la construction du mesh du terrain : culling des
-## faces cachees, choix du "bucket" (materiau/couleur) par bloc, couleurs
-## herbe/pierre/filon, ajout des quads.
+## Construction du mesh du terrain : culling des faces cachees, choix du
+## "bucket" (materiau/couleur) par bloc, couleurs herbe/pierre/filon, ajout
+## des quads.
 ##
-## Relocalisation quasi pure : "rebuild(...)" copie les parametres recus dans
-## ses propres membres (memes noms qu'avant dans VoxelWorld.gd : grid,
-## discovered, view_level, WIDTH, DEPTH, DIRECTIONS, is_frozen,
-## snow_coverage, climate_id, season_id, terrain_noise, stone_noise,
-## mesh_instance), puis le corps de toutes les fonctions ci-dessous est
-## identique a l'original. Seules 2 vraies adaptations (documentees a leur
-## endroit) : _is_face_exposed n'appelle plus VoxelWorld.get_block() (inutile,
-## ce module a deja "grid") et _grass_color_for/_stone_color_for appellent
-## get_top_block_y via un Callable (cette fonction reste sur VoxelWorld, pas
-## duplique ici - evite un ecart si sa logique change un jour).
+## "rebuild(...)" copie les parametres recus dans ses propres membres (memes
+## noms qu'un acces direct aux champs de VoxelWorld.gd : grid, discovered,
+## view_level, WIDTH, DEPTH, DIRECTIONS, is_frozen, snow_coverage,
+## climate_id, season_id, terrain_noise, stone_noise, mesh_instance), puis
+## reconstruit le mesh. Deux adaptations par rapport a un acces direct aux
+## champs de VoxelWorld : _is_face_exposed n'appelle plus VoxelWorld.get_block()
+## (inutile, ce module a deja "grid") et _grass_color_for/_stone_color_for
+## appellent get_top_block_y via un Callable (cette fonction reste sur
+## VoxelWorld, pas dupliquee ici - evite un ecart si sa logique change un jour).
 ##
 ## Ce module ne prend jamais de reference typee vers VoxelWorld.gd lui-meme
-## (meme raison que VoxelVeins.gd, voir sa note en tete de fichier - eviter le
-## piege deja rencontre avec un acces direct "voxel_world.WATER_COLOR" via une
-## reference typee generique).
+## (meme raison que VoxelVeins.gd, voir sa note en tete de fichier - une
+## reference typee generique ne resout pas un acces direct du type
+## "voxel_world.WATER_COLOR").
 
 const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
@@ -44,8 +41,8 @@ const STONE_BASE := Color(0.58, 0.60, 0.66)
 # commentaire de tete). Noms EN MAJUSCULES (WIDTH/DEPTH/DIRECTIONS) volontai-
 # rement gardes tels quels (pas la convention habituelle pour un "var") pour
 # que le corps des fonctions ci-dessous reste identique, caractere pour
-# caractere, a l'original dans VoxelWorld.gd - minimise le risque d'erreur de
-# transcription sur du code deja tres retravaille.
+# caractere, a un acces direct aux champs de VoxelWorld.gd - minimise le
+# risque d'erreur de transcription sur du code deja tres retravaille.
 var grid: Dictionary
 var discovered: Dictionary
 var vein_grid: Dictionary
@@ -58,8 +55,7 @@ var snow_coverage: float
 var climate_id: String
 var season_id: String
 var terrain_noise: FastNoiseLite
-## 2026-07-05 (revue de code, item F013) : cache des 13 materiaux de bucket -
-## voir _get_bucket_materials plus bas.
+## Cache des 13 materiaux de bucket - voir _get_bucket_materials plus bas.
 var _bucket_materials: Dictionary = {}
 var stone_noise: FastNoiseLite
 var DIRECTIONS: Array
@@ -67,7 +63,7 @@ var mesh_instance: MeshInstance3D
 var get_top_block_y: Callable
 
 
-## Point d'entree, appele par VoxelWorld.rebuild_mesh() (thin delegateur).
+## Point d'entree, appele par VoxelWorld.rebuild_mesh() (facade fine).
 ## Recopie l'etat necessaire puis reconstruit le mesh (voir _rebuild_mesh_body).
 func rebuild(p_grid: Dictionary, p_discovered: Dictionary, p_vein_system: VoxelVeinsScript,
 		p_view_level: int, p_width: int, p_depth: int, p_is_frozen: bool,
@@ -94,48 +90,42 @@ func rebuild(p_grid: Dictionary, p_discovered: Dictionary, p_vein_system: VoxelV
 	_rebuild_mesh_body()
 
 
-## Sprint 23bis : une face est exposee (donc dessinee) si la case voisine est
-## soit reellement vide (comportement d'origine), soit au-dessus du niveau de
-## coupe visible (view_level) - dans ce cas elle n'est pas dessinee non plus,
-## donc pour ce qu'on affiche, elle "n'existe pas" et la face doit apparaitre.
-## C'est ce qui revele le dessus colore de chaque bloc au niveau courant.
-## Adaptation (2026-07-05) : appelait VoxelWorld.get_block(neighbor_pos) -
-## remplace par l'equivalent direct (grid.get(...)) puisque ce module a deja
-## "grid", inutile d'appeler VoxelWorld pour ca.
+## Une face est exposee (donc dessinee) si la case voisine est soit
+## reellement vide, soit au-dessus du niveau de coupe visible (view_level) -
+## dans ce cas elle n'est pas dessinee non plus, donc pour ce qu'on affiche,
+## elle "n'existe pas" et la face doit apparaitre. C'est ce qui revele le
+## dessus colore de chaque bloc au niveau courant.
 func _is_face_exposed(neighbor_pos: Vector3i) -> bool:
 	if neighbor_pos.y > view_level:
 		return true
 	return grid.get(neighbor_pos, BlockType.EMPTY) == BlockType.EMPTY
 
 
-## Sprint 21 : couleur de l'herbe (dessus terre) a une position donnee,
-## couleur de base du climat/saison actuels modulee par un bruit continu
-## (+/- environ 12% de luminosite), pour une variation douce case par case
-## au lieu du damier clair/fonce utilise auparavant.
+## Couleur de l'herbe (dessus terre) a une position donnee, couleur de base
+## du climat/saison actuels modulee par un bruit continu (+/- environ 12% de
+## luminosite), pour une variation douce case par case au lieu d'un damier
+## clair/fonce.
 func _grass_color_for(pos: Vector3i) -> Color:
 	var base: Color = ClimateDefs.get_terrain_color(climate_id, season_id)
 	return _noise_modulated_color(base, terrain_noise, pos)
 
 
-## Sprint 23ter : couleur de la pierre (dessus) a une position donnee - couleur
-## de base unique (STONE_BASE) moduleee par un bruit continu (+/- ~12% de
-## luminosite), remplace l'ancien damier clair/fonce a deux tons. Meme
-## technique que _grass_color_for, sur le meme principe : un materiau uniforme
+## Couleur de la pierre (dessus) a une position donnee - couleur de base
+## unique (STONE_BASE) moduleee par un bruit continu (+/- ~12% de
+## luminosite). Meme technique que _grass_color_for : un materiau uniforme
 ## par niveau, les filons restant la seule vraie exception de couleur.
 func _stone_color_for(pos: Vector3i) -> Color:
 	return _noise_modulated_color(STONE_BASE, stone_noise, pos)
 
 
-## 2026-07-05 (revue de code, item F012) : logique commune a _grass_color_for/
-## _stone_color_for factorisee ici (les 2 duplicaient le meme calcul de bruit
-## + voile de neige, seule la couleur/le bruit de base differaient) - meme
-## comportement qu'avant.
-## Bruit continu (+/- ~12% de luminosite) puis voile de neige, uniquement sur
-## la vraie surface exterieure - pas sur un dessus de terre mis a jour au fond
-## d'un trou mine, ou il n'y a pas de ciel pour neiger. Sprint 38 (relief) :
-## compare au sommet REEL de CETTE colonne (get_top_block_y), plus HEIGHT-1
+## Logique commune a _grass_color_for/_stone_color_for (les 2 partagent le
+## meme calcul de bruit + voile de neige, seule la couleur/le bruit de base
+## different). Bruit continu (+/- ~12% de luminosite) puis voile de neige,
+## uniquement sur la vraie surface exterieure - pas sur un dessus de terre
+## mis a jour au fond d'un trou mine, ou il n'y a pas de ciel pour neiger.
+## Compare au sommet REEL de CETTE colonne (get_top_block_y), pas HEIGHT-1
 ## fixe - sinon les sommets de colline (plus hauts que HEIGHT-1) ne
-## recevaient jamais de neige.
+## recevraient jamais de neige.
 func _noise_modulated_color(base: Color, noise: FastNoiseLite, pos: Vector3i) -> Color:
 	var n: float = noise.get_noise_2d(float(pos.x), float(pos.z))  # -1..1
 	var factor: float = 1.0 + n * 0.12
@@ -150,10 +140,10 @@ func _noise_modulated_color(base: Color, noise: FastNoiseLite, pos: Vector3i) ->
 	return color
 
 
-## Sprint 23 : couleur d'un bloc de filon (metal/pierre precieuse) a une
-## position donnee, recuperee depuis MetalTypes/GemTypes via VeinMaterials.
-## Couleur neutre de secours si jamais la position n'est plus dans vein_grid
-## (ne devrait pas arriver, garde par securite).
+## Couleur d'un bloc de filon (metal/pierre precieuse) a une position
+## donnee, recuperee depuis MetalTypes/GemTypes via VeinMaterials. Couleur
+## neutre de secours si jamais la position n'est plus dans vein_grid (ne
+## devrait pas arriver, garde par securite).
 func _vein_color_for(pos: Vector3i) -> Color:
 	if not vein_grid.has(pos):
 		return Color(0.5, 0.5, 0.5)
@@ -163,51 +153,45 @@ func _vein_color_for(pos: Vector3i) -> Color:
 
 ## Construit un seul mesh avec une surface par materiau, en n'ajoutant une
 ## face que si le bloc voisin dans cette direction est vide (culling des
-## faces cachees). Sprint 10 : les faces verticales/du dessous (parois d'un
-## trou mine ou d'un mur) sont assombries par rapport aux faces du dessus,
-## pour bien distinguer un creux (paroi sombre visible) d'une simple
-## variation de couleur de surface. Sprint 21 : le dessus terre (bucket 0,
-## l'herbe) n'est plus un damier clair/fonce mais une couleur par climat/
-## saison + variation de bruit par case, appliquee via des couleurs de
-## sommet (voir _grass_color_for et _add_face). Le bucket 1 (ancien "terre
-## fonce" du damier) n'est plus utilise pour l'instant mais reste reserve
-## (evite de renumeroter tous les autres buckets). Sprint 23 : bucket 10
-## ajoute pour les filons (metal/pierre precieuse), colore par sommet comme
+## faces cachees). Les faces verticales/du dessous (parois d'un trou mine ou
+## d'un mur) sont assombries par rapport aux faces du dessus, pour bien
+## distinguer un creux (paroi sombre visible) d'une simple variation de
+## couleur de surface. Le dessus terre (bucket 0, l'herbe) et le dessus
+## pierre (bucket 2) utilisent une couleur par climat/saison + variation de
+## bruit par case, appliquee via des couleurs de sommet (voir
+## _grass_color_for/_stone_color_for et _add_face) plutot qu'un damier
+## clair/fonce ; les buckets 1 et 3 (ancien damier) restent reserves mais
+## inutilises, pour eviter de renumeroter les autres buckets. Le bucket 10
+## est reserve aux filons (metal/pierre precieuse), colore par sommet comme
 ## l'herbe, mais applique a toutes les faces du bloc (dessus ET parois) pour
-## que le filon reste visible/reperable une fois une paroi exposee. Sprint
-## 23bis : les blocs strictement au-dessus de view_level ne sont pas dessines
-## du tout, et leur "absence" compte comme une face exposee pour le bloc
-## juste en dessous (voir _is_face_exposed) - c'est ce qui revele une coupe
-## horizontale complete et coloree du niveau courant (comme un Dwarf Fortress),
-## au lieu de se contenter de deplacer la camera a l'interieur de la roche pleine.
-## Sprint 23ter : le dessus pierre (bucket 2) suit maintenant le meme principe
-## que l'herbe (bucket 0) - couleur uniforme (STONE_BASE) + bruit, au lieu de
-## l'ancien damier clair/fonce a deux tons (bucket 3 devient inutilise, meme
-## traitement que le bucket 1 pour l'herbe).
+## que le filon reste visible/reperable une fois une paroi exposee. Les
+## blocs strictement au-dessus de view_level ne sont pas dessines du tout,
+## et leur "absence" compte comme une face exposee pour le bloc juste en
+## dessous (voir _is_face_exposed) - c'est ce qui revele une coupe
+## horizontale complete et coloree du niveau courant, au lieu de se
+## contenter de deplacer la camera a l'interieur de la roche pleine.
 func _rebuild_mesh_body() -> void:
 	# 13 buckets : 0-3 = dessus terre/pierre (0=herbe couleur variable, 1=inutilise,
 	# 2=pierre couleur variable, 3=inutilise), 4-5 = dessus mur bois/pierre,
 	# 6-9 = parois assombries (terre, pierre, mur bois, mur pierre),
 	# 10 = filon (metal/pierre precieuse, toutes faces, couleur variable),
 	# 11 = bloc non decouvert (gris uniforme, voir "discovered"),
-	# 12 = eau (Sprint 36, couleur unie WATER_COLOR, toutes faces).
+	# 12 = eau (couleur unie WATER_COLOR, toutes faces).
 	var surface_tools: Array = []
 	for i in range(13):
 		var st := SurfaceTool.new()
 		st.begin(Mesh.PRIMITIVE_TRIANGLES)
 		surface_tools.append(st)
 
-	# Sprint 35 (2026-07-03) : la version precedente (map resize 100x100x50)
-	# bouclait deja sur "seulement" les colonnes visibles (y de 0 a view_level),
-	# mais ca representait encore jusqu'a 500 000 cases a view_level eleve -
-	# recalculees en entier a CHAQUE minage/construction/changement de niveau,
-	# ce qui restait tres lent (plusieurs secondes) sur la carte agrandie.
-	# Remplace maintenant par une passe "detaillee" bornee a l'ensemble
-	# "discovered" (voir plus haut) - petit au depart (juste la surface + les
-	# bords de carte), grandit lentement au fil du minage, jamais toute la
-	# grille. Le rendu (couleur/filon/exposition de face) est identique a
-	# avant pour tout ce qui est decouvert - seule la SOURCE de l'iteration
-	# change (un ensemble cible au lieu d'une triple boucle x/z/y).
+	# Boucler sur les colonnes visibles (y de 0 a view_level) representerait
+	# encore jusqu'a plusieurs centaines de milliers de cases a view_level
+	# eleve, recalculees en entier a CHAQUE minage/construction/changement de
+	# niveau. La passe "detaillee" ci-dessous est bornee a l'ensemble
+	# "discovered" (voir sa doc sur VoxelWorld.gd) - petit au depart (juste
+	# la surface + les bords de carte), grandit lentement au fil du minage,
+	# jamais toute la grille. Le rendu (couleur/filon/exposition de face)
+	# est identique pour tout ce qui est decouvert - seule la SOURCE de
+	# l'iteration change (un ensemble cible au lieu d'une triple boucle x/z/y).
 	for pos in discovered.keys():
 		if pos.y > view_level:
 			continue
@@ -215,22 +199,6 @@ func _rebuild_mesh_body() -> void:
 		if type == BlockType.EMPTY:
 			continue
 		for dir in DIRECTIONS:
-			# Sprint 55/59 (obsolete, supprime au Sprint 86, 2026-07-04) :
-			# ce code supprimait TOUTES les faces (sauf le dessous) de TOUT
-			# bloc d'eau situe dans une colonne de cascade - a l'epoque,
-			# cette colonne contenait un mur PLEIN de blocs d'eau empiles
-			# (le remplissage vertical du Sprint 38, voir generate_flat_terrain)
-			# qu'il fallait cacher au profit de la forme decorative. Ce
-			# remplissage vertical a ete supprime au Sprint 86 (bug "pas
-			# d'eau sous la cascade", violation de la regle C2) : il n'y a
-			# donc plus AUCUN mur de blocs a cacher - la SEULE eau restante
-			# dans une colonne de cascade est desormais le bassin lui-meme
-			# (2 blocs, tout en bas). Ce code masquait par erreur la surface
-			# meme du bassin (sa face du dessus, jamais distinguee du reste
-			# de la colonne) - exactement pourquoi le bassin semblait "en
-			# terre" malgre une vraie case d'eau dans les donnees (confirme
-			# par simulation : la donnee etait deja correcte, seul le rendu
-			# la cachait). Supprime entierement : plus rien a cacher ici.
 			if _is_face_exposed(pos + dir):
 				var idx := _bucket_for(pos, type, dir)
 				var face_color := Color.WHITE
@@ -240,18 +208,14 @@ func _rebuild_mesh_body() -> void:
 					face_color = _stone_color_for(pos)
 				elif idx == 10:
 					face_color = _vein_color_for(pos)
-				# 2026-07-06 (revue de code, paquet H, M28) : le compteur
-				# _detailed_faces (jamais lu/log ailleurs) est retire ici.
 				_add_face(surface_tools[idx], pos, dir, face_color)
 
-	# Sprint 35 : passe "non decouvert" - une seule face (le dessus) par
-	# colonne, grise, pour representer ce qui n'a jamais ete explore au
-	# niveau de coupe courant (remplace l'ancien rendu detaille/colore pour
-	# tout ce qui n'est pas dans "discovered"). Ne coute qu'une iteration sur
-	# les colonnes (WIDTH*DEPTH = 10 000), jamais sur la profondeur - c'est ce
-	# qui rend le changement de niveau rapide meme a view_level eleve.
-	# 2026-07-06 (revue de code, paquet H, M28) : le compteur _grey_faces
-	# (jamais lu/log ailleurs) est retire ici.
+	# Passe "non decouvert" - une seule face (le dessus) par colonne, grise,
+	# pour representer ce qui n'a jamais ete explore au niveau de coupe
+	# courant (pas de rendu detaille/colore pour tout ce qui n'est pas dans
+	# "discovered"). Ne coute qu'une iteration sur les colonnes
+	# (WIDTH*DEPTH), jamais sur la profondeur - c'est ce qui rend le
+	# changement de niveau rapide meme a view_level eleve.
 	for x in range(WIDTH):
 		for z in range(DEPTH):
 			var pos := Vector3i(x, view_level, z)
@@ -262,24 +226,19 @@ func _rebuild_mesh_body() -> void:
 				continue
 			_add_face(surface_tools[11], pos, Vector3i(0, 1, 0), UNDISCOVERED_COLOR)
 
-	# 2026-07-05 (revue de code, item F008) : le print() de diagnostic Sprint 35
-	# ci-dessus (confirmation manuelle "le trou n'apparait pas") est retire -
-	# role diagnostique termine, il ne servait plus qu'a spammer la console a
-	# chaque reconstruction du mesh.
-
-	# Sprint 24octies : materiau associe a chaque bucket (index dans
-	# surface_tools). Un SurfaceTool sans aucune face ajoutee ne produit PAS
-	# de surface lors du commit() (Godot ignore silencieusement les buckets
-	# vides), donc l'indice de surface reellement obtenu dans le mesh final
-	# peut etre INFERIEUR a l'indice du bucket d'origine des qu'un bucket
-	# precedent est vide (ex : aucun mur en bois sur la carte -> bucket 4
-	# vide -> tout ce qui suit se decale). Assigner les materiaux a des
-	# indices fixes 0-10 provoquait donc "Index p_idx out of bounds" des
-	# qu'un type de bloc etait absent de la carte (cas frequent sur une
-	# carte fraiche/petite). On mappe maintenant chaque bucket a son
-	# materiau via un dictionnaire, et on n'appelle surface_set_material
-	# qu'apres coup, sur le vrai indice de surface obtenu (compte a part,
-	# qui n'avance que quand un commit() a effectivement ajoute une surface).
+	# Materiau associe a chaque bucket (index dans surface_tools). Un
+	# SurfaceTool sans aucune face ajoutee ne produit PAS de surface lors du
+	# commit() (Godot ignore silencieusement les buckets vides), donc
+	# l'indice de surface reellement obtenu dans le mesh final peut etre
+	# INFERIEUR a l'indice du bucket d'origine des qu'un bucket precedent
+	# est vide (ex : aucun mur en bois sur la carte -> bucket 4 vide -> tout
+	# ce qui suit se decale). Assigner les materiaux a des indices fixes
+	# 0-10 provoquerait donc "Index p_idx out of bounds" des qu'un type de
+	# bloc est absent de la carte (cas frequent sur une carte fraiche/
+	# petite). Chaque bucket est donc mappe a son materiau via un
+	# dictionnaire, et surface_set_material n'est appele qu'apres coup, sur
+	# le vrai indice de surface obtenu (compte a part, qui n'avance que
+	# quand un commit() a effectivement ajoute une surface).
 	var bucket_materials: Dictionary = _get_bucket_materials()
 
 	var mesh := ArrayMesh.new()
@@ -288,11 +247,11 @@ func _rebuild_mesh_body() -> void:
 		var surfaces_before := mesh.get_surface_count()
 		st.commit(mesh)
 		if mesh.get_surface_count() > surfaces_before:
-			# 2026-07-06 (revue de code, paquet C, I34) : .get() avec repli sur
-			# StandardMaterial3D.new() (materiau neutre) plutot qu'un acces
-			# direct - si _get_bucket_materials() ne couvre pas ce bucket_idx,
-			# on evite un crash "Index p_idx out of bounds" au profit d'un
-			# rendu degrade (couleur par defaut) et d'un avertissement.
+			# .get() avec repli sur StandardMaterial3D.new() (materiau
+			# neutre) plutot qu'un acces direct - si _get_bucket_materials()
+			# ne couvre pas ce bucket_idx, on evite un crash "Index p_idx
+			# out of bounds" au profit d'un rendu degrade (couleur par
+			# defaut) et d'un avertissement.
 			var mat: Material = bucket_materials.get(bucket_idx)
 			if mat == null:
 				push_warning("VoxelMeshBuilder: aucun materiau pour le bucket %d, materiau par defaut utilise" % bucket_idx)
@@ -303,16 +262,13 @@ func _rebuild_mesh_body() -> void:
 	vein_system.rebuild_pepites(view_level, discovered, Callable(self, "_is_face_exposed"), DIRECTIONS)
 
 
-## Determine dans quelle surface (materiau + face) placer un bloc donne.
-## Sprint 21 : le dessus terre (herbe) n'utilise plus qu'un seul bucket (0,
-## couleur variable par sommet), le damier clair/fonce est retire pour ce cas.
-## Sprint 23ter : meme traitement pour le dessus pierre (bucket 2, couleur
-## variable) - retire de l'ancien damier clair/fonce a deux tons, pour que
-## chaque niveau ait un materiau de pierre uniforme (les filons restant la
-## seule exception de couleur, voir plus bas).
-## Sprint 23 : un bloc de pierre qui est un filon (vein_grid) passe sur le
+## Determine dans quelle surface (materiau + face) placer un bloc donne. Le
+## dessus terre (herbe, bucket 0) et le dessus pierre (bucket 2) utilisent
+## chacun un seul bucket a couleur variable par sommet (pas de damier clair/
+## fonce). Un bloc de pierre qui est un filon (vein_grid) passe sur le
 ## bucket 10 (couleur variable), sur toutes ses faces (dessus ET parois),
-## avant meme de regarder le type - un filon reste un filon peu importe la face.
+## avant meme de regarder le type - un filon reste un filon peu importe la
+## face.
 func _bucket_for(pos: Vector3i, type: int, dir: Vector3i) -> int:
 	var is_top := dir == Vector3i(0, 1, 0)
 
@@ -353,16 +309,14 @@ func _darken(color: Color) -> Color:
 	return Color(color.r * 0.55, color.g * 0.55, color.b * 0.55, color.a)
 
 
-## 2026-07-05 (revue de code, item F013) : les 13 StandardMaterial3D etaient
-## recrees a chaque rebuild_mesh() (donc a chaque minage/construction), alors
-## que seul le bucket 12 (eau/glace) depend d'un etat qui change reellement
-## (is_frozen, voir TemperatureSystem.gd) - les 12 autres sont des couleurs
-## fixes. Construits une seule fois puis mis en cache ; seule la couleur du
-## bucket 12 est mise a jour a chaque appel.
+## Les 13 StandardMaterial3D ne sont pas recrees a chaque rebuild_mesh()
+## (donc a chaque minage/construction) : seul le bucket 12 (eau/glace)
+## depend d'un etat qui change reellement (is_frozen, voir
+## TemperatureSystem.gd) - les 12 autres sont des couleurs fixes. Construits
+## une seule fois puis mis en cache ; seule la couleur du bucket 12 est mise
+## a jour a chaque appel.
 func _get_bucket_materials() -> Dictionary:
 	if _bucket_materials.is_empty():
-		# Sprint 13 : palette plus vive/saturee (direction "BD"), sur le meme
-		# principe qu'avant (damier clair/fonce + parois assombries)
 		var dirt_dark := Color(0.58, 0.34, 0.10)  # garde pour bucket 6 (paroi terre)
 		var stone_dark := Color(0.48, 0.50, 0.56)  # garde pour bucket 3 (inutilise) et bucket 7 (paroi)
 		var wood_wall := Color(0.70, 0.46, 0.16)
@@ -379,25 +333,23 @@ func _get_bucket_materials() -> Dictionary:
 			8: _make_material(_darken(wood_wall)),
 			9: _make_material(_darken(stone_wall)),
 			10: _make_vertex_color_material(),
-			11: _make_material(UNDISCOVERED_COLOR),  # Sprint 35 : gris uniforme, pas besoin de couleur par sommet
+			11: _make_material(UNDISCOVERED_COLOR),  # gris uniforme, pas besoin de couleur par sommet
 			12: _make_material(WATER_COLOR),
 		}
-	# Sprint 37 (backlog Phase 1 item 2) : l'eau devient de la glace (couleur
-	# claire) quand is_frozen est vrai - seule couleur qui doit rester a jour
-	# a chaque appel, modifiee en place plutot que de recreer le materiau.
+	# L'eau devient de la glace (couleur claire) quand is_frozen est vrai -
+	# seule couleur qui doit rester a jour a chaque appel, modifiee en place
+	# plutot que de recreer le materiau.
 	_bucket_materials[12].albedo_color = ICE_COLOR if is_frozen else WATER_COLOR
 	return _bucket_materials
 
 
-## Cree un materiau simple, dans la couleur donnee.
-## 2026-07-02 : passe de SHADING_MODE_UNSHADED a l'eclairage reel (mode par
-## defaut de StandardMaterial3D) pour que le terrain reagisse enfin au cycle
-## jour/nuit (DayNightCycle.gd) - un materiau "unshaded" ignore totalement
-## la lumiere/les ombres, ce qui rendait la carte aussi lumineuse en pleine
-## nuit qu'en plein jour et empechait toute ombre portee de s'afficher.
-## roughness=1/metallic=0 evite les reflets speculaires pour garder un rendu
-## plat/mat coherent avec le style low-poly du jeu, tout en recevant
-## lumiere directionnelle + ombres + lumiere ambiante.
+## Cree un materiau simple, dans la couleur donnee. Eclairage reel (mode par
+## defaut de StandardMaterial3D, pas SHADING_MODE_UNSHADED) pour que le
+## terrain reagisse au cycle jour/nuit (DayNightCycle.gd) - un materiau
+## "unshaded" ignore totalement la lumiere/les ombres. roughness=1/
+## metallic=0 evite les reflets speculaires pour garder un rendu plat/mat
+## coherent avec le style low-poly du jeu, tout en recevant lumiere
+## directionnelle + ombres + lumiere ambiante.
 func _make_material(color: Color) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
@@ -407,10 +359,10 @@ func _make_material(color: Color) -> StandardMaterial3D:
 	return mat
 
 
-## Sprint 21 : materiau pour le bucket 0 (herbe), qui lit la couleur par
-## sommet (definie via SurfaceTool.set_color dans _add_face) au lieu d'une
-## seule couleur fixe - c'est ce qui permet la variation continue par case.
-## 2026-07-02 : meme passage a l'eclairage reel que _make_material ci-dessus.
+## Materiau pour le bucket 0 (herbe), qui lit la couleur par sommet (definie
+## via SurfaceTool.set_color dans _add_face) au lieu d'une seule couleur
+## fixe - c'est ce qui permet la variation continue par case. Meme passage
+## a l'eclairage reel que _make_material ci-dessus.
 func _make_vertex_color_material() -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color.WHITE
@@ -422,9 +374,9 @@ func _make_vertex_color_material() -> StandardMaterial3D:
 
 
 ## Ajoute un quad (2 triangles) sur la face "dir" du bloc a la position "pos".
-## face_color : couleur de sommet (Sprint 21, utilisee uniquement par le
-## bucket "herbe"/"pierre"/"filon" dont le materiau lit vertex_color_use_as_albedo ;
-## ignoree par les autres materiaux, donc sans effet pour eux).
+## face_color : couleur de sommet, utilisee uniquement par le bucket
+## "herbe"/"pierre"/"filon" dont le materiau lit vertex_color_use_as_albedo ;
+## ignoree par les autres materiaux, donc sans effet pour eux.
 func _add_face(st: SurfaceTool, pos: Vector3i, dir: Vector3i, face_color: Color = Color.WHITE) -> void:
 	var p := Vector3(pos.x, pos.y, pos.z)
 	var verts: Array

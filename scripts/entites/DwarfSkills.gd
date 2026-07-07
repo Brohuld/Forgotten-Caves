@@ -1,15 +1,11 @@
 extends RefCounted
-## Extrait de Dwarf.gd le 2026-07-05 (revue de code, dette d'architecture A1 :
-## separation presentation/regles). Regroupe la logique de gestion pure des
-## caracteristiques/competences des nains - aucune dependance a la
-## presentation (mesh/animation/Node3D). Suit le meme pattern que les
-## companions RefCounted de VoxelWorld.gd (VoxelVeins/VoxelMeshBuilder/
-## VoxelHydrology) : pas de reference typee vers Dwarf.gd lui-meme, les
-## donnees (skill_levels/skill_xp/current_task/etc.) sont passees en
-## parametres plutot que stockees ici - Dwarf.gd garde la propriete de ses
-## propres champs, cette classe ne fait que le calcul. Ca evite tout
-## changement d'API externe : CharacterSheetUI.gd continue de lire
-## dwarf.skill_levels/dwarf.force/etc. sans aucune modification.
+## Logique de gestion pure des caracteristiques/competences des nains -
+## aucune dependance a la presentation (mesh/animation/Node3D). Suit le
+## meme pattern que les companions RefCounted de VoxelWorld.gd (VoxelVeins/
+## VoxelMeshBuilder/VoxelHydrology) : pas de reference typee vers Dwarf.gd
+## lui-meme, les donnees (skill_levels/skill_xp/current_task/etc.) sont
+## passees en parametres plutot que stockees ici - Dwarf.gd garde la
+## propriete de ses propres champs, cette classe ne fait que le calcul.
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
 
@@ -24,12 +20,11 @@ const SKILL_BONUS_YIELD_PER_LEVEL := 0.05  # par niveau : +5% de chance de resso
 const SKILL_BONUS_YIELD_MAX := 0.6         # plafond de la chance de bonus
 
 
-## Genere les caracteristiques de base du nain (Sprint 12), retournees en
-## Dictionary (force/agilite/constitution/intelligence/beaute/bonheur) -
-## purement informatif pour l'instant, aucun effet sur le gameplay.
-## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie
-## "nains_competences" au lieu de randi_range()/randf() globaux (idem dans
-## _distribute_skill_points/roll_bonus_yield ci-dessous) - voir GameRandom.gd.
+## Genere les caracteristiques de base du nain, retournees en Dictionary
+## (force/agilite/constitution/intelligence/beaute/bonheur) - purement
+## informatif pour l'instant, aucun effet sur le gameplay. Flux GameRandom
+## dedie "nains_competences" (voir GameRandom.gd) pour rester deterministe
+## a graine egale (idem dans _distribute_skill_points/roll_bonus_yield).
 func generate_characteristics() -> Dictionary:
 	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_competences")
 	return {
@@ -42,7 +37,7 @@ func generate_characteristics() -> Dictionary:
 	}
 
 
-## --- Competences (Sprint 18) ---
+## --- Competences ---
 
 ## Repartit un niveau de depart aleatoire par competence, a "budget" constant
 ## (total = nb de competences * SKILL_BUDGET_PER_SKILL) : un nain fort dans
@@ -108,21 +103,14 @@ func gain_xp(skill_levels: Dictionary, skill_xp: Dictionary, skill_id: String, a
 		return
 	skill_xp[skill_id] += amount
 	var guard: int = 0
-	# 2026-07-06 (revue de code, paquet H, M20) : xp_needed_for_level() se
-	# recalculait deux fois par iteration (condition + corps) pour la meme
-	# valeur de skill_levels[skill_id] - stockee une seule fois ici.
 	var needed: float = xp_needed_for_level(skill_levels[skill_id])
 	while skill_xp[skill_id] >= needed and guard < 100:
 		skill_xp[skill_id] -= needed
 		skill_levels[skill_id] += 1
 		needed = xp_needed_for_level(skill_levels[skill_id])
-		# 2026-07-06 (revue de code, paquet D, M21) : clarifie - CE print() est
-		# volontaire, pas un reliquat de mise au point. Il n'existe aujourd'hui
-		# aucune notification visuelle en jeu pour une montee de niveau ; ce
-		# message console reste donc le seul retour disponible sur cet
-		# evenement. A retirer ou remplacer le jour ou une vraie UI de
-		# notification existe (contrairement aux autres print() de ce paquet,
-		# qui etaient de la pure instrumentation de perf/debug).
+		# Volontaire : aucune notification visuelle en jeu n'existe pour une
+		# montee de niveau, ce message console reste le seul retour
+		# disponible sur cet evenement.
 		print("%s : %s passe niveau %d" % [dwarf_name, SkillDefs.display_name(skill_id), skill_levels[skill_id]])
 		guard += 1
 

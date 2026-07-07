@@ -1,129 +1,122 @@
 extends Node3D
-## Sprint 8 : place quelques buissons a baies au hasard sur la carte,
-## pour que le nain puisse se nourrir quand il a faim.
+## Place des buissons/plantes a baies au hasard sur la carte (densite par
+## 1000 cases, voir bush_density_per_1000_tiles), a distance de laquelle les
+## nains se nourrissent. Deux visuels distincts selon BerryTypes.categorie :
+## "buisson" (myrtille/groseille/cassis) = boule de feuillage + baies autour ;
+## "plante" (fraise/framboise) = touffe de feuilles basse au ras du sol, baies
+## nichees dedans.
 ##
-## Sprint 24quater : 4 types de baies (BerryTypes.gd : groseille, myrtille,
-## fraise, framboise) au lieu d'un seul type generique. Les buissons sont
-## maintenant recoltes en inventaire via l'action "Cueillir" au lieu d'etre
-## manges directement (voir Dwarf.gd/_complete_task pour la recolte,
-## generique avec les arbres fruitiers - memes metadonnees fruit_resource/
-## fruits_left et meme convention de nommage Fruit_%d, voir Forest.gd). Le
-## buisson reste en place une fois vide (pas de disparition), comme un arbre
-## fruitier entierement cueilli.
+## Les baies sont recoltees en inventaire via l'action "Cueillir" (memes
+## metadonnees fruit_resource/fruits_left et convention de nommage Fruit_%d
+## que les arbres fruitiers, voir Forest.gd et Dwarf.gd pour la recolte). Le
+## buisson reste en place une fois vide (pas de disparition).
 ##
-## Sprint 24sexies : deux visuels distincts selon BerryTypes.categorie -
-## "buisson" (myrtille/groseille/cassis) garde la forme boule + baies autour ;
-## "plante" (fraise/framboise) est une touffe de feuilles basse au ras du sol,
-## avec les baies nichees dedans. Signale par l'utilisateur : les buissons et
-## les plantes basses ne devraient pas avoir le meme sprite.
-##
-## Sprint 34 (2026-07-03, perf map resize) : meme technique que Forest.gd
-## (voir ses commentaires pour le detail) - le corps du buisson/les feuilles
-## de la plante deviennent des instances de MultiMeshInstance3D partages
-## (construction temporaire inchangee, recolte du global_transform + couleur
-## + taille, voir _harvest_and_clear), le noeud "bush" restant lui (position/
-## groupe/metadonnees, utilise pour la cueillette). Les baies ("Fruit_%d")
-## restent des noeuds individuels comme avant - recoltees une par une, tres
-## peu nombreuses (4 par buisson), pas touchees par cette refonte.
+## Le corps du buisson/les feuilles de la plante sont construits comme des
+## MeshInstance3D temporaires puis recoltes dans des MultiMeshInstance3D
+## partages (voir _harvest_and_clear) - seul le noeud "bush" (position/
+## groupe/metadonnees, utilise pour la cueillette) et les baies ("Fruit_%d",
+## peu nombreuses, recoltees une par une) restent des noeuds individuels.
 
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
-## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
-## _ready() ci-dessous (grid_width/grid_depth dupliques ci-dessous).
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
-## Sprint 37bis (2026-07-03, correction bug "empecher les arbres et buissons
-## dans l'eau") - voir la meme correction dans Forest.gd/_pick_dry_position.
 @onready var voxel_world: Node3D = %VoxelWorld
 
-@export var grid_width: int = 100  # 2026-07-03 : map resize (etait 20)
-@export var grid_depth: int = 100  # 2026-07-03 : map resize (etait 20)
-@export var ground_level: float = 50.0  # sommet de la carte (HEIGHT, 2026-07-03 : map resize, etait 30)
-@export var size_multiplier: float = 0.9  # 2026-07-02 : buissons/plantes reduits de 10% (jauges nains/arbres/buissons rejustees)
+const grid_width := VoxelWorldScript.WIDTH
+const grid_depth := VoxelWorldScript.DEPTH
+const ground_level := float(VoxelWorldScript.HEIGHT)  # sommet de la carte
+@export var size_multiplier: float = 0.9
 const BERRIES_PER_BUSH := 4  # categorie "plante" (fraise/framboise)
 
-# 2026-07-05 (signale par Francois : "plus de baies par buisson", categorie
-# "buisson" - myrtille/groseille/cassis) : nombre distinct de BERRIES_PER_BUSH
-# pour ne pas affecter les plantes (fraise/framboise), qui restent a 4.
+## Nombre de baies pour la categorie "buisson" (myrtille/groseille/cassis),
+## distinct de BERRIES_PER_BUSH pour que les deux categories restent
+## reglables independamment.
 const BUISSON_BERRIES_COUNT := 10
 
-# 2026-07-05 (signale par Francois : la sphere du corps du buisson "flotte" -
-# tangente au sol en un seul point, ce qui parait detache/pas pose) : sphere
-# tronquee, centre remonte a la moitie du rayon pour que 3/4 de sa hauteur
-# reste visible au-dessus du sol et que le 1/4 du bas soit enterre (base au
-# niveau du sol, pas un simple point de contact).
+## radial_segments/rings par defaut de Godot (64/32) sont concus pour un gros
+## objet unique bien visible - beaucoup trop detailles pour les petites
+## spheres de ce fichier (corps de buisson, baies), qui se comptent par
+## milliers sur une grande carte. Voir _place_berry pour le detail.
+const BERRY_SPHERE_RADIAL_SEGMENTS := 8
+const BERRY_SPHERE_RINGS := 5
+
+## Le corps du buisson est une sphere tronquee : centre remonte a la moitie
+## du rayon pour que 3/4 de sa hauteur reste visible au-dessus du sol et que
+## le 1/4 du bas soit enterre (base posee au niveau du sol, pas un simple
+## point de tangence).
 const BUSH_BODY_RADIUS := 0.4
 const BUSH_BODY_CENTER_Y := BUSH_BODY_RADIUS * 0.5
 
 
-## Nombre maximal de baies pour une categorie donnee ("buisson"/"plante") -
-## utilise partout ou BERRIES_PER_BUSH etait lu en dur avant le 2026-07-05,
-## pour que "plus de baies" (buisson) n'affecte pas les plantes (fraise/
-## framboise, restees a BERRIES_PER_BUSH).
+## Nombre maximal de baies pour une categorie donnee ("buisson"/"plante").
 func _berries_count_for(categorie: String) -> int:
 	if categorie == "plante":
 		return BERRIES_PER_BUSH
 	return BUISSON_BERRIES_COUNT
 
 
-# 2026-07-03 (map resize) : remplace l'ancien bush_count fixe (8, sur la
-# carte 20x20=400 cases d'origine) par une densite (nombre par 1000 cases),
-# meme principe que Forest.tree_density_per_1000_tiles - garde la meme
-# densite qu'avant (8/400*1000 = 20) quelle que soit la taille de la carte.
+## Densite exprimee par 1000 cases plutot qu'un nombre fixe, pour rester
+## coherente quelle que soit la taille de la carte.
 @export var bush_density_per_1000_tiles: float = 20.0
 
 ## Un type par "piece" decorative (hors baies, qui restent individuelles).
 enum PartType { BUSH_BODY, PLANT_LEAF }
 
-## 2026-07-06 (meme correctif que Forest.gd, voir ses commentaires pour le
-## detail complet) : cacher une instance de MultiMesh avec une echelle
-## Vector3.ZERO PILE (Basis totalement degenere) peut corrompre le rendu de
-## TOUT le MultiMesh concerne avec un materiau a eclairage reel - jamais
-## reproduit ici (pas encore observe sur les buissons), mais meme code a
-## risque (voir update_view_level ci-dessous) - corrige preventivement.
+## Cacher une instance de MultiMesh avec une echelle Vector3.ZERO pile (Basis
+## totalement degenere) peut corrompre le rendu de tout le MultiMesh sous un
+## materiau a eclairage reel - une echelle non nulle mais infime evite ce
+## risque (voir update_view_level).
 const HIDDEN_INSTANCE_SCALE := 0.0001
 
 var _mmi: Dictionary = {}              # PartType -> MultiMeshInstance3D
 var _pending_xforms: Dictionary = {}   # PartType -> Array[Transform3D]
 var _pending_colors: Dictionary = {}   # PartType -> Array[Color] (couleur de BASE, jamais reecrite - voir apply_season_tint)
 
-# 2026-07-05 (cycle des saisons, hiver : "disparition totale des fruits...
-# plus aucune recolte possible en hiver") - mis a jour par SeasonSystem.gd
-# (voir set_winter_active) : empeche _regrow_one_berry de faire regermer une
-# baie (et donc de recreer un noeud Fruit_ visible/recoltable) pendant que
-# SeasonSystem.gd a deja mis fruits_left a 0 pour toute la duree de l'hiver -
-# sans cette garde, le throttle de repousse continuerait d'incrementer
-# fruits_left independamment de cette regle.
+## Mis a jour par SeasonSystem.gd (voir set_winter_active) : empeche
+## _regrow_one_berry de faire regermer une baie pendant que SeasonSystem.gd a
+## deja mis fruits_left a 0 pour toute la duree de l'hiver.
 var _winter_active: bool = false
 
 
+## Nombre de buissons construits avant de rendre la main au moteur (await
+## process_frame) - generer toute la carte en un seul appel synchrone de
+## _ready() bloquerait le rendu sans retour visuel pendant toute la duree.
+## Chaque await coute au moins une frame complete (16-30ms) : une valeur trop
+## basse (25) multiplie inutilement le nombre de pauses et degrade le temps
+## de chargement total - releve a 150, meme raisonnement que Forest.BATCH_SIZE.
+const BATCH_SIZE := 150
+
+## Le decoupage par paquets (await) casse la garantie implicite de Godot
+## comme quoi le _ready() d'un noeud precedent dans la scene finit toujours
+## avant celui du noeud suivant. Les appelants qui dependent de la
+## generation terminee (SeasonSystem.gd) doivent attendre explicitement ce
+## signal avant leur premier appel a apply_season_tint().
+signal generation_finished
+var generation_done: bool = false
+
 func _ready() -> void:
-	# 2026-07-05 (revue de code, item F010) : grid_width/grid_depth/ground_level
-	# dupliques en dur (aucune garde-fou automatique auparavant) - avertissement
-	# si desynchronise de VoxelWorld.gd, sans changer le comportement.
-	if grid_width != VoxelWorldScript.WIDTH or grid_depth != VoxelWorldScript.DEPTH or not is_equal_approx(ground_level, float(VoxelWorldScript.HEIGHT)):
-		push_warning("BerryBushes.grid_width/grid_depth/ground_level (%d/%d/%.1f) desynchronise de VoxelWorld (%d/%d/%d)" % [grid_width, grid_depth, ground_level, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, VoxelWorldScript.HEIGHT])
-	# 2026-07-05 (correctif revue de code C4, meme cause que C2-C3/C5-C6/I9) :
-	# randomize() retire - reinitialisait le generateur aleatoire global de
-	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
-	# graine (seed(active_seed)). BerryBushes.gd est declare apres VoxelWorld
-	# dans Main.tscn : le generateur global est deja correctement initialise
-	# ici - rend desormais la position des buissons/baies reproductible par
-	# graine.
+	if OS.is_debug_build():
+		print("[Perf] BerryBushes (buissons) : debut a %.1f s depuis le debut de la scene" % ((Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0))
 	_build_shared_meshes()
 	var tile_count: float = float(grid_width * grid_depth)
 	var bush_count: int = int(round(bush_density_per_1000_tiles * tile_count / 1000.0))
 	for i in range(bush_count):
 		_spawn_bush()
+		if (i + 1) % BATCH_SIZE == 0:
+			await get_tree().process_frame
 	_apply_pending_instances()
+	if OS.is_debug_build():
+		print("[Perf] BerryBushes (buissons) : fin (%d buissons) a %.1f s depuis le debut de la scene" % [bush_count, (Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0])
+	generation_done = true
+	generation_finished.emit()
 
 
-## Sprint 37 (backlog Phase 1 item 16, "repousse des buissons") : contrairement
-## aux arbres, un buisson cueilli ne disparait jamais (voir note en tete de
-## fichier) - la "repousse" ici consiste donc a faire regermer des baies au
-## fil du temps sur les buissons partiellement ou completement vides, jusqu'a
-## revenir a BERRIES_PER_BUSH. Une seule baie repousse a la fois (throttle),
-## choisie au hasard parmi les buissons non pleins.
+## Contrairement aux arbres, un buisson cueilli ne disparait jamais - la
+## "repousse" consiste donc a faire regermer des baies au fil du temps sur
+## les buissons partiellement ou completement vides, jusqu'a revenir au
+## nombre maximal de la categorie. Une seule baie repousse a la fois
+## (throttle), choisie au hasard parmi les buissons non pleins.
 @export var berry_regrow_interval_seconds: float = 25.0
 var _berry_regrow_timer: float = 0.0
 
@@ -135,8 +128,8 @@ func _process(delta: float) -> void:
 	_regrow_one_berry()
 
 
-## 2026-07-05 (cycle des saisons) : appele par SeasonSystem.gd a chaque
-## changement de saison (is_winter = season_id == "hiver").
+## Appele par SeasonSystem.gd a chaque changement de saison (active = saison
+## hiver).
 func set_winter_active(active: bool) -> void:
 	_winter_active = active
 
@@ -160,37 +153,37 @@ func _regrow_one_berry() -> void:
 
 
 ## Reconstruit visuellement UNE baie ("Fruit_%d") disparue - meme formule de
-## position/taille que _build_bush_visual/_build_plant_visual (voir plus bas),
-## pour que la baie qui repousse soit indiscernable d'une baie d'origine.
+## position/taille que le placement initial (voir _place_berry), pour que la
+## baie qui repousse soit indiscernable d'une baie d'origine.
 func _build_one_berry(bush: Node3D, index: int) -> void:
 	var fruit_resource_id: String = String(bush.get_meta("fruit_resource"))
 	var berry_type: Dictionary = BerryTypes.get_type(fruit_resource_id)
 	if berry_type.is_empty():
-		# 2026-07-06 (revue de code, paquet C, M47) : un fruit_resource
-		# corrompu/invalide (id absent de BerryTypes) passait inapercu -
-		# avertissement pour le reperer (repousse silencieusement ignoree).
 		push_warning("BerryBushes: fruit_resource '%s' inconnu de BerryTypes, repousse de baie ignoree" % fruit_resource_id)
 		return
 	var categorie: String = String(bush.get_meta("categorie", "buisson"))
 	_place_berry(bush, index, categorie, berry_type)
 
 
-## 2026-07-05 (revue de code, item F024) : positionnement d'une baie factorise
-## ici - etait duplique a l'identique dans _build_one_berry/_build_bush_visual/
-## _build_plant_visual (3 occurrences, seuil DRY depasse), risque de divergence
-## si l'une des copies etait corrigee sans les 2 autres. Meme formule qu'avant :
-## touffe basse et resserree pour une "plante", couronne en hauteur pour un
-## "buisson".
+## Positionne une baie sur un buisson/plante. "plante" : touffe basse et
+## resserree pres du sol. "buisson" : baies reparties sur toute la sphere du
+## corps (azimut + elevation), ancrees a sa surface.
 func _place_berry(bush: Node3D, index: int, categorie: String, berry_type: Dictionary) -> void:
 	var berry := MeshInstance3D.new()
 	var berry_mesh := SphereMesh.new()
+	# Chaque baie est un MeshInstance3D INDIVIDUEL (pas de MultiMesh possible
+	# ici, voir _build_one_berry : doit pouvoir disparaitre une par une a la
+	# cueillette) - avec potentiellement plusieurs baies par buisson et des
+	# milliers de buissons sur une grande carte, garder les segments par
+	# defaut de Godot (64/32, penses pour un objet unique bien visible)
+	# multiplie ce cout par des dizaines de milliers d'instances. Reduit ici
+	# a une valeur largement suffisante pour une si petite sphere vue de
+	# loin - meme principe que TREE_SPHERE_RADIAL_SEGMENTS/_RINGS dans
+	# Forest.gd.
+	berry_mesh.radial_segments = BERRY_SPHERE_RADIAL_SEGMENTS
+	berry_mesh.rings = BERRY_SPHERE_RINGS
 	var pos: Vector3
 	if categorie == "plante":
-		# 2026-07-05 (demande explicite Francois, "agrandir les fraises et les
-		# framboises") : rayon/hauteur doubles (etaient 0.05/0.10, jugees trop
-		# petites pour bien lire la forme du fruit) - dispersion (dist) un peu
-		# elargie en consequence pour eviter que des baies plus grosses ne se
-		# chevauchent trop autour de la meme plante.
 		berry_mesh.radius = 0.10
 		berry_mesh.height = 0.20
 		var angle: float = index * TAU / float(BERRIES_PER_BUSH) + randf_range(-0.3, 0.3)
@@ -199,13 +192,6 @@ func _place_berry(bush: Node3D, index: int, categorie: String, berry_type: Dicti
 	else:
 		berry_mesh.radius = 0.055
 		berry_mesh.height = 0.11
-		# 2026-07-05 (3e passe, meme jour - "reduire la taille des baies" + "plus
-		# de baies par buisson" + "placement aleatoire tout autour, hauteur et
-		# angle") : baies retrecies (etaient 0.08/0.16), comptees via
-		# BUISSON_BERRIES_COUNT (10, au lieu de BERRIES_PER_BUSH reserve aux
-		# plantes), ancrees a la surface reelle du corps (rayon x 1.05-1.2),
-		# direction 3D (azimut + elevation) sur la sphere complete (-90..+90,
-		# avant -50..+40) pour rester visible a toute hauteur/angle.
 		var angle2: float = index * TAU / float(BUISSON_BERRIES_COUNT) + randf_range(-0.15, 0.15)
 		var elev2: float = randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
 		var dist2: float = BUSH_BODY_RADIUS * randf_range(1.05, 1.2)
@@ -223,7 +209,6 @@ func _place_berry(bush: Node3D, index: int, categorie: String, berry_type: Dicti
 	bush.add_child(berry)
 
 
-## Sprint 34 : meme principe que Forest.gd/_build_shared_meshes.
 func _build_shared_meshes() -> void:
 	_mmi[PartType.BUSH_BODY] = _make_mmi(_make_sphere_mesh(1.0))
 	_mmi[PartType.PLANT_LEAF] = _make_mmi(_make_box_mesh(Vector3.ONE))
@@ -253,6 +238,11 @@ func _make_sphere_mesh(radius: float) -> SphereMesh:
 	var mesh := SphereMesh.new()
 	mesh.radius = radius
 	mesh.height = radius * 2.0
+	# Voir commentaire de _place_berry/BERRY_SPHERE_RADIAL_SEGMENTS - meme
+	# raison ici (modele partage via MultiMesh, instancie pour chaque
+	# buisson de la carte).
+	mesh.radial_segments = BERRY_SPHERE_RADIAL_SEGMENTS
+	mesh.rings = BERRY_SPHERE_RINGS
 	return mesh
 
 
@@ -262,8 +252,7 @@ func _make_box_mesh(size: Vector3) -> BoxMesh:
 	return mesh
 
 
-## Sprint 37bis : tire une position au hasard en rejetant l'eau (voir
-## VoxelWorld.is_water) - meme logique que Forest.gd/_pick_dry_position.
+## Tire une position au hasard en rejetant l'eau (voir VoxelWorld.is_water).
 func _pick_dry_position() -> Vector2:
 	var x := randf_range(2.0, float(grid_width - 2))
 	var z := randf_range(2.0, float(grid_depth - 2))
@@ -275,8 +264,7 @@ func _pick_dry_position() -> Vector2:
 	return Vector2(x, z)
 
 
-## Sprint 38 (reliefs) : hauteur du sol (sommet de colonne + 1) a une position
-## XZ donnee - meme principe que Dwarf.gd/_ground_y_at.
+## Hauteur du sol (sommet de colonne + 1) a une position XZ donnee.
 func _ground_y_at(x: float, z: float) -> float:
 	if voxel_world == null:
 		return ground_level
@@ -288,12 +276,9 @@ func _ground_y_at(x: float, z: float) -> float:
 
 func _spawn_bush() -> void:
 	var pos := _pick_dry_position()
-	# 2026-07-06 (demande explicite Francois) : centre le buisson sur son bloc
-	# de grille (case entiere) plutot que sur une position flottante
-	# quelconque a l'interieur - un buisson decale dans sa case causait des
-	# problemes lors de la cueillette.
-	# 2026-07-06 (correctif parse error) : type explicite ("float"), :=
-	# echouait a inferer le type de retour de floor() dans ce contexte.
+	# Centre sur son bloc de grille (case entiere) plutot que sur une
+	# position flottante quelconque a l'interieur, pour rester coherent avec
+	# la cueillette.
 	var x: float = floor(pos.x) + 0.5
 	var z: float = floor(pos.y) + 0.5
 	var berry_type: Dictionary = BerryTypes.random_type()
@@ -302,14 +287,12 @@ func _spawn_bush() -> void:
 	bush.name = "Bush_%d" % get_child_count()
 	bush.position = Vector3(x, _ground_y_at(x, z), z)
 	bush.add_to_group("cueillette")
-	bush.add_to_group("bushes")  # Sprint 85 : groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
+	bush.add_to_group("bushes")  # groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
 	var categorie: String = berry_type.get("categorie", "buisson")
 	bush.set_meta("fruit_resource", berry_type["id"])
 	bush.set_meta("fruits_left", _berries_count_for(categorie))
 	bush.set_meta("species_name", berry_type["nom"])
-	# Sprint 37 (backlog Phase 1 item 16) : necessaire pour reconstruire une
-	# baie au bon endroit quand elle repousse (voir _build_one_berry).
-	bush.set_meta("categorie", categorie)
+	bush.set_meta("categorie", categorie)  # necessaire pour reconstruire une baie au bon endroit quand elle repousse (voir _build_one_berry)
 	bush.scale = Vector3.ONE * size_multiplier  # meme mecanisme que Forest.gd/tree.scale, ancre au sol
 	add_child(bush)
 
@@ -318,23 +301,20 @@ func _spawn_bush() -> void:
 	else:
 		_build_bush_visual(bush, berry_type)
 
-	# Sprint 34 : recolte le corps/les feuilles temporaires (voir
-	# _build_bush_visual/_build_plant_visual) dans les MultiMesh partages,
+	# Recolte le corps/les feuilles temporaires dans les MultiMesh partages,
 	# et les supprime - seules les baies ("Fruit_%d") restent enfants de "bush".
 	_harvest_and_clear(bush)
 
 
 ## Visuel "buisson" (myrtille/groseille/cassis) : boule de feuillage + baies
 ## disposees autour, a hauteur de genou.
-## 2026-07-05 (signale par Francois : "sphere flottante, il faudrait une base
-## au niveau du sol") : centre remonte a BUSH_BODY_CENTER_Y (voir sa doc plus
-## haut) au lieu de "radius" - la sphere s'enfonce desormais de 1/4 de sa
-## hauteur dans le sol au lieu d'y etre tangente en un seul point.
 func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	var body := MeshInstance3D.new()
 	var body_mesh := SphereMesh.new()
 	body_mesh.radius = BUSH_BODY_RADIUS
 	body_mesh.height = BUSH_BODY_RADIUS * 2.0
+	body_mesh.radial_segments = BERRY_SPHERE_RADIAL_SEGMENTS
+	body_mesh.rings = BERRY_SPHERE_RINGS
 	body.mesh = body_mesh
 	body.position.y = BUSH_BODY_CENTER_Y
 	var body_color := Color(0.25, 0.45, 0.15)
@@ -344,15 +324,13 @@ func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	_tag_part(body, PartType.BUSH_BODY, body_color, Vector3.ONE * body_mesh.radius)
 	bush.add_child(body)
 
-	# 2026-07-05 (revue de code, item F024) : positionnement des baies
-	# factorise dans _place_berry (voir sa doc plus haut).
 	for i in range(BUISSON_BERRIES_COUNT):
 		_place_berry(bush, i, "buisson", berry_type)
 
 
-## Sprint 24sexies : visuel "plante" (fraise/framboise) - touffe basse de
-## feuilles pres du sol (pas de grosse boule), avec les baies nichees dedans,
-## beaucoup plus proche du sol qu'un buisson.
+## Visuel "plante" (fraise/framboise) : touffe basse de feuilles pres du sol
+## (pas de grosse boule), avec les baies nichees dedans, beaucoup plus proche
+## du sol qu'un buisson.
 func _build_plant_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	var leaf_color := Color(0.20, 0.42, 0.16)
 	var leaf_count := randi_range(6, 9)
@@ -375,25 +353,23 @@ func _build_plant_visual(bush: Node3D, berry_type: Dictionary) -> void:
 		_tag_part(leaf, PartType.PLANT_LEAF, leaf_color, mesh.size)
 		bush.add_child(leaf)
 
-	# 2026-07-05 (revue de code, item F024) : positionnement des baies
-	# factorise dans _place_berry (voir sa doc plus haut).
 	for i in range(BERRIES_PER_BUSH):
 		_place_berry(bush, i, "plante", berry_type)
 
 
-## Sprint 34 : marque une MeshInstance3D temporaire comme "piece a recolter"
-## (meme principe que Forest.gd/_tag_part).
+## Marque une MeshInstance3D temporaire comme "piece a recolter" dans le
+## MultiMesh partage correspondant (voir _harvest_and_clear).
 func _tag_part(node: MeshInstance3D, part_type: int, color: Color, part_scale: Vector3) -> void:
 	node.set_meta("part_type", part_type)
 	node.set_meta("part_color", color)
 	node.set_meta("part_scale", part_scale)
 
 
-## Sprint 34 : recolte le corps/les feuilles taguees sous "bush" (jamais les
-## baies "Fruit_%d", qui n'ont pas cette meta) dans les MultiMesh partages,
-## puis supprime uniquement les enfants non-baies de "bush" (meme logique que
-## Forest.gd/_harvest_and_clear, mais "bush" lui-meme reste - il porte le
-## groupe "cueillette" et les metadonnees necessaires a la recolte).
+## Recolte le corps/les feuilles taguees sous "bush" (jamais les baies
+## "Fruit_%d", qui n'ont pas cette meta) dans les MultiMesh partages, puis
+## supprime uniquement les enfants non-baies de "bush" - "bush" lui-meme
+## reste, il porte le groupe "cueillette" et les metadonnees necessaires a
+## la recolte.
 func _harvest_and_clear(bush: Node3D) -> void:
 	var parts: Array = []
 	_collect_tagged_parts(bush, parts)
@@ -405,7 +381,7 @@ func _harvest_and_clear(bush: Node3D) -> void:
 		var xform: Transform3D = node.global_transform * Transform3D(Basis().scaled(part_scale), Vector3.ZERO)
 		_pending_xforms[part_type].append(xform)
 		_pending_colors[part_type].append(color)
-		refs.append([part_type, _pending_xforms[part_type].size() - 1])  # Sprint 85 : reference pour update_view_level (meme principe que Forest.gd)
+		refs.append([part_type, _pending_xforms[part_type].size() - 1])  # reference pour update_view_level
 
 	bush.set_meta("visual_refs", refs)
 
@@ -422,8 +398,8 @@ func _collect_tagged_parts(node: Node, out: Array) -> void:
 		_collect_tagged_parts(child, out)
 
 
-## Sprint 34 : applique une seule fois, apres avoir genere TOUS les buissons,
-## les instances en attente a chaque MultiMeshInstance3D partage.
+## Applique une seule fois, apres avoir genere TOUS les buissons, les
+## instances en attente a chaque MultiMeshInstance3D partage.
 func _apply_pending_instances() -> void:
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
@@ -435,31 +411,21 @@ func _apply_pending_instances() -> void:
 			mmi.multimesh.set_instance_color(i, colors[i])
 
 
-## 2026-07-05 (cycle des saisons, demande explicite de Francois : "buissons
-## couleur plus claire" au printemps, "teinte rouge" en automne (idem que les
-## arbres), "teinte grise" en hiver) - UNIQUEMENT PartType.BUSH_BODY (jamais
-## PLANT_LEAF : les plantes/fraise-framboise ne sont pas mentionnees, elles ne
-## changent pas de couleur avec la saison). Repart toujours de la couleur de
-## BASE (_pending_colors, jamais reecrite ailleurs - voir sa declaration),
-## meme principe que Forest.gd/apply_season_tint pour eviter toute derive.
+## Teinte saisonniere appliquee uniquement a PartType.BUSH_BODY (les
+## plantes/fraise-framboise ne changent pas de couleur avec la saison).
+## Repart toujours de la couleur de BASE (_pending_colors, jamais reecrite
+## ailleurs) pour eviter toute derive cumulative.
 const SEASON_BODY_TINT := {
 	"ete": Color(1.0, 1.0, 1.0),
 	"printemps": Color(1.15, 1.18, 1.05),
 }
-# 2026-07-06 (Francois : "les buissons... ne sont pas assez rouges en
-# automne") : meme cause et meme correctif qu'un lerp cote Forest.gd - la
-# couleur de base du corps du buisson, Color(0.25, 0.45, 0.15), est plus verte
-# que rouge ; un simple facteur multiplicatif ne pouvait pas inverser cette
-# dominante. Meme couleur cible que les arbres (voir Forest.gd), pour que
-# l'automne ait une palette coherente entre arbres et buissons.
+# La couleur de base du corps du buisson, Color(0.25, 0.45, 0.15), est plus
+# verte que rouge : un simple facteur multiplicatif ne peut pas inverser
+# cette dominante vers du rouge/gris. L'automne et l'hiver utilisent donc un
+# lerp vers une couleur cible plutot qu'une multiplication (meme technique
+# que Forest.gd, pour une palette coherente entre arbres et buissons).
 const AUTOMNE_BODY_TARGET := Color(0.55, 0.10, 0.05)
 const AUTOMNE_BODY_STRENGTH := 0.65
-# 2026-07-06 (Francois : "et les buissons doivent etre plus gris [en hiver].
-# peut-etre le meme bug qu'avec les arbres") : meme cause que l'automne
-# ci-dessus - Color(0.72, 0.7, 0.7) multiplie par la base verte donnait
-# (0.18, 0.315, 0.105), toujours vert dominant, pas gris du tout (verifie
-# numeriquement avant ce correctif). Passage en lerp vers un gris quasi
-# neutre, comme pour l'automne.
 const HIVER_BODY_TARGET := Color(0.5, 0.5, 0.48)
 const HIVER_BODY_STRENGTH := 0.85
 
@@ -479,12 +445,11 @@ func apply_season_tint(season_id: String) -> void:
 		mmi.multimesh.set_instance_color(i, base_colors[i] * tint)
 
 
-## Sprint 85 (2026-07-04, meme demande que Forest.gd/update_view_level -
-## voir ses commentaires pour le detail complet du raisonnement) : cache/
-## reaffiche chaque buisson/plante selon que son bloc de sol (bush.position.y
-## - 1.0) est au-dessus ou non du niveau de vue courant. Restauration via
-## _pending_xforms (jamais vide apres _apply_pending_instances). Les baies
-## ("Fruit_%d") bascules via leur propre "visible".
+## Cache/reaffiche chaque buisson/plante selon que son bloc de sol
+## (bush.position.y - 1.0) est au-dessus ou non du niveau de vue courant.
+## Restauration via _pending_xforms (jamais vide apres
+## _apply_pending_instances). Les baies ("Fruit_%d") basculent via leur
+## propre "visible".
 func update_view_level(level: int) -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for bush in get_tree().get_nodes_in_group("bushes"):
@@ -501,7 +466,6 @@ func update_view_level(level: int) -> void:
 					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
 		for child in bush.get_children():
 			if (child.name as String).begins_with("Fruit_"):
-				## 2026-07-06 : sans "and not _winter_active", cette ligne
-				## réaffichait les baies déjà cachées par l'hiver dès qu'un
-				## changement de niveau de vue appelait update_view_level().
+				# "and not _winter_active" evite de reafficher des baies deja
+				# cachees par l'hiver quand update_view_level() est rappele.
 				child.visible = not hidden and not _winter_active

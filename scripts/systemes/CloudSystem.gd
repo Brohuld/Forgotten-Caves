@@ -1,34 +1,25 @@
 extends Node3D
-## Sprint 42 (2026-07-04, demande explicite : "mettre des nuages (legers) qui
-## se deplacent ? plus ou moins fonce en fonction du climat") : nuages
-## purement decoratifs (aucun effet gameplay), generes proceduralement -
+## Nuages purement decoratifs (aucun effet gameplay), generes proceduralement -
 ## aucune texture, meme technique que les cimes d'arbres (Forest.gd,
 ## PartType.BLOB) : des spheres aplaties regroupees en petits amas. Chaque
 ## nuage derive lentement dans une direction de "vent" fixe (tiree au hasard
 ## au demarrage) et boucle (wrap) une fois sorti de la carte, sans jamais
 ## s'arreter.
 ##
-## Sprint 44 (2026-07-04, "plus compliques (pas juste des simples ovales),
-## plus clairs/transparents, et sombres avec la nuit") :
-## - Forme : un nuage n'est plus un tas de blobs purement aleatoires (ovale
-##   simple) mais une "rangee" de bosses principales (grosse au centre, plus
-##   petites aux bords, comme un cumulus) PLUS quelques petites bosses posees
-##   par-dessus/entre elles - voir _generate_cloud_blobs.
-## - Couleur de base : plus claire (proche du blanc) et plus transparente
-##   qu'avant (alpha ~0.45-0.6 au lieu de 0.8).
-## - Assombrissement nocturne : en plus de la teinte meteo (voir
-##   WeatherSystem.cloud_tint_color/cloud_tint_strength), un second fondu
-##   assombrit les nuages la nuit, base sur `light_energy` de la lumiere du
-##   soleil (%DirectionalLight3D, pilotee par DayNightCycle.gd) - pas de
-##   nouvel accesseur necessaire cote DayNightCycle, on lit directement la
-##   valeur qu'il vient d'assigner ce meme frame (meme ordre de traitement
-##   que pour la teinte meteo).
+## Forme : un nuage n'est pas un tas de blobs purement aleatoires (ovale
+## simple) mais une "rangee" de bosses principales (grosse au centre, plus
+## petites aux bords, comme un cumulus) PLUS quelques petites bosses posees
+## par-dessus/entre elles - voir _generate_cloud_blobs. Couleur de base claire
+## et transparente (alpha ~0.45-0.6). Assombrissement nocturne : en plus de la
+## teinte meteo (voir WeatherSystem.cloud_tint_color/cloud_tint_strength), un
+## second fondu assombrit les nuages la nuit, base sur l'energie de la
+## lumiere du soleil (%DirectionalLight3D, pilotee par DayNightCycle.gd).
 ##
 ## Perf : nombre d'instances toujours petit (cloud_count * ~7 blobs en
 ## moyenne, par defaut ~14*7=98) - tres loin des milliers de noeuds qui
-## avaient motive le passage en MultiMesh pour arbres/buissons/decor
-## (Sprint 34) ; mettre a jour TOUTES les transforms/couleurs chaque frame
-## reste donc largement negligeable en cout.
+## avaient motive le passage en MultiMesh pour arbres/buissons/decor ; mettre
+## a jour TOUTES les transforms/couleurs chaque frame reste donc largement
+## negligeable en cout.
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
@@ -41,21 +32,19 @@ const NightDarkenScript := preload("res://scripts/systemes/NightDarken.gd")
 @export var cloud_scale_min: float = 3.0
 @export var cloud_scale_max: float = 6.0
 
-# Sprint 44 : couleur/opacite de nuit - un nuage garde une teinte tres sombre
-# mais jamais totalement noire (encore visible au clair de lune).
+# Couleur/opacite de nuit - un nuage garde une teinte tres sombre mais jamais
+# totalement noire (encore visible au clair de lune).
 const NIGHT_CLOUD_COLOR := Color(0.10, 0.11, 0.16)
 const NIGHT_DARKEN_STRENGTH := 0.8
 
 @onready var _weather_system: Node = %WeatherSystem
-# 2026-07-06 (revue de code, paquet F, I43) : reference au NOEUD DayNightCycle
-# (pas juste a son script comme DayNightCycleScript plus haut) pour lire son
-# champ d'instance base_light_energy - meme motif que _day_night_cycle dans
-# WeatherSystem.gd (C8/C10/I49/I56). Ce champ est la source de verite
-# "energie de plein jour/nuit" maintenue par DayNightCycle, independante de ce
-# que WeatherSystem peut ensuite ecrire dans %DirectionalLight3D.light_energy
-# (multiplicateur meteo) - remplace l'ancienne lecture directe de
-# %DirectionalLight3D.light_energy (supprimee plus bas), qui dependait de
-# l'ordre d'execution entre DayNightCycle/WeatherSystem/CloudSystem.
+# Reference au NOEUD DayNightCycle (pas juste a son script comme
+# DayNightCycleScript plus haut) pour lire son champ d'instance
+# base_light_energy - source de verite "energie de plein jour/nuit"
+# maintenue par DayNightCycle, independante de ce que WeatherSystem peut
+# ensuite ecrire dans %DirectionalLight3D.light_energy (multiplicateur
+# meteo). Lire light_energy directement aurait rendu le resultat dependant
+# de l'ordre d'execution entre DayNightCycle/WeatherSystem/CloudSystem.
 @onready var _day_night_cycle: Node = %DayNightCycle
 
 var _mmi: MultiMeshInstance3D
@@ -74,12 +63,10 @@ var _map_depth: float
 
 
 func _ready() -> void:
-	# 2026-07-05 (meme correctif que C2-C6/I9, decouvert incidemment lors de
-	# cette revue - hors perimetre du diff d'origine mais meme cause) :
-	# randomize() retire - reinitialisait le generateur aleatoire global de
-	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
-	# graine. Purement decoratif ici, mais casse la chaine de determinisme
-	# pour tout script suivant dans Main.tscn - retire pour rester coherent.
+	# Pas de randomize() ici : reinitialiserait le generateur aleatoire global
+	# de facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe
+	# sa graine. Purement decoratif ici, mais casserait la chaine de
+	# determinisme pour tout script suivant dans Main.tscn.
 	_map_width = float(VoxelWorldScript.WIDTH)
 	_map_depth = float(VoxelWorldScript.DEPTH)
 	var wind_angle: float = randf_range(0.0, TAU)
@@ -92,8 +79,7 @@ func _ready() -> void:
 
 ## Un seul maillage "unite" (sphere aplatie) partage par tous les blobs de
 ## tous les nuages, comme les cimes d'arbres (Forest.gd/_make_sphere_mesh +
-## MultiMeshInstance3D). transparency legere pour un aspect "leger", demande
-## explicitement par Francois ("nuages legers").
+## MultiMeshInstance3D). Legere transparence pour un aspect leger.
 func _build_shared_mesh() -> void:
 	_mmi = MultiMeshInstance3D.new()
 	_mmi.multimesh = MultiMesh.new()
@@ -102,6 +88,11 @@ func _build_shared_mesh() -> void:
 	var mesh := SphereMesh.new()
 	mesh.radius = 1.0
 	mesh.height = 2.0
+	# radial_segments/rings par defaut de Godot (64/32) inutilement
+	# detailles pour ces bosses de nuage - meme principe que
+	# TREE_SPHERE_RADIAL_SEGMENTS dans Forest.gd.
+	mesh.radial_segments = 8
+	mesh.rings = 5
 	_mmi.multimesh.mesh = mesh
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
@@ -123,7 +114,6 @@ func _spawn_clouds() -> void:
 		var cy: float = float(VoxelWorldScript.HEIGHT - 1) + randf_range(cloud_height_min, cloud_height_max)
 		_cloud_positions.append(Vector3(cx, cy, cz))
 
-		# Sprint 44 : plus clair (proche du blanc) et plus transparent qu'avant.
 		var base_gray: float = randf_range(0.94, 1.0)
 		var base_alpha: float = randf_range(0.42, 0.6)
 		total_blobs += _generate_cloud_blobs(i, base_gray, base_alpha)
@@ -131,8 +121,7 @@ func _spawn_clouds() -> void:
 	_mmi.multimesh.instance_count = total_blobs
 
 
-## Sprint 44 (2026-07-04, "plus compliques, pas juste des simples ovales") :
-## un nuage = une rangee de bosses PRINCIPALES le long de l'axe X local
+## Un nuage = une rangee de bosses PRINCIPALES le long de l'axe X local
 ## (profil "bombe" - grosses au centre, plus petites aux extremites, comme un
 ## cumulus) PLUS quelques petites bosses posees par-dessus/entre elles pour
 ## casser la silhouette ovale. Renvoie le nombre de blobs generes (pour
@@ -195,24 +184,17 @@ func _process(delta: float) -> void:
 		_cloud_positions[i] = pos
 	_update_all_transforms()
 
-	# Sprint 44 : assombrissement nocturne, base sur light_energy de la
-	# lumiere directionnelle (deja mise a jour ce meme frame par
-	# DayNightCycle, qui tourne avant ce script - meme ordre que la teinte
-	# meteo). Normalise par rapport a l'energie de plein jour (LIGHT_ENERGY[1]
-	# de DayNightCycle.gd) plutot qu'une valeur codee en dur, pour rester
-	# correct si ces constantes sont retouchees plus tard (ce qui est deja
-	# arrive plusieurs fois - voir memoire du cycle jour/nuit).
-	# 2026-07-06 (revue de code, paquet C, M34) : _light etait lu sans
-	# verification de nullite, contrairement a _weather_system juste en
-	# dessous (garde par un "if") - meme prudence ici (repli sur "pas de
-	# nuit" si le noeud unique venait a manquer de la scene).
-	# 2026-07-06 (revue de code, paquet F, I43) : _day_night_cycle.base_light_energy
-	# remplace _light.light_energy (voir commentaire sur _day_night_cycle plus
-	# haut) - meme garde de nullite.
-	# 2026-07-06 (revue de code, paquet H, A2/M30) : calcul deplace dans
-	# l'utilitaire partage NightDarken.gd (meme formule exacte qu'avant,
-	# desormais reutilisee aussi par WaterfallFoamClouds.gd/DwarfResourcePile.gd
-	# au lieu d'etre dupliquee independamment dans chaque fichier).
+	# Assombrissement nocturne, base sur light_energy de la lumiere
+	# directionnelle (deja mise a jour ce meme frame par DayNightCycle, qui
+	# tourne avant ce script - meme ordre que la teinte meteo). Normalise par
+	# rapport a l'energie de plein jour (LIGHT_ENERGY[1] de DayNightCycle.gd)
+	# plutot qu'une valeur codee en dur, pour rester correct si ces constantes
+	# sont retouchees plus tard (voir memoire du cycle jour/nuit). Calcul
+	# delegue a l'utilitaire partage NightDarken.gd (meme formule exacte,
+	# reutilisee aussi par WaterfallFoamClouds.gd/DwarfResourcePile.gd au lieu
+	# d'etre dupliquee independamment dans chaque fichier) ; garde de nullite
+	# sur _day_night_cycle au cas ou le noeud unique venait a manquer de la
+	# scene.
 	var night_factor: float = NightDarkenScript.night_factor(_day_night_cycle)
 
 	if _weather_system:

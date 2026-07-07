@@ -30,9 +30,4 @@ window/size/viewport_height=2340
 
 [gui]
 
-; 2026-07-05 (Francois : "augmente toutes les tailles de fonte a l'ecran") :
-; theme par defaut applique a TOUS les Control (boutons/labels) qui n'ont pas
-; de taille de police explicite deja definie (font_size = 20 au lieu du
-; defaut Godot 16). Les overrides explicites (TimeLabel, StatsLabel, etc.)
-; sont augmentes separement dans leurs fichiers respectifs.
 theme/custom="res://themes/DefaultTheme.tres"

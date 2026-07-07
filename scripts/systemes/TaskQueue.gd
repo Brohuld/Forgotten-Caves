@@ -1,29 +1,22 @@
 extends Node
-## Sprint 4 : file d'attente des taches designees par l'utilisateur
-## (miner un bloc / couper un arbre). Les nains y piochent leur prochaine
-## action au lieu d'errer au hasard.
-## Sprint 6 : le nain pioche la tache la plus proche de lui, pas juste
-## la premiere ajoutee (priorite par distance).
-## Sprint 9bis : chaque tache de construction a un id unique, pour pouvoir
-## retirer son mur "fantome" une fois la construction terminee (Sprint 26 :
-## toutes les taches ont maintenant un id, voir plus bas).
-## Sprint 24ter : ajoute la tache "cueillir" (recolte de fruits/baies sans
-## abattre l'arbre/buisson, voir add_gather_task).
-## Sprint 26 : toutes les taches (pas seulement "construire") ont maintenant
-## un id unique, pour que ActionController puisse afficher une icone
-## temporaire sur l'objet designe et la retirer une fois la tache terminee
-## (voir Dwarf.gd/task_finished et ActionController.gd/_on_task_finished).
+## File d'attente des taches designees par l'utilisateur (miner un bloc /
+## couper un arbre / cueillir / construire / puiser / detruire). Les nains y
+## piochent leur prochaine action au lieu d'errer au hasard, en priorisant la
+## tache la plus proche d'eux (pas juste la premiere ajoutee).
+##
+## Toutes les taches ont un id unique, pour que ActionController puisse
+## afficher une icone temporaire sur l'objet designe et la retirer une fois
+## la tache terminee (voir Dwarf.gd/task_finished et ActionController.gd/
+## _on_task_finished).
 
 var tasks: Array = []
 var next_task_id: int = 0
 
 
-## 2026-07-06 (revue de code, paquet B, I24) : extrait des 5 fonctions
-## add_*_task ci-dessous, qui dupliquaient a l'identique la generation d'id
-## (next_task_id) et l'ajout au tableau "tasks" - seul le contenu propre a
-## chaque type de tache changeait. "fields" doit deja contenir toutes les
-## cles de la tache SAUF "id" (ajoutee ici). Comportement/forme des
-## dictionnaires de taches inchanges (memes cles, memes valeurs).
+## Factorise les 5 fonctions add_*_task ci-dessous, qui dupliqueraient sinon
+## a l'identique la generation d'id (next_task_id) et l'ajout au tableau
+## "tasks" - seul le contenu propre a chaque type de tache change. "fields"
+## doit deja contenir toutes les cles de la tache SAUF "id" (ajoutee ici).
 func _add_task(fields: Dictionary) -> int:
 	var id := next_task_id
 	next_task_id += 1
@@ -54,10 +47,11 @@ func add_chop_task(tree: Node3D) -> int:
 	})
 
 
-## Sprint 24ter : ajoute une tache de cueillette sur un arbre fruitier ou un
-## buisson (Node3D du groupe "cueillette", voir Forest.gd/BerryBushes.gd) -
-## ne detruit pas la cible, contrairement a "couper" (voir Dwarf.gd/_complete_task).
-## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
+## Ajoute une tache de cueillette sur un arbre fruitier ou un buisson
+## (Node3D du groupe "cueillette", voir Forest.gd/BerryBushes.gd) - ne
+## detruit pas la cible, contrairement a "couper" (voir Dwarf.gd/
+## _complete_task). Renvoie l'id unique de la tache (icone temporaire, voir
+## ActionController.gd).
 func add_gather_task(target: Node3D) -> int:
 	return _add_task({
 		"type": "cueillir",
@@ -78,15 +72,28 @@ func add_build_task(walk_pos: Vector3, bx: int, bz: int, material: String) -> in
 	})
 
 
-## Sprint 36 : ajoute une tache de puisage d'eau sur la colonne (bx,bz) - a la
-## difference de "miner", le bloc n'est PAS retire (l'eau est une ressource
-## renouvelable, voir VoxelWorld.is_water/Dwarf.gd/_complete_task "puiser").
-## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
+## Ajoute une tache de puisage d'eau sur la colonne (bx,bz) - a la difference
+## de "miner", le bloc n'est PAS retire (l'eau est une ressource renouvelable,
+## voir VoxelWorld.is_water/Dwarf.gd/_complete_task "puiser"). Renvoie l'id
+## unique de la tache (icone temporaire, voir ActionController.gd).
 func add_puiser_task(walk_pos: Vector3, bx: int, bz: int) -> int:
 	return _add_task({
 		"type": "puiser",
 		"position": walk_pos,
 		"bx": bx, "bz": bz,
+	})
+
+
+## Ajoute une tache de demolition d'un mur construit (mur_bois/mur_pierre) a
+## la colonne (bx,bz). "by" capture le sommet AU MOMENT DE LA DESIGNATION
+## (meme convention que add_mine_task), utilise par VoxelWorld.remove_block a
+## la fin de la tache. Renvoie l'id unique de la tache (icone temporaire,
+## voir ActionController.gd).
+func add_destroy_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> int:
+	return _add_task({
+		"type": "detruire",
+		"position": walk_pos,
+		"bx": bx, "by": by, "bz": bz,
 	})
 
 
@@ -98,12 +105,12 @@ func task_count() -> int:
 	return tasks.size()
 
 
-## Retire et renvoie la tache la plus proche de "from_position" (priorite
-## par distance, plutot que la simple ordre d'ajout)
-## 2026-07-06 (revue de code, C7) : garde ajoutee - jusqu'ici le seul appelant
-## (Dwarf.gd) verifie deja has_tasks() avant d'appeler cette fonction, mais
-## rien dans la fonction elle-meme n'empechait un crash (pop_at sur tableau
-## vide) si un futur appelant l'invoquait sans cette verification.
+## Retire et renvoie la tache la plus proche de "from_position" (priorite par
+## distance, plutot que le simple ordre d'ajout). Garde sur tableau vide :
+## le seul appelant (Dwarf.gd) verifie deja has_tasks() avant d'appeler cette
+## fonction, mais rien dans la fonction elle-meme n'empecherait un crash
+## (pop_at sur tableau vide) si un futur appelant l'invoquait sans cette
+## verification.
 func pop_nearest_task(from_position: Vector3) -> Dictionary:
 	if tasks.is_empty():
 		return {}
@@ -117,6 +124,18 @@ func pop_nearest_task(from_position: Vector3) -> Dictionary:
 	return tasks.pop_at(best_index)
 
 
-## Sprint 8 : remet une tache interrompue (faim/energie critique) dans la file
+## Remet une tache interrompue (faim/energie critique) dans la file
 func requeue_task(task: Dictionary) -> void:
 	tasks.push_front(task)
+
+
+## Retire une tache encore dans la file (pas encore prise par un nain) par
+## son id unique. Renvoie le dictionnaire retire, ou {} si aucune tache de
+## cet id n'est dans la file (auquel cas elle est probablement deja affectee
+## a un nain - voir ActionDragController.cancel_task, qui cherche ensuite
+## cote Dwarf.current_task).
+func remove_task(task_id: int) -> Dictionary:
+	for i in range(tasks.size()):
+		if tasks[i]["id"] == task_id:
+			return tasks.pop_at(i)
+	return {}

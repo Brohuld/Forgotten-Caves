@@ -1,18 +1,17 @@
 extends Node3D
-## Sprint 42 (2026-07-04, demande explicite : "des oiseaux simplifies
-## purement decoratifs") : petits oiseaux stylises (corps aplati + 2 ailes
-## plates qui battent) volant en boucle sur une trajectoire circulaire
-## au-dessus de la carte. Purement decoratif - AUCUNE interaction avec le
-## jeu (pas de groupe "trees"/"cueillette", pas cliquable, pas de metadonnee
-## de tache), contrairement aux arbres/buissons.
+## Petits oiseaux stylises (corps aplati + 2 ailes plates qui battent)
+## volant en boucle sur une trajectoire circulaire au-dessus de la carte.
+## Purement decoratif - aucune interaction avec le jeu (pas de groupe
+## "trees"/"cueillette", pas cliquable, pas de metadonnee de tache),
+## contrairement aux arbres/buissons.
 ##
-## Peu d'oiseaux (bird_count petit, defaut 8), chacun un Node3D independant
-## avec 3 MeshInstance3D enfants (corps + 2 ailes) - pas de MultiMesh ici
+## Peu d'oiseaux (bird_count, defaut 8), chacun un Node3D independant avec 3
+## MeshInstance3D enfants (corps + 2 ailes) - pas de MultiMesh ici
 ## (contrairement a CloudSystem.gd/Forest.gd) : chaque oiseau a sa propre
-## trajectoire ET sa propre phase de battement d'ailes, ce qui demanderait
-## de toute facon une transform par instance mise a jour chaque frame ; avec
-## seulement quelques oiseaux, des noeuds simples (meme approche que Dwarf.gd,
-## un nain = un Node3D) restent largement assez performants.
+## trajectoire ET sa propre phase de battement d'ailes, ce qui demanderait de
+## toute facon une transform par instance mise a jour chaque frame ; avec
+## seulement quelques oiseaux, des noeuds simples (meme approche que
+## Dwarf.gd, un nain = un Node3D) restent largement assez performants.
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
@@ -31,27 +30,20 @@ const BODY_COLOR := Color(0.16, 0.16, 0.18)
 var _birds: Array = []   # Array[Dictionary] : node, center, radius, height, angle, angular_speed, wing_left, wing_right, phase
 var _sim_time: float = 0.0
 
-# 2026-07-06 (revue de code, paquet G, M19) : materiau partage entre TOUS les
-# oiseaux (corps + 2 ailes de chacun) - tous utilisent la meme BODY_COLOR
-# constante, un StandardMaterial3D distinct par mesh instance (24 pour 8
-# oiseaux) n'apportait donc aucune variation, juste des allocations en trop.
-# Cree une seule fois au premier appel de _apply_unshaded (voir plus bas).
+## Materiau partage entre tous les oiseaux (corps + ailes) : tous utilisent
+## la meme BODY_COLOR, un materiau distinct par mesh instance n'apporterait
+## donc aucune variation visuelle. Cree une seule fois au premier appel de
+## _apply_unshaded.
 var _shared_body_material: StandardMaterial3D
 
 
 func _ready() -> void:
-	# 2026-07-05 (meme correctif que C2-C6/I9, decouvert incidemment lors de
-	# cette revue - hors perimetre du diff d'origine mais meme cause) :
-	# randomize() retire - reinitialisait le generateur aleatoire global de
-	# facon non deterministe, APRES que VoxelWorld._ready() ait deja fixe sa
-	# graine. Purement decoratif ici, mais casse la chaine de determinisme
-	# pour tout script suivant dans Main.tscn - retire pour rester coherent.
 	for i in range(bird_count):
 		_spawn_bird(i)
 
 
-## 2026-07-06 (revue de code, paquet A) : flux GameRandom dedie "oiseaux" au
-## lieu de randf()/randf_range() globaux - voir GameRandom.gd.
+## Flux GameRandom dedie "oiseaux" (voir GameRandom.gd) pour rester
+## deterministe a graine egale.
 func _spawn_bird(index: int) -> void:
 	var rng: RandomNumberGenerator = GameRandom.get_rng("oiseaux")
 	var margin := 15.0
@@ -113,12 +105,9 @@ func _make_wing(side: float) -> Node3D:
 
 
 func _apply_unshaded(mesh_instance: MeshInstance3D, color: Color) -> void:
-	# 2026-07-06 (revue de code, paquet G, M19) : un seul StandardMaterial3D
-	# reutilise pour tous les oiseaux au lieu d'un nouveau a chaque appel -
-	# voir _shared_body_material plus haut. "color" reste en parametre (aucun
-	# changement de signature) mais n'est utilise que pour construire le
-	# materiau la toute premiere fois - tous les appels actuels passent de
-	# toute facon la meme BODY_COLOR.
+	# "color" n'est utilise que pour construire le materiau partage la toute
+	# premiere fois - tous les appels actuels passent de toute facon la meme
+	# BODY_COLOR.
 	if _shared_body_material == null:
 		_shared_body_material = StandardMaterial3D.new()
 		_shared_body_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -150,8 +139,8 @@ func _process(delta: float) -> void:
 		node.rotation.y = atan2(tangent.x, tangent.z)
 
 		# Battement d'ailes : sinus dephase par oiseau (bird["phase"]), base
-		# sur le temps de simulation (respecte pause/x1/x2/x4, voir game_speed
-		# ci-dessus) plutot que l'horloge reelle.
+		# sur le temps de simulation (respecte pause/x1/x2/x4, voir
+		# game_speed) plutot que l'horloge reelle.
 		var flap: float = sin(_sim_time * flap_speed + bird["phase"]) * 0.9
 		(bird["wing_left"] as Node3D).rotation.z = flap
 		(bird["wing_right"] as Node3D).rotation.z = -flap

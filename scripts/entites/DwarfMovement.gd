@@ -1,48 +1,50 @@
 extends RefCounted
-## 2026-07-06 (dette d'architecture A1, I60 - revue de code) : deplacement/
-## steering/relief extraits mecaniquement de Dwarf.gd - fonctions inchangees,
-## seule la signature change ("dwarf" recoit le Dwarf via parametre au lieu
-## d'un "self" implicite, meme motif que DwarfVisuals.gd).
-## Proprietes lues/ecrites via dwarf.get()/dwarf.set() (acces dynamique
-## Godot, necessaire car "dwarf" est type generiquement Node3D, pas Dwarf).
+## Deplacement/steering/relief d'un nain, extrait de Dwarf.gd. Chaque
+## fonction recoit le nain via un parametre "dwarf" (Node3D) plutot qu'un
+## "self" implicite, et lit/ecrit ses proprietes via dwarf.get()/dwarf.set()
+## (acces dynamique Godot, necessaire car "dwarf" est type generiquement
+## Node3D, pas Dwarf).
 ## WATER_SLOWDOWN_FACTOR/SLOPE_SLOWDOWN_FACTOR/TREE_AVOID_RADIUS/
-## TREE_AVOID_STRENGTH dupliques ci-dessous (les "const" ne sont pas visibles
-## via get()) - a garder synchronises si les valeurs d'origine changent dans
-## Dwarf.gd.
+## TREE_AVOID_STRENGTH sont declarees ici (les "const" ne sont pas visibles
+## via get(), elles doivent donc vivre la ou elles sont utilisees).
 
-# Sprint 37 (backlog Phase 1 item 13c) : facteur applique a move_speed quand
-# le nain traverse une case d'eau.
-const WATER_SLOWDOWN_FACTOR := 0.4
-# Sprint 38 (reliefs, "impacte le deplacement") : facteur applique en montee.
-const SLOPE_SLOWDOWN_FACTOR := 0.6
-# Sprint 37 (backlog Phase 1 item 13a) : evitement des arbres (steering).
-const TREE_AVOID_RADIUS := 1.3
+const WATER_SLOWDOWN_FACTOR := 0.4  # facteur applique a move_speed quand le nain traverse une case d'eau
+const SLOPE_SLOWDOWN_FACTOR := 0.6  # facteur applique en montee
+const TREE_AVOID_RADIUS := 1.3      # evitement des arbres (steering)
 const TREE_AVOID_STRENGTH := 1.6
 
-# 2026-07-06 (revue de code, paquet G, M55) : cache partage (static, donc
-# commun a TOUS les nains) de la liste d'arbres, pour eviter de relire
-# get_nodes_in_group("trees") a chaque frame et par nain en deplacement -
-# voir _cached_trees() plus bas. Rafraichi au plus toutes les
-# TREES_CACHE_REFRESH_INTERVAL secondes (les arbres ne bougent jamais, seule
-# leur EXISTENCE change - coupe/repousse - donc un leger retard de quelques
-# secondes avant qu'un arbre coupe/nouveau soit pris en compte par
-# l'evitement est sans consequence visible).
+## Cache partage (static, donc commun a TOUS les nains) des arbres, sous
+## forme de GRILLE SPATIALE (Vector2i cellule -> Array d'arbres) plutot
+## qu'une simple liste a plat : sur une grande carte (des milliers d'arbres),
+## parcourir TOUTE la liste a chaque frame pour chaque nain en deplacement
+## devenait le principal cout runtime (le nombre d'arbres croit avec la
+## surface de la carte, contrairement au rayon d'evitement qui reste fixe -
+## voir tree_avoidance_offset/TREE_AVOID_RADIUS). La grille permet de ne
+## regarder que les arbres proches (cellule du nain + les 8 voisines) au
+## lieu de la carte entiere. Rafraichie au plus toutes les
+## TREES_CACHE_REFRESH_INTERVAL secondes : les arbres ne bougent jamais,
+## seule leur existence change (coupe/repousse), donc un leger retard avant
+## qu'un arbre coupe/nouveau soit pris en compte par l'evitement est sans
+## consequence visible.
 const TREES_CACHE_REFRESH_INTERVAL := 2.0
-static var _trees_cache: Array = []
+## Taille de cellule de la grille spatiale. Doit rester >= TREE_AVOID_RADIUS
+## pour garantir qu'un arbre a moins de TREE_AVOID_RADIUS d'un nain se
+## trouve forcement dans sa cellule ou l'une des 8 voisines (jamais plus
+## loin) - voir _nearby_trees.
+const TREE_GRID_CELL_SIZE := 2.0
+static var _trees_grid: Dictionary = {}  # Vector2i (cellule) -> Array d'arbres
 static var _trees_cache_time_ms: int = -999999
 
 
 ## Deplacement generique reutilise par la marche normale et la recherche de
-## nourriture/eau/case seche. Sprint 37 (item 13c, "l'eau ralentit la marche") :
-## vitesse reduite tant que le nain se trouve sur une case d'eau. Sprint 37
-## (item 13a, "les arbres sont non traversables") : pas de vraie navigation
-## avec obstacles (aucun A* dans ce projet), mais une legere deviation de
-## direction ("steering") qui ecarte le nain des troncs proches.
-## 2026-07-06 (correctif) : nommee "advance_toward" (pas "move_toward") pour
-## eviter une collision avec la fonction native Godot @GlobalScope.move_toward
-## (from, to, delta) -> float - un appel non qualifie a "move_toward(...)"
-## depuis ce meme fichier etait capte par la fonction native au lieu de
-## celle-ci, provoquant une erreur de parsing (mauvais nombre/type d'arguments).
+## nourriture/eau/case seche. Vitesse reduite tant que le nain se trouve sur
+## une case d'eau. Pas de vraie navigation avec obstacles (aucun A* dans ce
+## projet), mais une legere deviation de direction ("steering") qui ecarte
+## le nain des troncs proches.
+## Nommee "advance_toward" (pas "move_toward") pour eviter une collision
+## avec la fonction native Godot @GlobalScope.move_toward(from, to, delta)
+## -> float : un appel non qualifie a "move_toward(...)" depuis ce meme
+## fichier serait capte par la fonction native au lieu de celle-ci.
 static func advance_toward(dwarf: Node3D, to_target: Vector3, distance: float, delta: float) -> void:
 	var direction := to_target.normalized()
 	var avoidance := tree_avoidance_offset(dwarf, direction)
@@ -56,13 +58,10 @@ static func advance_toward(dwarf: Node3D, to_target: Vector3, distance: float, d
 		effective_speed *= SLOPE_SLOWDOWN_FACTOR
 	var step: float = min(effective_speed * delta, distance)
 	dwarf.global_position += direction * step
-	# Sprint 38 (reliefs) : la hauteur suit desormais le relief case par case
-	# (avant : y fige a ground_level, le nain "flottait"/"s'enfoncait" sur une
-	# colline).
+	# La hauteur suit le relief case par case (pas de y fige a ground_level).
 	dwarf.global_position.y = ground_y_at(dwarf, dwarf.global_position.x, dwarf.global_position.z)
 
-	# Le modele 3D n'est plus un billboard : cette rotation tourne desormais
-	# reellement le nain vers sa direction de deplacement.
+	# Rotation reelle du modele 3D vers sa direction de deplacement.
 	var target_yaw: float = atan2(direction.x, direction.z)
 	var rotation_speed: float = dwarf.get("rotation_speed")
 	dwarf.rotation.y = lerp_angle(dwarf.rotation.y, target_yaw, rotation_speed * delta)
@@ -71,8 +70,8 @@ static func advance_toward(dwarf: Node3D, to_target: Vector3, distance: float, d
 	dwarf_model.preview_animation = "Marche"
 
 
-## Sprint 38 (reliefs) : hauteur du sol (sommet de colonne + 1) a une position
-## XZ donnee. Repli sur ground_level si hors carte (get_top_block_y renvoie -1).
+## Hauteur du sol (sommet de colonne + 1) a une position XZ donnee. Repli
+## sur ground_level si hors carte (get_top_block_y renvoie -1).
 static func ground_y_at(dwarf: Node3D, x: float, z: float) -> float:
 	var voxel_world: Node3D = dwarf.get("voxel_world")
 	var top: int = voxel_world.get_top_block_y(int(floor(x)), int(floor(z)))
@@ -81,9 +80,9 @@ static func ground_y_at(dwarf: Node3D, x: float, z: float) -> float:
 	return float(top) + 1.0
 
 
-## Sprint 38 (reliefs, "impacte le deplacement") : compare la hauteur du sol
-## juste devant le nain (dans le sens de deplacement) a sa hauteur actuelle -
-## effet simple, pas de vraie physique de pente.
+## Compare la hauteur du sol juste devant le nain (dans le sens de
+## deplacement) a sa hauteur actuelle - effet simple, pas de vraie physique
+## de pente.
 static func is_climbing(dwarf: Node3D, direction: Vector3) -> bool:
 	var ahead_x: float = dwarf.global_position.x + direction.x * 0.5
 	var ahead_z: float = dwarf.global_position.z + direction.z * 0.5
@@ -97,40 +96,62 @@ static func is_on_water(dwarf: Node3D) -> bool:
 	return voxel_world.is_water(int(floor(dwarf.global_position.x)), int(floor(dwarf.global_position.z)))
 
 
-## 2026-07-06 (revue de code, paquet G, M55) : renvoie la liste d'arbres
-## (groupe "trees"), rafraichie au plus toutes les
-## TREES_CACHE_REFRESH_INTERVAL secondes au lieu d'un appel a
-## get_nodes_in_group() a CHAQUE frame par CHAQUE nain en deplacement -
-## demande explicite de Francois apres verification qu'un arbre coupe
-## (tree.queue_free(), voir Forest.gd) est bien filtre via is_instance_valid()
-## dans tree_avoidance_offset() ci-dessous, pour ne jamais utiliser une
-## reference perimee restee dans le cache entre deux rafraichissements.
-static func _cached_trees(dwarf: Node3D) -> Array:
+## Cellule de grille (voir _trees_grid/TREE_GRID_CELL_SIZE) contenant une
+## position XZ donnee.
+static func _tree_cell(pos: Vector3) -> Vector2i:
+	return Vector2i(int(floor(pos.x / TREE_GRID_CELL_SIZE)), int(floor(pos.z / TREE_GRID_CELL_SIZE)))
+
+
+## Reconstruit entierement _trees_grid a partir du groupe "trees" - appele au
+## plus toutes les TREES_CACHE_REFRESH_INTERVAL secondes (voir
+## _nearby_trees), jamais a chaque frame.
+static func _rebuild_trees_grid(dwarf: Node3D) -> void:
+	_trees_grid.clear()
+	for tree in dwarf.get_tree().get_nodes_in_group("trees"):
+		var cell := _tree_cell(tree.global_position)
+		if not _trees_grid.has(cell):
+			_trees_grid[cell] = []
+		_trees_grid[cell].append(tree)
+
+
+## Renvoie uniquement les arbres proches d'un nain (sa cellule + les 8
+## voisines, ce qui couvre tout TREE_AVOID_RADIUS - voir
+## TREE_GRID_CELL_SIZE) au lieu de la liste complete des arbres de la carte.
+## La grille elle-meme n'est rafraichie qu'au plus toutes les
+## TREES_CACHE_REFRESH_INTERVAL secondes.
+static func _nearby_trees(dwarf: Node3D) -> Array:
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms - _trees_cache_time_ms > int(TREES_CACHE_REFRESH_INTERVAL * 1000.0):
-		_trees_cache = dwarf.get_tree().get_nodes_in_group("trees")
+		_rebuild_trees_grid(dwarf)
 		_trees_cache_time_ms = now_ms
-	return _trees_cache
+	var center: Vector2i = _tree_cell(dwarf.global_position)
+	var nearby: Array = []
+	for dx in range(-1, 2):
+		for dz in range(-1, 2):
+			var cell: Vector2i = center + Vector2i(dx, dz)
+			if _trees_grid.has(cell):
+				nearby.append_array(_trees_grid[cell])
+	return nearby
 
 
-## Sprint 37 (backlog Phase 1 item 13a) : les arbres n'ont pas de vraie
-## collision/pathfinding, donc on approxime "traversable/non traversable" par
-## une deviation de direction ("steering") qui repousse doucement le nain des
-## troncs proches situes globalement devant lui.
+## Les arbres n'ont pas de vraie collision/pathfinding, donc on approxime
+## "traversable/non traversable" par une deviation de direction ("steering")
+## qui repousse doucement le nain des troncs proches situes globalement
+## devant lui.
 static func tree_avoidance_offset(dwarf: Node3D, direction: Vector3) -> Vector3:
-	# 2026-07-05 (correctif bug Couper/Cueillir) : l'arbre vise par la tache en
-	# cours (couper/cueillir) est exclu de l'evitement - sinon le nain ne peut
-	# jamais s'approcher a moins de TREE_AVOID_RADIUS (1.3) de SA PROPRE cible.
+	# L'arbre vise par la tache en cours (couper/cueillir) est exclu de
+	# l'evitement - sinon le nain ne pourrait jamais s'approcher a moins de
+	# TREE_AVOID_RADIUS de SA PROPRE cible.
 	var current_task: Dictionary = dwarf.get("current_task")
 	var target_tree = null
 	if current_task.get("type") in ["couper", "cueillir"]:
 		target_tree = current_task.get("tree")
 	var avoid := Vector3.ZERO
-	for tree in _cached_trees(dwarf):
-		# 2026-07-06 (paquet G, M55) : le cache peut contenir un arbre coupe
-		# depuis (tree.queue_free() dans Forest.gd) jusqu'au prochain
-		# rafraichissement - is_instance_valid() l'ignore plutot que de
-		# planter sur une reference perimee.
+	for tree in _nearby_trees(dwarf):
+		# Le cache peut contenir un arbre coupe depuis (tree.queue_free()
+		# dans Forest.gd) jusqu'au prochain rafraichissement -
+		# is_instance_valid() l'ignore plutot que de planter sur une
+		# reference perimee.
 		if not is_instance_valid(tree):
 			continue
 		if tree == target_tree:

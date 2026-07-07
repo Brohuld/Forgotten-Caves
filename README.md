@@ -107,6 +107,13 @@ Filons de métaux/pierres précieuses dans la pierre (14 matériaux, triés du p
 
 Carte agrandie de 20x20x30 à 100x100x50 blocs, densité d'arbres/buissons/décor exprimée en "par 1000 cases" (indépendante de la taille de carte), `rebuild_mesh()` limité à la portion découverte (pas toute la grille) à chaque changement.
 
+**Complété et confirmé en jeu le 2026-07-07** : carte portée à 250x250 blocs. Trois correctifs de performance nécessaires pour absorber cette taille sans dégrader le chargement/FPS :
+- Génération des filons de minerai différée au moment où un bloc de pierre devient réellement découvert (surface/bord de carte à la génération, exposition par minage ensuite) au lieu d'être calculée pour toute la roche de la carte, y compris la roche jamais vue — c'était le principal poste de temps de la génération du terrain.
+- Évitement d'arbres des nains (steering) indexé par grille spatiale (cellule du nain + les 8 voisines) au lieu d'un balayage de tous les arbres de la carte à chaque image.
+- Segments radiaux/anneaux des sphères et cylindres procéduraux (feuillage d'arbre, baies, herbe/fleurs, écume de cascade, nuages) réduits explicitement au lieu de garder les valeurs par défaut de Godot (64 segments, conçues pour un objet unique bien visible) — ces formes servent de modèle à des milliers d'instances via `MultiMesh` ; les valeurs par défaut faisaient grimper le rendu à environ 765 millions de primitives par image et effondraient le FPS dès le lancement (~4 IPS).
+
+Chargement de la carte 250x250 ramené à 8.6s, FPS stable en jeu (confirmé par François). Génération des arbres/buissons/décorations également revue (taille des paquets `await process_frame` corrigée après une régression où le nombre de pauses scalait avec une dimension de la carte au lieu du nombre d'objets réellement générés).
+
 ### 8. Cycle jour/nuit, météo & saisons
 
 Cycle jour/nuit complet (lever/coucher exact par saison, jeu démarrant à 7h du matin, lumière + ambiant pilotés par script), ombres réelles (matériaux du terrain/arbres/décor passés en éclairage réel, sauf les nains), système météo (Normal/Brouillard/Pluie/Neige, particules réelles), 4 saisons avec calendrier affiché (1 jour = 2 minutes réelles, 1 mois = 20 jours, 1 saison = 3 mois), climat/température, nuages et oiseaux décoratifs (forme cumulus, teinte selon météo/nuit).

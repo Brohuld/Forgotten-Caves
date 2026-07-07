@@ -1,20 +1,18 @@
 extends Node3D
-## Sprint 2 : camera controlable.
+## Camera controlable :
 ## - Deplacement (pan) : ZQSD (touches physiques Z/Q/S/D sur clavier francais)
 ## - Rotation : touches A et E (Q est deja pris par le deplacement, donc pas de Q/E)
-## - Zoom : touches + et -, ou Ctrl+molette (Sprint 35bis, demande explicite)
+## - Zoom : touches + et -, ou Ctrl+molette
 ## - Changement de niveau de profondeur : molette de la souris (sans Ctrl)
 ## - Angle de vue (pitch + rotation) : maintenir le clic molette (bouton du
 ##   milieu) et glisser la souris (horizontal = rotation, vertical = pitch)
-## Sprint 23bis : le changement de niveau ne faisait jusqu'ici que deplacer la
-## camera en Y, sans rien cacher du terrain - inutile pour "voir" un niveau
-## souterrain puisque tout est plein autour. Chaque changement de niveau
-## demande maintenant a VoxelWorld de reveler une coupe horizontale complete
-## du niveau vise (voir VoxelWorld.set_view_level).
+##
+## Chaque changement de niveau demande a VoxelWorld de reveler une coupe
+## horizontale complete du niveau vise (voir VoxelWorld.set_view_level) -
+## sans ca, changer de niveau ne ferait que deplacer la camera en Y, sans
+## rien cacher du terrain (inutile pour "voir" un niveau souterrain, puisque
+## tout est plein autour).
 
-## 2026-07-05 (revue de code, item F010) : uniquement pour le garde-fou de
-## _ready() ci-dessous (grid_height doit rester synchronise avec
-## VoxelWorldScript.HEIGHT, duplique ici en dur pour l'@export ci-dessous).
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
 @export var move_speed: float = 12.0
@@ -27,14 +25,14 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 @export var min_pitch_deg: float = 10.0
 @export var max_pitch_deg: float = 85.0
 
-# Doivent correspondre aux constantes de VoxelWorld.gd
-@export var grid_height: int = 50  # 2026-07-03 : 30 -> 50 (map resize)
-# Sprint 37octies (2026-07-04, demande explicite : "les niveaux geres par la
-# molette doivent permettre de monter au dessus de 0, on aura des reliefs dans
-# le futur") - doit correspondre a VoxelWorld.VIEW_LEVEL_MARGIN_ABOVE.
+## Lit directement VoxelWorld.HEIGHT (source unique) au lieu d'un nombre
+## duplique en dur derriere un @export.
+const grid_height := VoxelWorldScript.HEIGHT
+## Doit correspondre a VoxelWorld.VIEW_LEVEL_MARGIN_ABOVE - permet de monter
+## au-dessus du niveau 0 (relief).
 @export var view_level_margin_above: int = 15
-# Sprint 38 (2026-07-04, reliefs) : doit correspondre a VoxelWorld.hill_amplitude
-# pour que la camera demarre assez haut pour voir le sommet des collines.
+## Doit correspondre a VoxelWorld.hill_amplitude pour que la camera demarre
+## assez haut pour voir le sommet des collines.
 @export var hill_amplitude: float = 3.0
 
 var current_level: int = 49  # sommet de la carte (grid_height - 1), ajuste en _ready()
@@ -44,35 +42,29 @@ var is_middle_dragging: bool = false
 
 @onready var camera: Camera3D = $Camera3D
 @onready var voxel_world: Node3D = %VoxelWorld
-# Sprint 85 (2026-07-04, demande explicite : "les arbres/buissons/cascades
-# doivent disparaitre avec leur niveau, comme les rivieres elles memes") -
-# memes noeuds que VoxelWorld ci-dessus, notifies a chaque changement de
-# niveau de vue (voir _update_view_level plus bas).
+## Memes noeuds que VoxelWorld ci-dessus, notifies a chaque changement de
+## niveau de vue (voir _update_view_level plus bas) - les arbres/buissons/
+## cascades doivent disparaitre avec leur niveau, comme les rivieres
+## elles-memes.
 @onready var forest: Node3D = %Forest
 @onready var berry_bushes: Node3D = %BerryBushes
 @onready var waterfall_shapes: Node3D = %WaterfallShapes
 @onready var waterfall_streaks: Node3D = %WaterfallStreaks
 @onready var waterfall_foam_clouds: Node3D = %WaterfallFoamClouds
-# Sprint 87 (2026-07-04, demande explicite : "les decorations (fleurs etc)
-# doivent disparaitre aussi" en descendant de niveau).
+## Les decorations (fleurs etc.) doivent aussi disparaitre en descendant de
+## niveau.
 @onready var ground_decoration: Node3D = %GroundDecoration
 var level_label: Label
-# 2026-07-06 (revue de code, paquet H, M33) : reference au Tween de rotation
-# en cours, pour pouvoir l'arreter avant d'en lancer un nouveau si l'utilisateur
-# presse A/E rapidement plusieurs fois - voir _rotate_step().
+## Reference au Tween de rotation en cours, pour pouvoir l'arreter avant
+## d'en lancer un nouveau si l'utilisateur presse A/E rapidement plusieurs
+## fois - voir _rotate_step().
 var _rotate_tween: Tween
 
 
 func _ready() -> void:
-	# 2026-07-05 (revue de code, item F010) : grid_height est duplique en dur
-	# (aucune garde-fou automatique auparavant si VoxelWorld.HEIGHT changeait
-	# sans repercuter partout) - avertissement si desynchronise, sans changer
-	# le comportement (grid_height reste la valeur utilisee ci-dessous).
-	if grid_height != VoxelWorldScript.HEIGHT:
-		push_warning("CameraRig.grid_height (%d) desynchronise de VoxelWorld.HEIGHT (%d)" % [grid_height, VoxelWorldScript.HEIGHT])
-	# Sprint 38 (reliefs) : demarre au-dessus du sommet des collines les plus
-	# hautes, sinon la vue par defaut cache leur sommet (meme logique que
-	# VoxelWorld._ready, qui calcule son view_level de la meme facon).
+	# Demarre au-dessus du sommet des collines les plus hautes, sinon la vue
+	# par defaut cache leur sommet (meme logique que VoxelWorld._ready, qui
+	# calcule son view_level de la meme facon).
 	current_level = grid_height - 1 + int(ceil(hill_amplitude))
 	global_position.y = float(current_level)
 	_update_camera_offset()
@@ -124,11 +116,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_camera_offset()
 
 	if event is InputEventMouseButton:
-		# Sprint 35bis (2026-07-03) : Ctrl+molette zoome (meme logique que
-		# +/-) au lieu de changer de niveau - demande explicite. Verifie
-		# ctrl_pressed AVANT de traiter la molette comme un changement de
-		# niveau, pour que les deux usages restent bien separes (molette
-		# seule = niveau, Ctrl+molette = zoom).
+		# Ctrl+molette zoome (meme logique que +/-) au lieu de changer de
+		# niveau. Verifie ctrl_pressed AVANT de traiter la molette comme un
+		# changement de niveau, pour que les deux usages restent bien
+		# separes (molette seule = niveau, Ctrl+molette = zoom).
 		if event.pressed and event.ctrl_pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			camera_distance = clamp(camera_distance - zoom_speed, min_distance, max_distance)
 			_update_camera_offset()
@@ -136,13 +127,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			camera_distance = clamp(camera_distance + zoom_speed, min_distance, max_distance)
 			_update_camera_offset()
 		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			# Sprint 36bis (2026-07-03) : instrumentation de diagnostic (voir
-			# memoire) a confirme que sur trackpad Mac (defilement "naturel",
-			# reglage par defaut du systeme), scroller vers le BAS envoie
-			# l'evenement WHEEL_UP a Godot, pas WHEEL_DOWN - le code d'origine
-			# (WHEEL_UP = monter) faisait donc l'inverse de ce que l'utilisateur
-			# attendait, et restait bloque a la surface. Les deux branches sont
-			# desormais inversees pour correspondre au ressenti reel du trackpad.
+			# Sur trackpad Mac (defilement "naturel", reglage par defaut du
+			# systeme), scroller vers le BAS envoie l'evenement WHEEL_UP a
+			# Godot, pas WHEEL_DOWN - les deux branches sont donc inversees
+			# par rapport a une simple lecture "UP = monter" pour
+			# correspondre au ressenti reel du trackpad.
 			current_level = clampi(current_level - 1, 0, grid_height - 1 + view_level_margin_above)
 			global_position.y = float(current_level)
 			_update_label()
@@ -161,14 +150,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		_update_camera_offset()
 
 
-## Sprint 60 (2026-07-04, signale par Francois : "la rotation A/E est trop
-## brusque") : rotate_y() applique un saut de 45° INSTANTANE (aucune
-## interpolation), ressenti comme brutal. Anime desormais la rotation sur une
-## courte duree via un Tween plutot qu'un saut immediat.
+## rotate_y() applique un saut de 45° INSTANTANE (aucune interpolation),
+## ressenti comme brutal - anime donc la rotation sur une courte duree via un
+## Tween plutot qu'un saut immediat.
 func _rotate_step(delta_deg: float) -> void:
-	# 2026-07-06 (revue de code, paquet H, M33) : arrete le Tween de rotation
-	# precedent s'il tourne encore (pressions rapides de A/E) avant d'en
-	# lancer un nouveau - evite deux Tweens concurrents sur "rotation:y".
+	# Arrete le Tween de rotation precedent s'il tourne encore (pressions
+	# rapides de A/E) avant d'en lancer un nouveau - evite deux Tweens
+	# concurrents sur "rotation:y".
 	if _rotate_tween != null and _rotate_tween.is_valid():
 		_rotate_tween.kill()
 	_rotate_tween = create_tween()
@@ -183,33 +171,45 @@ func _update_camera_offset() -> void:
 	camera.look_at(global_position, Vector3.UP)
 
 
-## Sprint 23bis : repercute le niveau courant sur VoxelWorld pour que le
-## terrain au-dessus soit reellement cache (voir VoxelWorld.set_view_level).
-## Sans filet particulier si voxel_world est introuvable (%VoxelWorld) : ca ne
-## devrait pas arriver dans la scene actuelle, mais on evite un crash au cas ou.
+## Repercute le niveau courant sur VoxelWorld pour que le terrain au-dessus
+## soit reellement cache (voir VoxelWorld.set_view_level). Sans filet
+## particulier si voxel_world est introuvable (%VoxelWorld) : ca ne devrait
+## pas arriver dans la scene actuelle, mais on evite un crash au cas ou.
 func _update_view_level() -> void:
 	if voxel_world != null and voxel_world.has_method("set_view_level"):
 		voxel_world.set_view_level(current_level)
-	# Sprint 85 : meme notification pour les arbres/buissons/cascades (voir
-	# Forest.gd/BerryBushes.gd/WaterfallShapes.gd/WaterfallStreaks.gd/
-	# WaterfallFoamClouds.gd/update_view_level).
-	# 2026-07-05 (revue de code, item F028) : les 6 blocs "if X != null and
-	# X.has_method(...): X.update_view_level(...)" quasi identiques sont
-	# remplaces par une boucle sur ce tableau - meme comportement exact, mais
-	# un seul endroit a modifier si un 7e noeud decoratif doit s'y ajouter.
+	# Meme notification pour les arbres/buissons/cascades (voir Forest.gd/
+	# BerryBushes.gd/WaterfallShapes.gd/WaterfallStreaks.gd/
+	# WaterfallFoamClouds.gd/update_view_level) - une boucle sur ce tableau
+	# remplace 6 blocs "if X != null and X.has_method(...):
+	# X.update_view_level(...)" quasi identiques, pour n'avoir qu'un seul
+	# endroit a modifier si un 7e noeud decoratif doit s'y ajouter.
 	var view_level_nodes: Array = [
 		forest, berry_bushes, waterfall_shapes, waterfall_streaks,
 		waterfall_foam_clouds, ground_decoration,
 	]
 	for node in view_level_nodes:
 		if node != null and node.has_method("update_view_level"):
-			# 2026-07-06 (revue de code, paquet F, I42) : is_node_ready() evite
-			# d'appeler update_view_level() sur un noeud dont le _ready() n'est
-			# pas encore termine (ordre d'execution entre noeuds freres non
-			# garanti) - avertit plutot que d'echouer silencieusement sur un
-			# etat interne pas encore initialise.
+			# is_node_ready() evite d'appeler update_view_level() sur un
+			# noeud dont le _ready() n'est pas encore termine (ordre
+			# d'execution entre noeuds freres non garanti) - avertit plutot
+			# que d'echouer silencieusement sur un etat interne pas encore
+			# initialise.
 			if not node.is_node_ready():
 				push_warning("CameraRig._update_view_level : %s n'est pas encore pret (_ready() non termine), appel ignore cette fois." % node.name)
+				continue
+			# is_node_ready() devient VRAI des qu'un noeud entre dans
+			# l'arbre de scene, MEME SI son _ready() est encore en pause sur
+			# un "await" (Forest/BerryBushes/GroundDecoration generent par
+			# paquets, voir leur BATCH_SIZE) - ne suffit donc pas a garantir
+			# que la generation est reellement terminee
+			# (mmi.multimesh.instance_count reste a 0 jusqu'a la toute fin
+			# de leur generation). Verifie donc aussi generation_done si le
+			# noeud l'expose - get() renvoie null (donc jamais egal a
+			# "false") pour les noeuds qui n'ont pas cette propriete
+			# (cascades), jamais bloquant pour eux.
+			if node.get("generation_done") == false:
+				push_warning("CameraRig._update_view_level : %s encore en cours de generation, appel ignore cette fois." % node.name)
 				continue
 			node.update_view_level(current_level)
 
@@ -227,7 +227,7 @@ func _update_label() -> void:
 		elif displayed_level < 0:
 			suffix = " (sous-sol)"
 		else:
-			# Sprint 37octies : niveaux au-dessus de la surface actuelle, prets
-			# pour un futur relief (rien n'y est encore genere).
+			# Niveaux au-dessus de la surface actuelle, prets pour un futur
+			# relief (rien n'y est encore genere).
 			suffix = " (relief)"
 		level_label.text = "Niveau : %d%s" % [displayed_level, suffix]

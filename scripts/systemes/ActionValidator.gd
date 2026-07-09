@@ -42,11 +42,16 @@ func valid_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int
 ## Cases valides pour Miner - dans la carte, avec quelque chose a miner, hors
 ## eau (l'eau se puise, ne se mine pas). Pas de filtre "constructible" ni de
 ## suivi "en attente" (fidele au comportement du clic simple d'origine).
-func valid_mine_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
+##
+## "view_level" (voir VoxelWorld.view_level) : Miner cible le bloc visible au
+## niveau de coupe courant, pas forcement le sommet reel de la colonne (voir
+## get_top_block_y_at_or_below) - choix de Francois 2026-07-08, pour pouvoir
+## miner directement une poche revelee en coupe a un niveau inferieur.
+func valid_mine_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node, view_level: int) -> Array:
 	var cells: Array = []
 	for cell in _rect_cells_in_bounds(a, b, grid_width, grid_depth):
-		if voxel_world.get_top_block_y(cell.x, cell.y) < 0:
-			continue  # rien a miner sur cette colonne
+		if voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, view_level) < 0:
+			continue  # rien a miner sur cette colonne a ce niveau de vue ou en dessous
 		if voxel_world.is_water(cell.x, cell.y):
 			continue  # l'eau se puise (bouton Puiser), ne se mine pas
 		# Une case marquee "interdite" ne peut plus etre designee par Miner.

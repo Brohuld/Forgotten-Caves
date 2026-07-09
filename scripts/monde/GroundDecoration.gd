@@ -50,8 +50,11 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 
 ## Lit directement VoxelWorld.WIDTH/DEPTH au lieu d'un nombre duplique en dur.
-const grid_width := VoxelWorldScript.WIDTH
-const grid_depth := VoxelWorldScript.DEPTH
+## Plus des const : WIDTH/DEPTH sont reglables depuis StartMenu.gd (taille de
+## carte), mais restent figes une fois lus ici (jamais modifies en cours de
+## partie).
+var grid_width: int = VoxelWorldScript.WIDTH
+var grid_depth: int = VoxelWorldScript.DEPTH
 @export var climate_id: String = "tempere"
 @export var decoration_chance: float = 0.24
 
@@ -82,6 +85,21 @@ var _view_level: int = 999999  # tres haut par defaut = rien de cache avant le p
 ## retiree ici, update_view_level ne doit plus jamais la reafficher (voir
 ## plus bas).
 var _removed_instances: Dictionary = {}  # PartType -> Array[bool]
+
+## Index niveau de sol -> indices d'instances a ce niveau (PartType ->
+## Dictionary[int, Array[int]]), rempli une fois pour toutes dans
+## _harvest_and_clear au moment de la creation (le bloc de sol d'une
+## decoration ne change jamais ensuite). Permet a update_view_level de ne
+## toucher QUE les instances dont le niveau de sol se trouve entre l'ancien
+## et le nouveau niveau de vue, au lieu de rebalayer les dizaines de milliers
+## d'instances de la carte a chaque cran de molette (voir _apply_view_level_delta,
+## perf 2026-07-08).
+var _level_buckets: Dictionary = {}  # PartType -> Dictionary[int, Array[int]]
+## true des le premier appel a update_view_level (voir sa doc) : ce premier
+## appel fait un scan complet classique (identique au comportement d'avant
+## l'indexation, pour ne rien changer visuellement au demarrage) ; tous les
+## suivants passent par _apply_view_level_delta.
+var _view_level_initialized: bool = false
 
 # Comme toute la decoration est generee UNE fois au demarrage (jamais de
 # vraie regeneration dynamique), l'effet saisonnier est obtenu en taguant
@@ -196,6 +214,7 @@ func _build_shared_meshes() -> void:
 		_removed_instances[key] = []
 		_pending_printemps_seulement[key] = []
 		_pending_masque_en_ete[key] = []
+		_level_buckets[key] = {}
 
 
 func _make_mmi(mesh: Mesh) -> MultiMeshInstance3D:
@@ -383,6 +402,13 @@ func _harvest_and_clear(root: Node3D, ground_block_y: float, printemps_seulement
 		# individuelle).
 		_pending_printemps_seulement[part_type].append(printemps_seulement)
 		_pending_masque_en_ete[part_type].append(masque_en_ete)
+		# Index par niveau de sol (voir doc de _level_buckets) - l'index de
+		# cette instance vient d'etre ajoute juste au-dessus (size() - 1).
+		var lvl: int = int(ground_block_y)
+		var buckets: Dictionary = _level_buckets[part_type]
+		if not buckets.has(lvl):
+			buckets[lvl] = []
+		buckets[lvl].append(_pending_ground_y[part_type].size() - 1)
 	root.queue_free()
 
 
@@ -417,45 +443,93 @@ func _apply_pending_instances() -> void:
 ## _pending_xforms reste en memoire (jamais vide) apres
 ## _apply_pending_instances, donc la transform d'origine est toujours
 ## disponible pour la restauration.
+##
+## Perf (2026-07-08) : le tout premier appel fait un scan complet classique
+## (_refresh_all_visibility, identique au comportement d'avant l'indexation -
+## necessaire car on ne connait pas encore de "niveau precedent" fiable).
+## Tous les appels suivants (donc chaque cran de molette) passent par
+## _apply_view_level_delta, qui ne touche que les instances dont le niveau de
+## sol se trouve entre l'ancien et le nouveau niveau de vue via
+## _level_buckets, au lieu de rebalayer TOUTES les instances de la carte.
 func update_view_level(level: int) -> void:
+	var old_level: int = _view_level
 	_view_level = level
-	_refresh_all_visibility()
+	if not _view_level_initialized:
+		_view_level_initialized = true
+		_refresh_all_visibility()
+	else:
+		_apply_view_level_delta(old_level, level)
 
 
-## Appele par SeasonSystem.gd a chaque changement de saison - meme
-## mecanisme que update_view_level, factorise dans _refresh_all_visibility
-## pour combiner les TROIS raisons independantes de cacher une instance
-## (retiree par minage / au-dessus du niveau de vue / masquee par la
-## saison) sans qu'elles se marchent dessus.
+## Appele par SeasonSystem.gd a chaque changement de saison - reste un scan
+## complet (les changements de saison sont rares, pas le goulot mesure) mais
+## partage desormais _is_instance_hidden avec _apply_view_level_delta pour ne
+## pas dupliquer la logique de combinaison des 3 raisons de cacher une
+## instance.
 func apply_season(season_id: String) -> void:
 	_season_id = season_id
 	_refresh_all_visibility()
 
 
-## Combine les 3 conditions de visibilite (voir update_view_level/
-## apply_season ci-dessus) et met a jour les transforms de TOUTES les
-## instances - appele par les deux, jamais directement.
+## Vrai si l'instance "i" de "part_type" doit etre cachee, en combinant les 3
+## raisons independantes (retiree par minage / au-dessus du niveau de vue /
+## masquee par la saison) - utilise par _refresh_all_visibility (scan
+## complet) ET _apply_view_level_delta (scan partiel) pour ne jamais
+## dupliquer cette regle.
+func _is_instance_hidden(part_type: int, i: int) -> bool:
+	if _removed_instances[part_type][i]:
+		return true
+	if _pending_ground_y[part_type][i] >= float(_view_level):
+		return true
+	if _pending_printemps_seulement[part_type][i] and _season_id != "printemps":
+		return true
+	if _pending_masque_en_ete[part_type][i] and _season_id == "ete":
+		return true
+	return false
+
+
+## Combine les 3 conditions de visibilite (voir _is_instance_hidden) et met a
+## jour les transforms de TOUTES les instances - scan complet, utilise pour
+## le tout premier appel de update_view_level et pour apply_season.
 func _refresh_all_visibility() -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for part_type in _mmi.keys():
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var xforms: Array = _pending_xforms[part_type]
-		var ground_ys: Array = _pending_ground_y[part_type]
-		var removed: Array = _removed_instances[part_type]
-		var printemps_seulement: Array = _pending_printemps_seulement[part_type]
-		var masque_en_ete: Array = _pending_masque_en_ete[part_type]
 		for i in range(xforms.size()):
-			# Une instance retiree (voir remove_decoration_at) reste cachee
-			# quel que soit le niveau de vue - ne jamais la restaurer.
-			var hidden: bool = removed[i] or ground_ys[i] > float(_view_level)
-			if not hidden and printemps_seulement[i] and _season_id != "printemps":
-				hidden = true
-			if not hidden and masque_en_ete[i] and _season_id == "ete":
-				hidden = true
-			if hidden:
+			if _is_instance_hidden(part_type, i):
 				mmi.multimesh.set_instance_transform(i, zero_xform)
 			else:
 				mmi.multimesh.set_instance_transform(i, xforms[i])
+
+
+## Version incrementale de _refresh_all_visibility, utilisee pour tout appel
+## de update_view_level APRES le premier (voir sa doc, perf 2026-07-08). Le
+## statut cache/visible d'une instance de niveau de sol L ne peut changer que
+## si L se trouve entre l'ancien et le nouveau niveau de vue, borne haute
+## exclue (min(old,new) <= L < max(old,new)) - regle "hidden = L >= niveau
+## de vue" (voir _is_instance_hidden) : le niveau haut lui-meme reste cache
+## des deux cotes, donc pas besoin de le repasser. On ne parcourt donc que
+## les buckets de _level_buckets dans cet intervalle, au lieu de toutes les
+## instances.
+func _apply_view_level_delta(old_level: int, new_level: int) -> void:
+	if old_level == new_level:
+		return
+	var lo: int = min(old_level, new_level)
+	var hi: int = max(old_level, new_level)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
+	for part_type in _mmi.keys():
+		var buckets: Dictionary = _level_buckets[part_type]
+		var mmi: MultiMeshInstance3D = _mmi[part_type]
+		var xforms: Array = _pending_xforms[part_type]
+		for lvl in range(lo, hi):
+			if not buckets.has(lvl):
+				continue
+			for i in buckets[lvl]:
+				if _is_instance_hidden(part_type, i):
+					mmi.multimesh.set_instance_transform(i, zero_xform)
+				else:
+					mmi.multimesh.set_instance_transform(i, xforms[i])
 
 
 ## Appelee par Dwarf.gd/_complete_task ("miner") juste apres

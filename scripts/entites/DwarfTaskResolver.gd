@@ -31,6 +31,8 @@ static func complete_task(dwarf: Node3D) -> void:
 			complete_puiser_task(dwarf)
 		"detruire":
 			complete_detruire_task(dwarf)
+		"escalier":
+			complete_escalier_task(dwarf)
 
 	if skill_id != "":
 		var skills: DwarfSkillsScript = dwarf.get("skills")
@@ -54,19 +56,64 @@ static func complete_task(dwarf: Node3D) -> void:
 static func complete_miner_task(dwarf: Node3D, skill_id: String) -> void:
 	var current_task: Dictionary = dwarf.get("current_task")
 	var voxel_world: Node3D = dwarf.get("voxel_world")
-	var resource_name: String = voxel_world.remove_block(
-		current_task["bx"], current_task["by"], current_task["bz"]
-	)
-	# Retire toute decoration (herbe/fleur/caillou) posee sur cette colonne.
-	var ground_decoration: Node3D = dwarf.get("ground_decoration")
-	if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
-		ground_decoration.remove_decoration_at(current_task["bx"], current_task["bz"])
+	var bx: int = current_task["bx"]
+	var by: int = current_task["by"]
+	var bz: int = current_task["bz"]
+	# Miner peut desormais cibler le niveau de vue courant plutot que le
+	# vrai sommet de la colonne (voir ActionValidator.valid_mine_rect_cells)
+	# - decision Francois 2026-07-08 : le "plafond" (blocs restes au-dessus)
+	# ne disparait PAS, comme dans Dwarf Fortress. La decoration au sol
+	# (herbe/fleur/caillou, voir GroundDecoration.remove_decoration_at)
+	# n'existe elle que sur le VRAI sommet - il faut donc verifier AVANT de
+	# miner que "by" est bien ce sommet, sinon on effacerait a tort la
+	# decoration de surface en minant une poche plus bas.
+	var was_top: bool = (by == voxel_world.get_top_block_y(bx, bz))
+	var resource_name: String = voxel_world.remove_block(bx, by, bz)
+	if was_top:
+		var ground_decoration: Node3D = dwarf.get("ground_decoration")
+		if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
+			ground_decoration.remove_decoration_at(bx, bz)
 	if resource_name != "":
-		DwarfResourcePileScript.collect_resource(dwarf, resource_name)
+		# Le tas tombe au fond du trou (niveau "by", meme convention que
+		# complete_escalier_task) au lieu de rester a la position du nain -
+		# pour un bloc mine SOUS les pieds du nain (le cas le plus courant,
+		# un "trou" creuse depuis la surface), dwarf.global_position resterait
+		# au niveau du DESSUS du trou, pas dedans (bug remonte par Francois
+		# 2026-07-08, meme symptome que l'escalier : tas en apesanteur).
+		var pile_pos := Vector3(bx + 0.5, float(by), bz + 0.5)
+		DwarfResourcePileScript.collect_resource(dwarf, resource_name, pile_pos)
 		var skills: DwarfSkillsScript = dwarf.get("skills")
 		var skill_levels: Dictionary = dwarf.get("skill_levels")
 		if skills.roll_bonus_yield(skill_levels, skill_id):
-			DwarfResourcePileScript.collect_resource(dwarf, resource_name)
+			DwarfResourcePileScript.collect_resource(dwarf, resource_name, pile_pos)
+
+
+## Creuse toute la plage de niveaux d'un coup (voir VoxelWorld.dig_stairs) -
+## un seul nain, une seule tache, plusieurs niveaux ressource par ressource.
+## Pas de bonus de competence pour l'instant (SkillDefs.skill_for_task ne
+## mappe pas "escalier" - a revoir si besoin, cette premiere passe se
+## concentre sur le menu/creusage/rendu, pas l'equilibrage).
+static func complete_escalier_task(dwarf: Node3D) -> void:
+	var current_task: Dictionary = dwarf.get("current_task")
+	var voxel_world: Node3D = dwarf.get("voxel_world")
+	var bx: int = current_task["bx"]
+	var bz: int = current_task["bz"]
+	var bottom_y: int = current_task["bottom_y"]
+	var resources: Dictionary = voxel_world.dig_stairs(bx, bz, current_task["top_y"], bottom_y)
+	var ground_decoration: Node3D = dwarf.get("ground_decoration")
+	if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
+		ground_decoration.remove_decoration_at(bx, bz)
+	# Les tas "tombent" au fond de l'escalier creuse (niveau bottom_y) au lieu
+	# de rester a la hauteur ou se tenait le nain avant de commencer - il
+	# creuse toute la plage de niveaux d'un coup sans bouger, donc
+	# dwarf.global_position (repli par defaut de collect_resource) resterait
+	# fige au sommet, au-dessus du trou nouvellement creuse (bug remonte par
+	# Francois 2026-07-08, capture d'ecran : tas flottant en l'air).
+	var pile_pos := Vector3(bx + 0.5, float(bottom_y), bz + 0.5)
+	for resource_name in resources:
+		var count: int = resources[resource_name]
+		for i in range(count):
+			DwarfResourcePileScript.collect_resource(dwarf, resource_name, pile_pos)
 
 
 ## Demolit un mur construit (mur_bois/mur_pierre uniquement - un mur en

@@ -37,6 +37,22 @@ func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> int:
 	})
 
 
+## Ajoute une tache de creusage d'escalier sur la colonne (bx,bz), du niveau
+## top_y (sommet actuel, cote surface) au niveau bottom_y (le plus profond
+## atteint via le geste clic+molette+clic, voir
+## ActionDragController.finalize_stair_selection). Un seul nain traite TOUTE
+## la plage en une seule tache (voir VoxelWorld.dig_stairs) - pas une tache
+## par niveau. Renvoie l'id unique de la tache (icone temporaire, voir
+## ActionController.gd).
+func add_stair_task(walk_pos: Vector3, bx: int, bz: int, top_y: int, bottom_y: int) -> int:
+	return _add_task({
+		"type": "escalier",
+		"position": walk_pos,
+		"bx": bx, "bz": bz,
+		"top_y": top_y, "bottom_y": bottom_y,
+	})
+
+
 ## Ajoute une tache d'abattage sur un arbre (Node3D du groupe "trees").
 ## Renvoie l'id unique de la tache (icone temporaire, voir ActionController.gd).
 func add_chop_task(tree: Node3D) -> int:
@@ -106,21 +122,35 @@ func task_count() -> int:
 
 
 ## Retire et renvoie la tache la plus proche de "from_position" (priorite par
-## distance, plutot que le simple ordre d'ajout). Garde sur tableau vide :
-## le seul appelant (Dwarf.gd) verifie deja has_tasks() avant d'appeler cette
-## fonction, mais rien dans la fonction elle-meme n'empecherait un crash
-## (pop_at sur tableau vide) si un futur appelant l'invoquait sans cette
-## verification.
-func pop_nearest_task(from_position: Vector3) -> Dictionary:
-	if tasks.is_empty():
-		return {}
-	var best_index := 0
+## distance, plutot que le simple ordre d'ajout) PARMI CELLES EXECUTABLES
+## MAINTENANT. Une tache "miner" ciblant un bloc pas encore accessible (voir
+## VoxelWorld.can_reach_block - regle Francois 2026-07-08 : un "trou" se
+## creuse toujours depuis la surface, mais un "couloir" ne se creuse que
+## depuis un point deja relie) est ignoree SANS etre retiree de la file -
+## elle redeviendra candidate des qu'un chemin la reliera. Meme traitement
+## pour une tache "miner" dont la cible est a plus d'1 niveau du nain SANS
+## escalier connectant (regles de pathing, Francois 2026-07-08, voir
+## VoxelWorld.can_walk_to_level) - le nain ne peut PAS y marcher pour
+## l'instant, meme si le minage lui-meme serait autorise. Renvoie {} si
+## aucune tache n'est executable actuellement, meme si la file n'est pas
+## vide - l'appelant (Dwarf.gd) doit alors traiter ce nain comme s'il n'y
+## avait pas de tache du tout pour cette frame (pas de crash sur "position"
+## absente d'un dictionnaire vide).
+func pop_nearest_task(from_position: Vector3, voxel_world: Node) -> Dictionary:
+	var best_index := -1
 	var best_dist := INF
 	for i in range(tasks.size()):
-		var d: float = (tasks[i]["position"] - from_position).length()
+		var task: Dictionary = tasks[i]
+		if task["type"] == "miner" and not voxel_world.can_reach_block(task["bx"], task["by"], task["bz"]):
+			continue
+		if task["type"] == "miner" and not voxel_world.can_walk_to_level(int(round(from_position.y)), task["bx"], task["bz"], task["by"]):
+			continue
+		var d: float = (task["position"] - from_position).length()
 		if d < best_dist:
 			best_dist = d
 			best_index = i
+	if best_index == -1:
+		return {}
 	return tasks.pop_at(best_index)
 
 

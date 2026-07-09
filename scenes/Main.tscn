@@ -167,6 +167,7 @@ armor_color = Color(0.3, 0.32, 0.35, 1)
 [node name="Body" type="Node3D" parent="Colony/Dwarf3"]
 
 [node name="ActionUI" type="CanvasLayer" parent="."]
+unique_name_in_owner = true
 script = ExtResource("6")
 
 [node name="TimeLabel" type="Label" parent="ActionUI"]
@@ -192,6 +193,16 @@ theme_override_font_sizes/font_size = 22
 text = "Bois : 0    Pierre : 0    Terre : 0    Taches en attente : 0"
 
 [node name="ConstruireSubMenu" type="VBoxContainer" parent="ActionUI"]
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 224.0
+offset_top = -656.0
+offset_right = 424.0
+offset_bottom = -136.0
+grow_vertical = 0
+theme_override_constants/separation = 2
+
+[node name="MinerSubMenu" type="VBoxContainer" parent="ActionUI"]
 anchor_top = 1.0
 anchor_bottom = 1.0
 offset_left = 224.0

@@ -56,9 +56,12 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
 ## Lit directement VoxelWorld.WIDTH/DEPTH/HEIGHT au lieu d'un nombre
 ## duplique en dur - desynchronisation avec la taille reelle de la carte
-## structurellement impossible.
-const grid_width := VoxelWorldScript.WIDTH
-const grid_depth := VoxelWorldScript.DEPTH
+## structurellement impossible. WIDTH/DEPTH ne sont plus des const cote
+## VoxelWorld (reglables depuis StartMenu.gd) - grid_width/grid_depth ne
+## peuvent donc plus l'etre non plus ici (mais restent figes une fois lus,
+## la taille de carte ne change jamais en cours de partie).
+var grid_width: int = VoxelWorldScript.WIDTH
+var grid_depth: int = VoxelWorldScript.DEPTH
 const ground_level := float(VoxelWorldScript.HEIGHT)  # sommet de la carte
 @export var size_multiplier: float = 1.3
 
@@ -119,6 +122,23 @@ var _current_season_id: String = "ete"
 # couleur deja teintee), donc aucune derive possible en changeant de saison
 # plusieurs fois.
 var _foliage_base_colors: Dictionary = {}  # PartType -> Array[Color]
+
+## Index niveau de sol -> arbres a ce niveau (int -> Array[Node3D]), rempli
+## dans _spawn_tree (generation initiale ET regrowth via
+## _spawn_new_tree_and_apply, qui reutilise _spawn_tree - un seul point de
+## remplissage suffit donc pour les deux). Le bloc de sol d'un arbre ne
+## change jamais apres sa creation (tree.position fixe). Permet a
+## update_view_level de ne toucher QUE les arbres dont le niveau de sol se
+## trouve entre l'ancien et le nouveau niveau de vue, au lieu de rebalayer
+## TOUS les arbres de la carte a chaque cran de molette (voir
+## _apply_view_level_delta, perf 2026-07-08). Un arbre coupe (queue_free) est
+## simplement ignore a la lecture via is_instance_valid - pas besoin de le
+## retirer activement du bucket.
+var _level_buckets: Dictionary = {}  # int -> Array[Node3D]
+## -1 = pas encore initialise. Voir doc de update_view_level : le tout
+## premier appel fait un scan complet classique, tous les suivants passent
+## par _apply_view_level_delta.
+var _last_view_level: int = -1
 
 # Teinte multiplicative appliquee par-dessus la couleur de base du
 # feuillage, par saison. "ete" = neutre (couleurs d'origine, aucun
@@ -421,6 +441,13 @@ func _spawn_tree(species: Dictionary) -> void:
 	tree.set_meta("wood_resource", species["wood_resource"])
 	tree.set_meta("species_name", species["nom"])
 	add_child(tree)
+
+	# Index par niveau de sol (voir doc de _level_buckets) - couvre aussi le
+	# regrowth (_maybe_regrow_tree -> _spawn_new_tree_and_apply -> _spawn_tree).
+	var _ground_lvl: int = int(tree.position.y - 1.0)
+	if not _level_buckets.has(_ground_lvl):
+		_level_buckets[_ground_lvl] = []
+	_level_buckets[_ground_lvl].append(tree)
 
 	# Transform de reference pour toute la geometrie de cet arbre, lu UNE
 	# fois ici (tree est deja dans l'arbre de scene, position/rotation/scale
@@ -858,22 +885,70 @@ func set_winter_fruits_hidden(hidden: bool) -> void:
 	_winter_fruits_hidden = hidden
 
 
+## Perf (2026-07-08) : le tout premier appel fait un scan complet classique
+## (_apply_view_level_full, identique au comportement d'avant l'indexation).
+## Tous les appels suivants (donc chaque cran de molette) passent par
+## _apply_view_level_delta, qui ne touche que les arbres dont le niveau de
+## sol se trouve entre l'ancien et le nouveau niveau de vue via
+## _level_buckets, au lieu de rebalayer tout le groupe "trees".
 func update_view_level(level: int) -> void:
+	if _last_view_level == -1:
+		_apply_view_level_full(level)
+	else:
+		_apply_view_level_delta(_last_view_level, level)
+	_last_view_level = level
+
+
+## Bascule un seul arbre cache/visible selon "hidden" (facteur commun entre
+## le scan complet et le scan incremental).
+func _apply_tree_visibility(tree: Node3D, hidden: bool, zero_xform: Transform3D) -> void:
+	if tree.has_meta("visual_refs"):
+		var refs: Array = tree.get_meta("visual_refs")
+		for ref in refs:
+			var part_type: int = ref[0]
+			var idx: int = ref[1]
+			if hidden:
+				_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+				_live_xforms[part_type][idx] = zero_xform
+			else:
+				_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
+				_live_xforms[part_type][idx] = _pending_xforms[part_type][idx]
+	for child in tree.get_children():
+		if (child.name as String).begins_with("Fruit_"):
+			child.visible = not hidden and not _winter_fruits_hidden
+
+
+## Scan complet (tous les arbres du groupe "trees") - utilise uniquement pour
+## le tout premier appel de update_view_level (voir sa doc).
+func _apply_view_level_full(level: int) -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for tree in get_tree().get_nodes_in_group("trees"):
 		var ground_block_y: float = tree.position.y - 1.0
-		var hidden: bool = ground_block_y > float(level)
-		if tree.has_meta("visual_refs"):
-			var refs: Array = tree.get_meta("visual_refs")
-			for ref in refs:
-				var part_type: int = ref[0]
-				var idx: int = ref[1]
-				if hidden:
-					_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
-					_live_xforms[part_type][idx] = zero_xform
-				else:
-					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
-					_live_xforms[part_type][idx] = _pending_xforms[part_type][idx]
-		for child in tree.get_children():
-			if (child.name as String).begins_with("Fruit_"):
-				child.visible = not hidden and not _winter_fruits_hidden
+		# >= et non > (Francois 2026-07-08) : depuis que la couche-frontiere
+		# n'affiche plus le vrai sol (herbe) mais un capuchon sombre (voir
+		# VoxelMeshBuilder._add_boundary_cube_faces), un arbre dont le sol est
+		# EXACTEMENT au niveau de vue doit lui aussi disparaitre - son "sol"
+		# n'est plus represente comme praticable a ce niveau precis.
+		var hidden: bool = ground_block_y >= float(level)
+		_apply_tree_visibility(tree, hidden, zero_xform)
+
+
+## Scan incremental : ne touche que les arbres dont le niveau de sol se
+## trouve entre l'ancien et le nouveau niveau de vue (voir doc de
+## _level_buckets). Bornes [lo, hi) (et non [lo+1, hi]) : coherent avec la
+## regle ">=" ci-dessus - le niveau de sol EXACTEMENT au niveau de vue doit
+## pouvoir changer d'etat lui aussi (Francois 2026-07-08).
+func _apply_view_level_delta(old_level: int, new_level: int) -> void:
+	if old_level == new_level:
+		return
+	var lo: int = min(old_level, new_level)
+	var hi: int = max(old_level, new_level)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
+	for lvl in range(lo, hi):
+		if not _level_buckets.has(lvl):
+			continue
+		for tree in _level_buckets[lvl]:
+			if not is_instance_valid(tree):
+				continue
+			var hidden: bool = float(lvl) >= float(new_level)
+			_apply_tree_visibility(tree, hidden, zero_xform)

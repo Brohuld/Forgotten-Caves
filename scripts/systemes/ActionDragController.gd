@@ -25,6 +25,10 @@ extends RefCounted
 ## (la source faisant deja autorite).
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+## Table centrale label/icone/couleur/effort par type de tache - utilisee ici
+## pour l'icone+couleur des marqueurs de tache (spawn_task_marker), au lieu
+## de couleurs/kinds d'icone repetes en dur a chaque finalize_*_selection.
+const TaskDefinitionsScript := preload("res://scripts/data/taches/TaskDefinitions.gd")
 
 ## Garder synchronise avec ActionController.Mode, voir doc en tete de
 ## fichier.
@@ -270,7 +274,7 @@ static func finalize_chop_selection(controller: CanvasLayer, a: Vector2, b: Vect
 			continue
 		var task_id: int = task_queue.add_chop_task(target)
 		var marker_pos: Vector3 = target.global_position + Vector3(0, marker_height_for(target), 0)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "hache", Color(0.25, 0.55, 0.15))
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("couper"), TaskDefinitionsScript.get_color("couper"))
 
 
 ## Version "plusieurs a la fois" de handle_gather_click. Meme exclusion que
@@ -283,14 +287,23 @@ static func finalize_gather_selection(controller: CanvasLayer, a: Vector2, b: Ve
 			continue
 		var marker_pos: Vector3 = target.global_position + Vector3(0, marker_height_for(target), 0)
 		var task_id: int = task_queue.add_gather_task(target)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "panier", Color(0.85, 0.25, 0.25))
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("cueillir"), TaskDefinitionsScript.get_color("cueillir"))
 
 
 ## Intersection du rayon camera->souris avec le sol. Plusieurs passes pour
 ## suivre le relief : la premiere passe suppose un plan plat a GROUND_LEVEL,
-## puis chaque passe suivante recalcule l'intersection au niveau REEL du
-## terrain a cet endroit (get_top_block_y) - converge en quelques
+## puis chaque passe suivante recalcule l'intersection au niveau VISIBLE du
+## terrain a cet endroit (get_top_block_y_at_or_below, plafonne au niveau de
+## vue courant - PAS get_top_block_y, le vrai sommet) - converge en quelques
 ## iterations tant que le relief local n'est pas trop abrupt.
+##
+## Important si le niveau de vue est abaisse (molette, voir
+## VoxelWorld.view_level) : sans ce plafonnement, le rayon convergeait vers
+## le VRAI sommet de la colonne (souvent bien plus haut, invisible a
+## l'ecran), decalant (x,z) par rapport a ce que le joueur voit reellement
+## sous son curseur - designation imprecise en coupe (feedback Francois
+## 2026-07-08). Desormais coherent avec ActionValidator.valid_mine_rect_cells
+## (meme fonction, meme plafond).
 static func raycast_ground(controller: CanvasLayer, screen_pos: Vector2):
 	var camera: Camera3D = controller.get("camera")
 	var voxel_world: Node3D = controller.get("voxel_world")
@@ -305,7 +318,7 @@ static func raycast_ground(controller: CanvasLayer, screen_pos: Vector2):
 		if t < 0.0:
 			return null
 		hit = ray_origin + ray_dir * t
-		var top_y: int = voxel_world.get_top_block_y(int(floor(hit.x)), int(floor(hit.z)))
+		var top_y: int = voxel_world.get_top_block_y_at_or_below(int(floor(hit.x)), int(floor(hit.z)), voxel_world.view_level)
 		if top_y < 0:
 			break
 		var real_y: float = float(top_y) + 1.0
@@ -341,12 +354,13 @@ static func update_drag_preview(controller: CanvasLayer) -> void:
 		drag_preview_ghosts.append(ghost)
 
 
-## Toutes les cases valides (dans la carte, avec quelque chose a miner) du
-## rectangle - delegue a ActionValidator.gd.
+## Toutes les cases valides (dans la carte, avec quelque chose a miner au
+## niveau de vue courant ou en dessous) du rectangle - delegue a
+## ActionValidator.gd.
 static func valid_mine_rect_cells(controller: CanvasLayer, a: Vector2i, b: Vector2i) -> Array:
 	var action_validator = controller.get("action_validator")
 	var voxel_world: Node3D = controller.get("voxel_world")
-	return action_validator.valid_mine_rect_cells(a, b, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, voxel_world)
+	return action_validator.valid_mine_rect_cells(a, b, VoxelWorldScript.WIDTH, VoxelWorldScript.DEPTH, voxel_world, voxel_world.view_level)
 
 
 static func update_mine_drag_preview(controller: CanvasLayer) -> void:
@@ -356,13 +370,15 @@ static func update_mine_drag_preview(controller: CanvasLayer) -> void:
 	var drag_end: Vector2i = controller.get("drag_end")
 	var drag_preview_ghosts: Array = controller.get("drag_preview_ghosts")
 	for cell in valid_mine_rect_cells(controller, drag_start, drag_end):
-		var y: int = voxel_world.get_top_block_y(cell.x, cell.y)
+		var y: int = voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, voxel_world.view_level)
 		var ghost := spawn_ghost(controller, cell.x, y, cell.y, "gris_minage", 0.35)
 		drag_preview_ghosts.append(ghost)
 
 
 ## Version "plusieurs a la fois" du minage - une tache par case valide,
-## chacune avec son propre marqueur.
+## chacune avec son propre marqueur. Cible le bloc visible au niveau de vue
+## courant (voir doc de ActionValidator.valid_mine_rect_cells), pas
+## forcement le sommet reel de la colonne.
 static func finalize_mine_selection(controller: CanvasLayer) -> void:
 	var voxel_world: Node3D = controller.get("voxel_world")
 	var task_queue: Node = controller.get("task_queue")
@@ -370,11 +386,124 @@ static func finalize_mine_selection(controller: CanvasLayer) -> void:
 	var drag_start: Vector2i = controller.get("drag_start")
 	var drag_end: Vector2i = controller.get("drag_end")
 	for cell in valid_mine_rect_cells(controller, drag_start, drag_end):
-		var top_y: int = voxel_world.get_top_block_y(cell.x, cell.y)
+		var top_y: int = voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, voxel_world.view_level)
 		var walk_pos := Vector3(cell.x + 0.5, GROUND_LEVEL, cell.y + 0.5)
 		var task_id: int = task_queue.add_mine_task(walk_pos, cell.x, top_y, cell.y)
 		var marker_pos := Vector3(cell.x + 0.5, top_y + 1.4, cell.y + 0.5)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "pioche", Color(0.5, 0.5, 0.5))
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("miner"), TaskDefinitionsScript.get_color("miner"))
+
+
+## --- Escalier (Mode.MINER, sous-type "escalier") ---
+## Geste dedie clic+molette+clic sur UNE SEULE colonne (x,z), distinct du
+## rectangle utilise par Miner "bloc"/Construire/Puiser/Detruire/Interdire -
+## voir doc de ActionController.stair_active. 1er clic = choisit la colonne
+## et demarre le geste (sommet actuel de la colonne = niveau de depart) ;
+## molette (pendant le geste, voir ActionController._unhandled_input) =
+## etend/reduit la profondeur ; 2e clic = confirme et cree la tache.
+
+## 1er clic (choisit la colonne, demarre le geste) ou 2e clic (confirme) -
+## controller.stair_active distingue les deux cas.
+static func on_stair_click(controller: CanvasLayer, screen_pos: Vector2) -> void:
+	if controller.get("stair_active"):
+		finalize_stair_selection(controller)
+		return
+	var hit = raycast_ground(controller, screen_pos)
+	if hit == null:
+		return
+	var voxel_world: Node3D = controller.get("voxel_world")
+	var cell := cell_from_hit(hit)
+	# get_top_block_y_at_or_below (pas get_top_block_y) : coherent avec
+	# raycast_ground, qui converge desormais vers la surface VISIBLE au
+	# niveau de vue courant, pas le vrai sommet. Sans ca, un escalier pouvait
+	# etre creuse avec un top_y au-dessus du niveau de vue affiche -
+	# _rebuild_mesh_body ignore alors toute plaque avec y > view_level,
+	# rendant l'escalier totalement invisible (feedback Francois
+	# 2026-07-08 : "le bloc escalier a totalement disparu").
+	var top_y: int = voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, voxel_world.view_level)
+	if top_y < 0 or voxel_world.is_water(cell.x, cell.y):
+		return  # rien a creuser ici (colonne vide ou eau en surface)
+	controller.set("stair_column", cell)
+	controller.set("stair_top_y", top_y)
+	controller.set("stair_bottom_y", top_y)
+	controller.set("stair_active", true)
+	update_stair_preview(controller)
+
+
+## Etend (delta=+1) ou reduit (delta=-1) la profondeur du geste en cours d'un
+## niveau, bornee entre stair_top_y (profondeur minimale : 1 seul niveau) et
+## le sol reel de la colonne (voir max_stair_bottom ci-dessous - impossible
+## de creuser un escalier a travers du vide deja mine).
+static func extend_stair_gesture(controller: CanvasLayer, delta: int) -> void:
+	var top_y: int = controller.get("stair_top_y")
+	var bottom_y: int = controller.get("stair_bottom_y")
+	var column: Vector2i = controller.get("stair_column")
+	var voxel_world: Node3D = controller.get("voxel_world")
+	var floor_y: int = max_stair_bottom(voxel_world, column.x, column.y, top_y)
+	bottom_y = clampi(bottom_y - delta, floor_y, top_y)
+	controller.set("stair_bottom_y", bottom_y)
+	update_stair_preview(controller)
+
+
+## Niveau le plus bas jusqu'ou une colonne peut etre creusee en escalier :
+## descend depuis top_y tant que chaque niveau est plein (voir
+## VoxelWorld.is_solid), s'arrete des qu'un niveau deja vide est rencontre
+## (impossible de "creuser" du vide) ou au fond de la carte (y=0).
+static func max_stair_bottom(voxel_world: Node3D, x: int, z: int, top_y: int) -> int:
+	var y := top_y
+	while y > 0 and voxel_world.is_solid(x, y - 1, z):
+		y -= 1
+	return y
+
+
+## Fantomes semi-transparents (meme spawn_ghost que Miner/Construire) sur
+## toute la plage top_y..bottom_y de la colonne choisie, pour visualiser la
+## profondeur en cours de reglage a la molette.
+static func update_stair_preview(controller: CanvasLayer) -> void:
+	clear_stair_preview(controller)
+	var column: Vector2i = controller.get("stair_column")
+	var top_y: int = controller.get("stair_top_y")
+	var bottom_y: int = controller.get("stair_bottom_y")
+	var stair_preview_ghosts: Array = controller.get("stair_preview_ghosts")
+	for y in range(top_y, bottom_y - 1, -1):
+		var ghost := spawn_ghost(controller, column.x, y, column.y, "escalier", 0.45)
+		stair_preview_ghosts.append(ghost)
+
+
+static func clear_stair_preview(controller: CanvasLayer) -> void:
+	var stair_preview_ghosts: Array = controller.get("stair_preview_ghosts")
+	for ghost in stair_preview_ghosts:
+		if is_instance_valid(ghost):
+			ghost.queue_free()
+	stair_preview_ghosts.clear()
+
+
+## Annule le geste en cours (Echap/clic droit ou changement de sous-type en
+## plein geste, voir ActionController._handle_mode_exit/
+## _on_miner_subtype_toggled) - ne cree aucune tache.
+static func cancel_stair(controller: CanvasLayer) -> void:
+	controller.set("stair_active", false)
+	clear_stair_preview(controller)
+
+
+## 2e clic : confirme le geste, cree UNE SEULE tache TaskQueue couvrant toute
+## la plage top_y..bottom_y (voir TaskQueue.add_stair_task/
+## VoxelWorld.dig_stairs - un seul nain traite tous les niveaux d'affilee,
+## pas une tache par niveau). Meme convention de reset que Miner/Construire
+## (_reset_mode_selection en fin de designation, pas de mode "collant" comme
+## Interdire).
+static func finalize_stair_selection(controller: CanvasLayer) -> void:
+	var column: Vector2i = controller.get("stair_column")
+	var top_y: int = controller.get("stair_top_y")
+	var bottom_y: int = controller.get("stair_bottom_y")
+	var task_queue: Node = controller.get("task_queue")
+	var queued_markers: Dictionary = controller.get("queued_markers")
+	var walk_pos := Vector3(column.x + 0.5, GROUND_LEVEL, column.y + 0.5)
+	var task_id: int = task_queue.add_stair_task(walk_pos, column.x, column.y, top_y, bottom_y)
+	var marker_pos := Vector3(column.x + 0.5, top_y + 1.4, column.y + 0.5)
+	queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("escalier"), TaskDefinitionsScript.get_color("escalier"))
+	controller.set("stair_active", false)
+	clear_stair_preview(controller)
+	controller.call("_reset_mode_selection")
 
 
 ## Toutes les cases valides (sommet = mur_bois/mur_pierre) du rectangle -
@@ -398,20 +527,19 @@ static func update_destroy_drag_preview(controller: CanvasLayer) -> void:
 
 
 ## Une tache de demolition par mur valide, chacune avec son propre marqueur
-## (glyphe "pioche" reutilise, teinte de destruction - voir _material_color).
+## (icone+couleur "detruire" de TaskDefinitions).
 static func finalize_destroy_selection(controller: CanvasLayer) -> void:
 	var voxel_world: Node3D = controller.get("voxel_world")
 	var task_queue: Node = controller.get("task_queue")
 	var queued_markers: Dictionary = controller.get("queued_markers")
 	var drag_start: Vector2i = controller.get("drag_start")
 	var drag_end: Vector2i = controller.get("drag_end")
-	var destroy_color = controller.call("_material_color", "detruire")
 	for cell in valid_destroy_rect_cells(controller, drag_start, drag_end):
 		var top_y: int = voxel_world.get_top_block_y(cell.x, cell.y)
 		var walk_pos := Vector3(cell.x + 0.5, GROUND_LEVEL, cell.y + 0.5)
 		var task_id: int = task_queue.add_destroy_task(walk_pos, cell.x, top_y, cell.y)
 		var marker_pos := Vector3(cell.x + 0.5, top_y + 1.4, cell.y + 0.5)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "pioche", destroy_color)
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("detruire"), TaskDefinitionsScript.get_color("detruire"))
 
 
 ## Univers de cases que le rectangle Interdire peut cibler - delegue a
@@ -495,7 +623,11 @@ static func finalize_puiser_selection(controller: CanvasLayer) -> void:
 		var walk_pos := Vector3(cell.x + 0.5, GROUND_LEVEL, cell.y + 0.5)
 		var task_id: int = task_queue.add_puiser_task(walk_pos, cell.x, cell.y)
 		var marker_pos := Vector3(cell.x + 0.5, top_y + 1.2, cell.y + 0.5)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "panier", Color(0.25, 0.55, 0.85))
+		# Icone "puiser" (seau, glyphe dedie) plutot que "panier" (ancien
+		# comportement, corrige en centralisant sur TaskDefinitions) - le
+		# bouton de mode Puiser utilisait deja ce glyphe, seul le marqueur de
+		# tache reutilisait a tort celui de Cueillir.
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("puiser"), TaskDefinitionsScript.get_color("puiser"))
 
 
 static func clear_drag_preview(controller: CanvasLayer) -> void:
@@ -690,7 +822,7 @@ static func handle_chop_click(controller: CanvasLayer, hit: Vector3) -> void:
 	if closest_tree:
 		var task_id: int = task_queue.add_chop_task(closest_tree)
 		var marker_pos: Vector3 = closest_tree.global_position + Vector3(0, marker_height_for(closest_tree), 0)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "hache", Color(0.25, 0.55, 0.15))
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("couper"), TaskDefinitionsScript.get_color("couper"))
 
 
 ## La hauteur du marqueur suit l'echelle reelle de la cible (arbres mis a
@@ -718,4 +850,4 @@ static func handle_gather_click(controller: CanvasLayer, hit: Vector3) -> void:
 	if closest_target:
 		var task_id: int = task_queue.add_gather_task(closest_target)
 		var marker_pos: Vector3 = closest_target.global_position + Vector3(0, marker_height_for(closest_target), 0)
-		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, "panier", Color(0.85, 0.25, 0.25))
+		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("cueillir"), TaskDefinitionsScript.get_color("cueillir"))

@@ -30,7 +30,15 @@ const MODE_ENTRIES := [
 	{"id": "CONSTRUIRE", "label": "Construire", "shortcut": KEY_B, "shortcut_label": "B", "color": Color(0.85, 0.65, 0.13), "icon_kind": "construire"},
 	{"id": "COUPER", "label": "Couper", "shortcut": KEY_C, "shortcut_label": "C", "color": Color(0.25, 0.55, 0.15), "icon_kind": "hache"},
 	{"id": "CUEILLIR", "label": "Cueillir", "shortcut": KEY_U, "shortcut_label": "U", "color": Color(0.85, 0.25, 0.25), "icon_kind": "panier"},
-	{"id": "MINER", "label": "Creuser", "shortcut": KEY_M, "shortcut_label": "M", "color": Color(0.5, 0.5, 0.5), "icon_kind": "pioche"},
+	# KEY_SEMICOLON (pas KEY_M) : "physical_keycode" designe la position
+	# PHYSIQUE de la touche nommee d'apres un clavier QWERTY americain, pas le
+	# caractere imprime sur un clavier AZERTY francais. Sur AZERTY, la touche
+	# imprimee "M" est physiquement a l'emplacement du point-virgule QWERTY
+	# (B/C/U/P/K/X/I sont tous a la MEME position sur les deux dispositions,
+	# donc sans ce probleme - seul M differe, voir feedback de François
+	# 2026-07-08 : "le raccourci M ne marche pas"). Meme logique que le
+	# choix de KEY_W/KEY_A pour ZQSD dans CameraRig.gd.
+	{"id": "MINER", "label": "Creuser", "shortcut": KEY_SEMICOLON, "shortcut_label": "M", "color": Color(0.5, 0.5, 0.5), "icon_kind": "pioche"},
 	{"id": "PUISER", "label": "Puiser", "shortcut": KEY_P, "shortcut_label": "P", "color": null, "icon_kind": "puiser"},
 	{"id": "ANNULER", "label": "Annuler", "shortcut": KEY_K, "shortcut_label": "K", "color": Color(0.55, 0.1, 0.1), "icon_kind": "annuler"},
 	# DETRUIRE (demolit un mur construit) - couleur dupliquee de
@@ -69,14 +77,31 @@ const CONSTRUIRE_SUBMENU_ENTRIES := [
 	{"id": "escalier", "label": "Escalier", "enabled": false},
 ]
 
+## Sous-menu affiche uniquement quand Creuser (Mode.MINER) est actif -
+## contrairement a CONSTRUIRE_SUBMENU_ENTRIES ci-dessus, les 2 entrees sont
+## deja pleinement fonctionnelles (pas de placeholder grise) : "bloc" =
+## minage classique (rectangle, comportement historique du mode Creuser),
+## "escalier" = creusage d'une colonne d'escalier (geste clic+molette+clic,
+## voir ActionDragController.on_stair_click). Raccourcis 1/2 (chiffres,
+## distincts des touches de mode B/C/U/M/P/K/X/I) - "shortcut_kp" est
+## l'equivalent PAVE NUMERIQUE (KEY_KP_1/KEY_KP_2, code physique DIFFERENT de
+## KEY_1/KEY_2) - voir miner_subtype_for_shortcut, qui teste les deux.
+const MINER_SUBMENU_ENTRIES := [
+	{"id": "bloc", "label": "Miner", "shortcut": KEY_1, "shortcut_kp": KEY_KP_1, "shortcut_label": "1"},
+	{"id": "escalier", "label": "Escalier", "shortcut": KEY_2, "shortcut_kp": KEY_KP_2, "shortcut_label": "2"},
+]
 
-## Construit les boutons de mode dans "mode_box" et les boutons de sous-type
-## dans "submenu_box" (deja presents dans la scene, vides au depart - voir
-## Main.tscn). Renvoie {"mode_buttons": Dictionary[String,Button],
-## "submenu_buttons": Dictionary[String,Button]}. "submenu_box" est un
+
+## Construit les boutons de mode dans "mode_box", les boutons de sous-type
+## Construire dans "construire_submenu_box" et les boutons de sous-type
+## Creuser dans "miner_submenu_box" (tous deja presents dans la scene, vides
+## au depart - voir Main.tscn). Renvoie {"mode_buttons": Dictionary[String,Button],
+## "submenu_buttons": Dictionary[String,Button] (Construire),
+## "miner_submenu_buttons": Dictionary[String,Button] (Creuser),
+## "miner_subtype_group": ButtonGroup}. Les submenu_box sont des
 ## VBoxContainer (empilement vertical) tandis que "mode_box" (rangee de mode
 ## en haut) reste un HBoxContainer.
-static func build(mode_box: HBoxContainer, submenu_box: VBoxContainer, icon_renderer: IconRendererScript, eau_color: Color) -> Dictionary:
+static func build(mode_box: HBoxContainer, submenu_box: VBoxContainer, miner_submenu_box: VBoxContainer, icon_renderer: IconRendererScript, eau_color: Color) -> Dictionary:
 	# Les boutons de mode partagent tous ce ButtonGroup (assigne ci-dessous a
 	# chacun). Godot garantit alors lui-meme "un seul enfonce a la fois",
 	# plus besoin de boucler sur tous les boutons pour forcer leur etat (voir
@@ -153,7 +178,34 @@ static func build(mode_box: HBoxContainer, submenu_box: VBoxContainer, icon_rend
 		if i < CONSTRUIRE_SUBMENU_ENTRIES.size() - 1:
 			submenu_box.add_child(HSeparator.new())
 
-	return {"mode_buttons": mode_buttons, "submenu_buttons": submenu_buttons, "mode_group": mode_group, "cursor_textures": cursor_textures}
+	# Sous-menu Creuser (Miner/Escalier) - meme construction visuelle que le
+	# sous-menu Construire ci-dessus, mais toujours "enabled" (pas de
+	# placeholder) et avec son propre ButtonGroup EXCLUSIF (allow_unpress
+	# volontairement absent : contrairement au mode principal, un sous-type
+	# doit toujours rester selectionne - pas d'etat "aucun sous-type").
+	var miner_subtype_group := ButtonGroup.new()
+	var miner_submenu_buttons: Dictionary = {}
+	for i in range(MINER_SUBMENU_ENTRIES.size()):
+		var entry: Dictionary = MINER_SUBMENU_ENTRIES[i]
+		var btn := Button.new()
+		btn.button_group = miner_subtype_group
+		btn.set_meta("subtype_id", entry["id"])
+		btn.custom_minimum_size = Vector2(200, 88)
+		btn.toggle_mode = true
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.text = "%s (%s)" % [entry["label"], entry["shortcut_label"]]
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", SUBMENU_FONT_SIZE)
+		miner_submenu_box.add_child(btn)
+		miner_submenu_buttons[entry["id"]] = btn
+		if i < MINER_SUBMENU_ENTRIES.size() - 1:
+			miner_submenu_box.add_child(HSeparator.new())
+
+	return {
+		"mode_buttons": mode_buttons, "submenu_buttons": submenu_buttons,
+		"miner_submenu_buttons": miner_submenu_buttons, "miner_subtype_group": miner_subtype_group,
+		"mode_group": mode_group, "cursor_textures": cursor_textures,
+	}
 
 
 ## Renvoie l'id de mode (String, cle de MODE_ENTRIES/ActionController.MODE_BY_ID)
@@ -162,5 +214,16 @@ static func build(mode_box: HBoxContainer, submenu_box: VBoxContainer, icon_rend
 static func mode_for_shortcut(physical_keycode: int) -> String:
 	for entry in MODE_ENTRIES:
 		if entry["shortcut"] == physical_keycode:
+			return entry["id"]
+	return ""
+
+
+## Meme principe que mode_for_shortcut ci-dessus, pour les 2 sous-types de
+## Creuser (touches 1/2 OU pave numerique 1/2, voir doc de
+## MINER_SUBMENU_ENTRIES) - utilise par
+## ActionController._handle_miner_subtype_shortcuts().
+static func miner_subtype_for_shortcut(physical_keycode: int) -> String:
+	for entry in MINER_SUBMENU_ENTRIES:
+		if entry["shortcut"] == physical_keycode or entry["shortcut_kp"] == physical_keycode:
 			return entry["id"]
 	return ""

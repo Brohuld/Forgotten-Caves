@@ -23,8 +23,12 @@ const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 
 @onready var voxel_world: Node3D = %VoxelWorld
 
-const grid_width := VoxelWorldScript.WIDTH
-const grid_depth := VoxelWorldScript.DEPTH
+# WIDTH/DEPTH ne sont plus des const cote VoxelWorld (reglables depuis
+# StartMenu.gd, voir taille de carte) - ne peuvent donc plus l'etre ici non
+# plus (mais restent figes une fois lus, la taille ne change jamais en cours
+# de partie).
+var grid_width: int = VoxelWorldScript.WIDTH
+var grid_depth: int = VoxelWorldScript.DEPTH
 const ground_level := float(VoxelWorldScript.HEIGHT)  # sommet de la carte
 @export var size_multiplier: float = 0.9
 const BERRIES_PER_BUSH := 4  # categorie "plante" (fraise/framboise)
@@ -77,6 +81,18 @@ var _pending_colors: Dictionary = {}   # PartType -> Array[Color] (couleur de BA
 ## _regrow_one_berry de faire regermer une baie pendant que SeasonSystem.gd a
 ## deja mis fruits_left a 0 pour toute la duree de l'hiver.
 var _winter_active: bool = false
+
+## Index niveau de sol -> buissons a ce niveau (int -> Array[Node3D]), rempli
+## dans _spawn_bush (le nombre de buissons est fixe a la generation - voir
+## _ready, aucune creation dynamique contrairement aux arbres). Permet a
+## update_view_level de ne toucher QUE les buissons dont le niveau de sol se
+## trouve entre l'ancien et le nouveau niveau de vue, au lieu de rebalayer
+## tout le groupe "bushes" (voir _apply_view_level_delta, perf 2026-07-08).
+var _level_buckets: Dictionary = {}  # int -> Array[Node3D]
+## -1 = pas encore initialise. Voir doc de update_view_level : le tout
+## premier appel fait un scan complet classique, tous les suivants passent
+## par _apply_view_level_delta.
+var _last_view_level: int = -1
 
 
 ## Nombre de buissons construits avant de rendre la main au moteur (await
@@ -288,6 +304,13 @@ func _spawn_bush() -> void:
 	bush.position = Vector3(x, _ground_y_at(x, z), z)
 	bush.add_to_group("cueillette")
 	bush.add_to_group("bushes")  # groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
+
+	# Index par niveau de sol (voir doc de _level_buckets).
+	var _ground_lvl: int = int(bush.position.y - 1.0)
+	if not _level_buckets.has(_ground_lvl):
+		_level_buckets[_ground_lvl] = []
+	_level_buckets[_ground_lvl].append(bush)
+
 	var categorie: String = berry_type.get("categorie", "buisson")
 	bush.set_meta("fruit_resource", berry_type["id"])
 	bush.set_meta("fruits_left", _berries_count_for(categorie))
@@ -450,22 +473,69 @@ func apply_season_tint(season_id: String) -> void:
 ## Restauration via _pending_xforms (jamais vide apres
 ## _apply_pending_instances). Les baies ("Fruit_%d") basculent via leur
 ## propre "visible".
+## Perf (2026-07-08) : le tout premier appel fait un scan complet classique
+## (_apply_view_level_full, identique au comportement d'avant l'indexation).
+## Tous les appels suivants (donc chaque cran de molette) passent par
+## _apply_view_level_delta, qui ne touche que les buissons dont le niveau de
+## sol se trouve entre l'ancien et le nouveau niveau de vue via
+## _level_buckets, au lieu de rebalayer tout le groupe "bushes".
 func update_view_level(level: int) -> void:
+	if _last_view_level == -1:
+		_apply_view_level_full(level)
+	else:
+		_apply_view_level_delta(_last_view_level, level)
+	_last_view_level = level
+
+
+## Bascule un seul buisson cache/visible selon "hidden" (facteur commun entre
+## le scan complet et le scan incremental).
+func _apply_bush_visibility(bush: Node3D, hidden: bool, zero_xform: Transform3D) -> void:
+	if bush.has_meta("visual_refs"):
+		var refs: Array = bush.get_meta("visual_refs")
+		for ref in refs:
+			var part_type: int = ref[0]
+			var idx: int = ref[1]
+			if hidden:
+				_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
+			else:
+				_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
+	for child in bush.get_children():
+		if (child.name as String).begins_with("Fruit_"):
+			# "and not _winter_active" evite de reafficher des baies deja
+			# cachees par l'hiver quand update_view_level() est rappele.
+			child.visible = not hidden and not _winter_active
+
+
+## Scan complet (tout le groupe "bushes") - utilise uniquement pour le tout
+## premier appel de update_view_level (voir sa doc).
+func _apply_view_level_full(level: int) -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for bush in get_tree().get_nodes_in_group("bushes"):
 		var ground_block_y: float = bush.position.y - 1.0
-		var hidden: bool = ground_block_y > float(level)
-		if bush.has_meta("visual_refs"):
-			var refs: Array = bush.get_meta("visual_refs")
-			for ref in refs:
-				var part_type: int = ref[0]
-				var idx: int = ref[1]
-				if hidden:
-					_mmi[part_type].multimesh.set_instance_transform(idx, zero_xform)
-				else:
-					_mmi[part_type].multimesh.set_instance_transform(idx, _pending_xforms[part_type][idx])
-		for child in bush.get_children():
-			if (child.name as String).begins_with("Fruit_"):
-				# "and not _winter_active" evite de reafficher des baies deja
-				# cachees par l'hiver quand update_view_level() est rappele.
-				child.visible = not hidden and not _winter_active
+		# >= et non > (Francois 2026-07-08) : depuis que la couche-frontiere
+		# n'affiche plus le vrai sol (herbe) mais un capuchon sombre (voir
+		# VoxelMeshBuilder._add_boundary_cube_faces), un buisson dont le sol
+		# est EXACTEMENT au niveau de vue doit lui aussi disparaitre - son
+		# "sol" n'est plus represente comme praticable a ce niveau precis.
+		var hidden: bool = ground_block_y >= float(level)
+		_apply_bush_visibility(bush, hidden, zero_xform)
+
+
+## Scan incremental : ne touche que les buissons dont le niveau de sol se
+## trouve entre l'ancien et le nouveau niveau de vue (voir doc de
+## _level_buckets). Bornes [lo, hi) (et non [lo+1, hi]) : coherent avec la
+## regle ">=" ci-dessus (Francois 2026-07-08).
+func _apply_view_level_delta(old_level: int, new_level: int) -> void:
+	if old_level == new_level:
+		return
+	var lo: int = min(old_level, new_level)
+	var hi: int = max(old_level, new_level)
+	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
+	for lvl in range(lo, hi):
+		if not _level_buckets.has(lvl):
+			continue
+		for bush in _level_buckets[lvl]:
+			if not is_instance_valid(bush):
+				continue
+			var hidden: bool = float(lvl) >= float(new_level)
+			_apply_bush_visibility(bush, hidden, zero_xform)

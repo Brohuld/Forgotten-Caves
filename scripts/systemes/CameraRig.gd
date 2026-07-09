@@ -14,6 +14,10 @@ extends Node3D
 ## tout est plein autour).
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+## Pour son update_view_level() statique (voir _update_view_level plus bas) -
+## les tas de ressources sont de simples Node3D crees a la volee (groupe
+## "resource_piles"), pas geres par un noeud dedie comme Forest/BerryBushes.
+const DwarfResourcePileScript := preload("res://scripts/entites/DwarfResourcePile.gd")
 
 @export var move_speed: float = 12.0
 @export var rotate_step_deg: float = 45.0
@@ -39,9 +43,24 @@ var current_level: int = 49  # sommet de la carte (grid_height - 1), ajuste en _
 var camera_distance: float = 16.0
 var pitch_deg: float = 35.0
 var is_middle_dragging: bool = false
+## Debounce du changement de niveau (2026-07-08, perf) : _update_view_level()
+## reconstruit tout le mesh du terrain (VoxelWorld.rebuild_mesh) ET reparcourt
+## TOUTES les instances d'arbres/buissons/decorations (Forest.gd/
+## BerryBushes.gd/GroundDecoration.gd) - couteux. Un cran de molette rapide
+## envoie plusieurs evenements WHEEL_UP/DOWN en rafale ; sans ce flag, chacun
+## declenchait sa propre reconstruction complete (saccades visibles). Les
+## branches molette de _unhandled_input() se contentent desormais de POSER ce
+## flag (+ mettre a jour current_level/la position/le label, qui restent bon
+## marche) ; un seul _update_view_level() reel est execute par frame dans
+## _process(), quel que soit le nombre de crans recus entre-temps.
+var _view_level_dirty: bool = false
 
 @onready var camera: Camera3D = $Camera3D
 @onready var voxel_world: Node3D = %VoxelWorld
+## Reference dynamique (voir _is_stair_gesture_active ci-dessous) vers
+## ActionController.gd - type generique CanvasLayer pour eviter une reference
+## typee croisee (ActionController.gd ne connait pas CameraRig.gd non plus).
+@onready var action_ui: CanvasLayer = %ActionUI
 ## Memes noeuds que VoxelWorld ci-dessus, notifies a chaque changement de
 ## niveau de vue (voir _update_view_level plus bas) - les arbres/buissons/
 ## cascades doivent disparaitre avec leur niveau, comme les rivieres
@@ -67,10 +86,52 @@ func _ready() -> void:
 	# calcule son view_level de la meme facon).
 	current_level = grid_height - 1 + int(ceil(hill_amplitude))
 	global_position.y = float(current_level)
+	_center_on_colony_spawn()
 	_update_camera_offset()
 	_create_ui()
 	_update_label()
 	_update_view_level()
+	# Forest/BerryBushes/GroundDecoration generent de façon asynchrone (par
+	# paquets, voir leur BATCH_SIZE) et ne sont pas encore prets au moment de
+	# l'appel ci-dessus (voir garde "generation_done" dans _update_view_level,
+	# qui avertit et ignore silencieusement la synchro pour ces noeuds) - sans
+	# repasser dessus une fois leur generation terminee, leur visibilite ne
+	# serait jamais alignee sur le niveau de vue de depart tant que le joueur
+	# ne touche pas la molette. Un seul rappel par noeud (CONNECT_ONE_SHOT),
+	# des que sa propre "generation_finished" est emise.
+	for node in [forest, berry_bushes, ground_decoration]:
+		if node != null and node.has_signal("generation_finished"):
+			node.generation_finished.connect(_update_view_level, CONNECT_ONE_SHOT)
+
+
+## Centre X/Z sur le point de spawn de la colonie (voir
+## VoxelWorld.colony_spawn_center) au lieu de rester sur le X/Z fixe defini
+## dans Main.tscn (125, 125 - le centre d'une carte 250x250). Depuis que la
+## taille de carte est reglable (StartMenu.gd), ce X/Z fixe placait la camera
+## tres loin de la colonie sur une carte plus petite (ex : 50x50, colonie
+## vers 25,25) - "hors champ" (2026-07-08). Lecture dynamique (voir_world.get,
+## pas d'acces type direct - meme raison que has_method("set_view_level") un
+## peu plus bas : voxel_world est type Node3D generique) car VoxelWorld est
+## avant CameraRig dans Main.tscn, donc colony_spawn_center est deja calcule.
+## voxel_world.get(...) plutot qu'un acces direct : proprie non declaree sur
+## le type generique Node3D.
+func _center_on_colony_spawn() -> void:
+	if voxel_world == null:
+		return
+	var spawn_center: Variant = voxel_world.get("colony_spawn_center")
+	if spawn_center is Vector2:
+		global_position.x = spawn_center.x
+		global_position.z = spawn_center.y
+
+
+## Pendant un geste de creusage d'escalier (clic+molette+clic, voir
+## ActionController.stair_active/ActionDragController.on_stair_click), la
+## molette sert a regler la profondeur du geste au lieu de changer de niveau
+## de vue - les deux usages de la molette seraient sinon en conflit direct
+## (un cran ferait les deux choses a la fois). action_ui.get(...) : acces
+## dynamique, ActionController.gd est type generiquement CanvasLayer ici.
+func _is_stair_gesture_active() -> bool:
+	return action_ui != null and action_ui.get("stair_active") == true
 
 
 func _create_ui() -> void:
@@ -98,6 +159,13 @@ func _process(delta: float) -> void:
 		var move: Vector3 = transform.basis * input_dir
 		move.y = 0
 		global_position += move * move_speed * delta
+
+	# Debounce molette (voir doc de _view_level_dirty) : au plus une
+	# reconstruction reelle par frame, meme si plusieurs crans de molette sont
+	# arrives entre deux frames.
+	if _view_level_dirty:
+		_view_level_dirty = false
+		_update_view_level()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -132,15 +200,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			# Godot, pas WHEEL_DOWN - les deux branches sont donc inversees
 			# par rapport a une simple lecture "UP = monter" pour
 			# correspondre au ressenti reel du trackpad.
-			current_level = clampi(current_level - 1, 0, grid_height - 1 + view_level_margin_above)
-			global_position.y = float(current_level)
-			_update_label()
-			_update_view_level()
+			if not _is_stair_gesture_active():
+				current_level = clampi(current_level - 1, 0, grid_height - 1 + view_level_margin_above)
+				global_position.y = float(current_level)
+				_update_label()
+				_view_level_dirty = true  # reconstruction reelle differee, voir _process()
 		elif event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			current_level = clampi(current_level + 1, 0, grid_height - 1 + view_level_margin_above)
-			global_position.y = float(current_level)
-			_update_label()
-			_update_view_level()
+			if not _is_stair_gesture_active():
+				current_level = clampi(current_level + 1, 0, grid_height - 1 + view_level_margin_above)
+				global_position.y = float(current_level)
+				_update_label()
+				_view_level_dirty = true  # reconstruction reelle differee, voir _process()
 		elif event.button_index == MOUSE_BUTTON_MIDDLE:
 			is_middle_dragging = event.pressed
 
@@ -178,6 +248,9 @@ func _update_camera_offset() -> void:
 func _update_view_level() -> void:
 	if voxel_world != null and voxel_world.has_method("set_view_level"):
 		voxel_world.set_view_level(current_level)
+	# Tas de ressources au sol (bois, pierre, baies...) - pas un noeud dedie
+	# comme les autres, voir DwarfResourcePileScript.update_view_level().
+	DwarfResourcePileScript.update_view_level(get_tree(), current_level)
 	# Meme notification pour les arbres/buissons/cascades (voir Forest.gd/
 	# BerryBushes.gd/WaterfallShapes.gd/WaterfallStreaks.gd/
 	# WaterfallFoamClouds.gd/update_view_level) - une boucle sur ce tableau

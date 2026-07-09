@@ -31,6 +31,8 @@ const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials
 const SeasonSystemScript := preload("res://scripts/systemes/SeasonSystem.gd")
 ## Pour le garde-fou de _ready() ci-dessous et pour GRID_WIDTH/GRID_DEPTH.
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+## Table centrale menu/icone/couleur/effort par type de tache - voir sa doc.
+const TaskDefinitionsScript := preload("res://scripts/data/taches/TaskDefinitions.gd")
 const ActionValidatorScript := preload("res://scripts/systemes/ActionValidator.gd")
 var action_validator: ActionValidatorScript = ActionValidatorScript.new()
 
@@ -82,11 +84,32 @@ const MODE_BY_ID := {
 var current_mode: int = Mode.NONE
 var selected_material: String = ""  # "bois" / "pierre" / "terre" en mode CONSTRUIRE
 
+## Sous-type actif en Mode.MINER ("bloc" = minage rectangle classique,
+## "escalier" = creusage de colonne, voir MinerSubMenu/miner_submenu_box plus
+## bas) - meme principe que selected_material pour CONSTRUIRE, mais ici le
+## sous-type change completement le GESTE de designation (rectangle vs
+## clic+molette+clic), pas juste un materiau.
+var miner_subtype: String = "bloc"
+
+## Etat du geste "escalier" (clic sur la colonne, molette pour regler la
+## profondeur, 2e clic pour confirmer) - voir ActionDragController.
+## on_stair_click/extend_stair_gesture/finalize_stair_selection.
+## stair_active est lu par CameraRig.gd (via %ActionUI, acces dynamique) pour
+## suspendre temporairement le changement de niveau de vue a la molette
+## pendant le geste (sinon la molette ferait les deux choses a la fois).
+var stair_active: bool = false
+var stair_column: Vector2i = Vector2i.ZERO
+var stair_top_y: int = 0
+var stair_bottom_y: int = 0
+var stair_preview_ghosts: Array = []
+
 ## Reference directe a VoxelWorld.WIDTH/DEPTH (source unique) plutot qu'un
 ## nombre duplique en dur : desynchronisation structurellement impossible
-## plutot que juste detectee a l'execution.
-const GRID_WIDTH := VoxelWorldScript.WIDTH
-const GRID_DEPTH := VoxelWorldScript.DEPTH
+## plutot que juste detectee a l'execution. Plus des const : WIDTH/DEPTH
+## sont reglables depuis StartMenu.gd (taille de carte), mais restent figes
+## une fois lus ici (jamais modifies en cours de partie).
+var GRID_WIDTH: int = VoxelWorldScript.WIDTH
+var GRID_DEPTH: int = VoxelWorldScript.DEPTH
 # Note : comme la camera regarde le sol en angle, une mauvaise hauteur de
 # plan de projection decale aussi x/z du point clique, pas seulement y - une
 # hauteur erronee peut donc rater systematiquement les cibles rares
@@ -114,6 +137,9 @@ const GRID_DEPTH := VoxelWorldScript.DEPTH
 ## demarrage.
 @onready var mode_box: HBoxContainer = $HBox
 @onready var construire_submenu_box: VBoxContainer = $ConstruireSubMenu
+## Sous-menu Creuser (Miner/Escalier) - meme principe que construire_submenu_box
+## ci-dessus, voir MINER_SUBMENU_ENTRIES dans ActionMenuBar.gd.
+@onready var miner_submenu_box: VBoxContainer = $MinerSubMenu
 var mode_buttons: Dictionary = {}          # id (String, cle de MODE_BY_ID) -> Button
 ## Reference vers le ButtonGroup partage par les boutons de mode (cree dans
 ## ActionMenuBarScript.build()) : Godot maintient lui-meme "un seul enfonce a
@@ -127,6 +153,8 @@ var mode_button_group: ButtonGroup
 ## curseur systeme (voir _update_cursor()).
 var cursor_textures: Dictionary = {}
 var construire_type_buttons: Dictionary = {}  # "mur"/"porte"/... -> Button
+var miner_submenu_buttons: Dictionary = {}    # "bloc"/"escalier" -> Button
+var miner_subtype_group: ButtonGroup
 @onready var material_box: VBoxContainer = $MaterialBox
 @onready var btn_bois: Button = $MaterialBox/BoisButton
 @onready var btn_pierre: Button = $MaterialBox/PierreButton
@@ -191,9 +219,11 @@ var queued_markers: Dictionary = {}    # task_id -> MeshInstance3D
 func _ready() -> void:
 	# Boutons de mode + sous-menu Construire construits par code (voir
 	# ActionMenuBarScript.build()).
-	var menu: Dictionary = ActionMenuBarScript.build(mode_box, construire_submenu_box, icon_renderer, _material_color("eau"))
+	var menu: Dictionary = ActionMenuBarScript.build(mode_box, construire_submenu_box, miner_submenu_box, icon_renderer, _material_color("eau"))
 	mode_buttons = menu["mode_buttons"]
 	construire_type_buttons = menu["submenu_buttons"]
+	miner_submenu_buttons = menu["miner_submenu_buttons"]
+	miner_subtype_group = menu["miner_subtype_group"]
 	mode_button_group = menu["mode_group"]
 	cursor_textures = menu["cursor_textures"]
 	# UN SEUL signal ecoute (n'importe lequel des boutons du groupe suffit,
@@ -203,6 +233,14 @@ func _ready() -> void:
 	# recalculer lui-meme.
 	for mode_id in mode_buttons:
 		mode_buttons[mode_id].toggled.connect(_on_mode_button_toggled)
+	for subtype_id in miner_submenu_buttons:
+		miner_submenu_buttons[subtype_id].toggled.connect(_on_miner_subtype_toggled)
+	# Pre-selectionne "bloc" (comportement historique de Creuser) SANS emettre
+	# le signal toggled (set_pressed_no_signal) - miner_subtype vaut deja
+	# "bloc" par defaut (voir sa declaration), pas besoin de re-declencher le
+	# handler pour un etat qui ne change pas.
+	if miner_submenu_buttons.has("bloc"):
+		miner_submenu_buttons["bloc"].set_pressed_no_signal(true)
 	material_button_group.allow_unpress = true
 	btn_bois.button_group = material_button_group
 	btn_bois.set_meta("material_id", "bois")
@@ -223,8 +261,24 @@ func _ready() -> void:
 	_setup_icons()
 	_update_buttons()
 	_update_material_buttons()
+	# Ces 4 conteneurs (VBoxContainer/HBoxContainer) ont un rect plus grand
+	# que leurs boutons (ancres/offsets fixes dans Main.tscn, separation
+	# entre boutons) - en filtre souris par defaut (MOUSE_FILTER_STOP), tout
+	# clic dans cet espace "vide" mais toujours a l'interieur du rect est
+	# absorbe par le conteneur et n'atteint jamais _unhandled_input, alors
+	# que la carte 3D est visible et cliquable juste en-dessous/a cote.
+	# Symptome rapporte par Francois 2026-07-08 : apres avoir choisi un mode,
+	# le premier clic sur la carte semblait juste "sortir du menu" sans
+	# rien designer - en realite ce clic etait silencieusement avale ici, le
+	# clic suivant (hors de ce rect) fonctionnait. IGNORE sur le CONTENEUR
+	# n'empeche pas ses boutons enfants de rester cliquables (chacun garde
+	# son propre filtre STOP par defaut) - meme pattern deja utilise pour
+	# _select_box ci-dessous.
+	for box in [mode_box, construire_submenu_box, miner_submenu_box, material_box]:
+		box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	material_box.visible = false
 	construire_submenu_box.visible = false
+	miner_submenu_box.visible = false
 	_setup_select_box()
 	climate_ui.setup(self, icon_renderer)
 	inventory_ui.setup(self)
@@ -290,6 +344,12 @@ func _setup_material_button_frame() -> void:
 		b.add_theme_stylebox_override("pressed", frame_style)
 
 
+## "gris_minage"/"eau"/"detruire"/"escalier" delegue a TaskDefinitions (voir
+## sa doc) pour ne jamais desynchroniser la couleur du fantome de
+## previsualisation (ici) de celle du marqueur de tache une fois designee
+## (ActionDragController.gd) - une seule source pour ces 4 couleurs. "bois"/
+## "pierre"/"terre"/"interdire" restent ici : ce sont de VRAIS materiaux (ou
+## un mode sans tache associee pour "interdire"), pas des couleurs de tache.
 func _material_color(material: String) -> Color:
 	match material:
 		"bois":
@@ -299,13 +359,15 @@ func _material_color(material: String) -> Color:
 		"terre":
 			return Color(0.35, 0.25, 0.15)
 		"gris_minage":  # fantome de previsualisation pour Miner (voir _update_mine_drag_preview)
-			return Color(0.5, 0.5, 0.5)
+			return TaskDefinitionsScript.get_color("miner")
 		"eau":  # bouton Puiser + fantome de previsualisation
-			return Color(0.25, 0.55, 0.85)
+			return TaskDefinitionsScript.get_color("puiser")
 		"detruire":  # bouton/fantome/marqueur du mode Detruire
-			return Color(0.75, 0.25, 0.05)
+			return TaskDefinitionsScript.get_color("detruire")
 		"interdire":  # bouton/fantome du mode Interdire
 			return Color(0.15, 0.15, 0.15)
+		"escalier":  # fantome/marqueur du geste de creusage d'escalier
+			return TaskDefinitionsScript.get_color("escalier")
 		_:
 			return Color(1, 1, 1)
 
@@ -405,6 +467,15 @@ func _update_climate_ui() -> void:
 func _on_mode_button_toggled(_toggled_on: bool) -> void:
 	var pressed_btn: BaseButton = mode_button_group.get_pressed_button()
 	current_mode = MODE_BY_ID[pressed_btn.get_meta("mode_id")] if pressed_btn != null else Mode.NONE
+	# Reinitialise toujours sur "Miner" en entrant dans le mode Creuser -
+	# sans ca, "Escalier" restait selectionne d'une session a l'autre (le
+	# ButtonGroup du sous-menu ne se remet pas a zero tout seul), source de
+	# confusion (feedback Francois 2026-07-08). set_pressed_no_signal comme
+	# au _ready() : pas besoin de re-declencher _on_miner_subtype_toggled
+	# pour un etat qu'on met a jour nous-memes juste apres.
+	if current_mode == Mode.MINER and miner_submenu_buttons.has("bloc"):
+		miner_submenu_buttons["bloc"].set_pressed_no_signal(true)
+		miner_subtype = "bloc"
 	_update_buttons()
 
 
@@ -413,6 +484,18 @@ func _on_material_button_toggled(_toggled_on: bool) -> void:
 	var pressed_btn: BaseButton = material_button_group.get_pressed_button()
 	selected_material = pressed_btn.get_meta("material_id") if pressed_btn != null else ""
 	_update_material_buttons()
+
+
+## Meme principe que _on_mode_button_toggled, pour le sous-menu Creuser
+## (Miner/Escalier). Un changement de sous-type EN COURS de geste escalier
+## (raccourci clavier 1/2 presse au milieu d'un clic+molette+clic) annule le
+## geste en cours plutot que de le laisser dans un etat incoherent.
+func _on_miner_subtype_toggled(_toggled_on: bool) -> void:
+	var pressed_btn: BaseButton = miner_subtype_group.get_pressed_button()
+	var new_subtype: String = pressed_btn.get_meta("subtype_id") if pressed_btn != null else "bloc"
+	if new_subtype != miner_subtype and stair_active:
+		ActionDragControllerScript.cancel_stair(self)
+	miner_subtype = new_subtype
 
 
 ## Depresse le bouton de mode actuellement enfonce (s'il y en a un) plutot
@@ -438,6 +521,9 @@ func _reset_mode_selection() -> void:
 func _update_buttons() -> void:
 	material_box.visible = (current_mode == Mode.CONSTRUIRE)
 	construire_submenu_box.visible = (current_mode == Mode.CONSTRUIRE)
+	miner_submenu_box.visible = (current_mode == Mode.MINER)
+	if current_mode == Mode.MINER:
+		_position_miner_submenu()
 	# L'etat du bouton "Mur" depend de selected_material, voir
 	# _update_material_buttons() (seule fonction qui le met a jour desormais,
 	# appelee a la fois ici et apres chaque clic materiau pour rester a jour
@@ -450,10 +536,34 @@ func _update_buttons() -> void:
 	# de bouton visuel.
 	if current_mode != Mode.CONSTRUIRE and current_mode != Mode.MINER and current_mode != Mode.PUISER and current_mode != Mode.DETRUIRE and current_mode != Mode.INTERDIRE:
 		_cancel_drag()
+	# Quitter Mode.MINER (quel qu'en soit le sous-type) annule un geste
+	# escalier en cours - sinon stair_active resterait vrai alors que le
+	# sous-menu correspondant a disparu.
+	if current_mode != Mode.MINER and stair_active:
+		ActionDragControllerScript.cancel_stair(self)
 	# Le panneau d'inspection est permanent (mis a jour par survol, voir
 	# _update_hover_info_panel) - plus besoin de le cacher en changeant de
 	# mode.
 	_update_cursor()
+
+
+## Aligne le bord gauche du sous-menu Creuser sur celui du VRAI bouton
+## "Creuser" (mode_buttons["MINER"]) - contrairement au sous-menu Construire
+## (position fixe dans Main.tscn : Construire est le 1er bouton de la
+## rangee, avec MaterialBox juste a cote), Creuser est le 4e bouton : sa
+## position ecran depend de la largeur cumulee des 3 boutons precedents,
+## pas calculable a la main de facon fiable (voir
+## [[feedback_bad_at_icon_geometry]], meme prudence pour un pixel devine que
+## pour une forme dessinee a la main) - on la lit directement sur le bouton
+## une fois qu'il est reellement en place, plutot que de deviner un offset
+## fixe dans la scene. global_position (coordonnees ecran) plutot que
+## position (relative a un parent different pour le bouton - mode_box - et
+## pour le sous-menu - ActionUI) : les deux ont un parent CanvasLayer sans
+## transformation propre, donc position ecran = position locale pour les
+## deux, mais rester en coordonnees ecran evite toute ambiguite.
+func _position_miner_submenu() -> void:
+	if mode_buttons.has("MINER"):
+		miner_submenu_box.global_position.x = mode_buttons["MINER"].global_position.x
 
 
 ## Applique la texture de curseur correspondant a current_mode (ou restaure
@@ -501,6 +611,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if _handle_mode_shortcuts(event):
 		return
+	if _handle_miner_subtype_shortcuts(event):
+		return
 	if _handle_mode_exit(event):
 		return
 
@@ -534,8 +646,25 @@ func _unhandled_input(event: InputEvent) -> void:
 			_update_select_drag(event.position)
 		return
 
-	# Reste : Mode.MINER et Mode.CONSTRUIRE, tous deux bases sur un rectangle
-	# "monde" de cases de grille (voir is_dragging/drag_start/drag_end).
+	# Mode.MINER + sous-type "escalier" : geste clic+molette+clic dedie
+	# (colonne unique, PAS un rectangle) - voir doc de stair_active plus haut
+	# et ActionDragController.on_stair_click/extend_stair_gesture. Verifie
+	# AVANT le "reste" ci-dessous, qui traite Mode.MINER en rectangle
+	# (sous-type "bloc", comportement historique).
+	if current_mode == Mode.MINER and miner_subtype == "escalier":
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			ActionDragControllerScript.on_stair_click(self, event.position)
+		elif stair_active and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			ActionDragControllerScript.extend_stair_gesture(self, 1)
+			get_viewport().set_input_as_handled()
+		elif stair_active and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			ActionDragControllerScript.extend_stair_gesture(self, -1)
+			get_viewport().set_input_as_handled()
+		return
+
+	# Reste : Mode.MINER (sous-type "bloc") et Mode.CONSTRUIRE, tous deux
+	# bases sur un rectangle "monde" de cases de grille (voir is_dragging/
+	# drag_start/drag_end).
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_on_left_press(event.position)
@@ -572,6 +701,23 @@ func _handle_mode_shortcuts(event: InputEvent) -> bool:
 	return false
 
 
+## Raccourcis 1/2 pour choisir le sous-type de Creuser (Miner/Escalier) -
+## uniquement actifs quand Mode.MINER est deja le mode courant (contrairement
+## a _handle_mode_shortcuts ci-dessus, qui marche depuis n'importe quel
+## mode). Contrairement au groupe de mode principal, ce sous-menu n'a pas
+## d'allow_unpress (un sous-type reste toujours selectionne) - un simple
+## button_pressed = true suffit donc, pas de bascule.
+func _handle_miner_subtype_shortcuts(event: InputEvent) -> bool:
+	if current_mode != Mode.MINER:
+		return false
+	if event is InputEventKey and event.pressed and not event.echo:
+		var subtype_id: String = ActionMenuBarScript.miner_subtype_for_shortcut(event.physical_keycode)
+		if subtype_id != "":
+			miner_submenu_buttons[subtype_id].button_pressed = true
+			return true
+	return false
+
+
 ## Sortir du mode par Esc ou clic droit : quel que soit le mode d'action
 ## actif (hors Mode.NONE, ou il n'y a rien a annuler), Echap ou un clic
 ## droit annule un eventuel glisser en cours (_cancel_drag pour Miner/
@@ -590,6 +736,8 @@ func _handle_mode_exit(event: InputEvent) -> bool:
 	var is_right_click: bool = event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT
 	if is_escape or is_right_click:
 		_cancel_drag()
+		if stair_active:
+			ActionDragControllerScript.cancel_stair(self)
 		if _select_dragging_active:
 			_select_dragging_active = false
 			_select_button_down = false

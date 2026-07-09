@@ -37,6 +37,7 @@ extends Node3D
 ## sont marquees "simple delegation".
 
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
+const TaskDefs := preload("res://scripts/data/taches/TaskDefinitions.gd")
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
 const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
@@ -98,17 +99,22 @@ var ground_level: float = float(VoxelWorldScript.HEIGHT)  # sommet de la carte
 
 @export var move_speed: float = 3.0        # unites / seconde
 @export var rotation_speed: float = 8.0    # vitesse de rotation vers la direction
-@export var work_duration: float = 1.5     # secondes pour miner/couper une fois arrive
+@export var work_duration: float = 1.5     # repli si le type de tache n'est pas dans TaskDefinitions (voir _process/current_work_duration)
 
 # WATER_SLOWDOWN_FACTOR/SLOPE_SLOWDOWN_FACTOR (facteurs de ralentissement en
 # eau/en montee, effet simple sans vraie physique de pente) vivent dans
 # DwarfMovement.gd.
 
-# Besoins - vitesses volontairement rapides pour tester sans attendre
+# Besoins - vitesses volontairement rapides pour tester sans attendre.
+# energy_depletion_rate ralenti le 2026-07-08 (etait 5.0, endormait les nains
+# au bout de ~17s a peine, sur un cycle jour/nuit de 120s - voir
+# DayNightCycle.cycle_duration_seconds) : a 1.0, ils restent eveilles environ
+# 85s (100 -> energy_critical=15) avant le premier repos, soit environ 70%
+# d'une journee de jeu.
 @export var hunger_max: float = 100.0
 @export var energy_max: float = 100.0
 @export var hunger_depletion_rate: float = 8.0   # points / seconde
-@export var energy_depletion_rate: float = 5.0   # points / seconde
+@export var energy_depletion_rate: float = 1.0   # points / seconde
 @export var hunger_critical: float = 20.0
 @export var energy_critical: float = 15.0
 @export var energy_rest_target: float = 70.0     # niveau vise avant de reprendre l'activite
@@ -150,6 +156,19 @@ var current_work_duration: float = 1.5  # duree effective de la tache en cours (
 
 var target_position: Vector3
 var dwarf_model: Node3D  # instance de DwarfModel3D, enfant de "body"
+
+## Etapes intermediaires restantes pour la tache en cours (voir
+## DwarfMovement.compute_task_waypoints) - vide en temps normal (mouvement
+## direct habituel), rempli uniquement quand une tache "miner" en sous-sol
+## necessite de passer par un escalier (regles de pathing, Francois
+## 2026-07-08). La derniere etape est toujours la vraie position de la
+## tache. current_waypoint_mode pilote QUEL mouvement appliquer pour
+## rejoindre target_position : "surface" = mouvement habituel (suit le
+## relief), "stair_descent" = descente/montee verticale dediee (voir
+## advance_vertical), "underground" = deplacement horizontal a Y fige (voir
+## advance_toward_fixed_y).
+var path_waypoints: Array = []
+var current_waypoint_mode: String = "surface"
 
 # Accessoires d'action
 var tool_pivot: Node3D
@@ -294,20 +313,56 @@ func _process(delta: float) -> void:
 	if _handle_critical_needs(delta):
 		return
 
-	# Priorite aux taches designees par l'utilisateur, la plus proche d'abord
+	# Priorite aux taches designees par l'utilisateur, la plus proche d'abord.
+	# pop_nearest_task peut renvoyer {} meme si has_tasks() est vrai (une
+	# tache "miner" pas encore accessible, voir sa doc) - current_task reste
+	# alors vide et le nain se comporte comme s'il n'y avait aucune tache
+	# cette frame (pas d'acces a current_task["position"] sur un dict vide).
 	if current_task.is_empty() and task_queue.has_tasks():
-		current_task = task_queue.pop_nearest_task(global_position)
-		target_position = current_task["position"]
+		var picked_task: Dictionary = task_queue.pop_nearest_task(global_position, voxel_world)
+		if not picked_task.is_empty():
+			current_task = picked_task
+			path_waypoints = DwarfMovementScript.compute_task_waypoints(self, picked_task)
+			if path_waypoints.is_empty():
+				target_position = picked_task["position"]
+				current_waypoint_mode = "surface"
+			else:
+				_advance_waypoint()
+
+	# Etape "descente/montee d'escalier" : purement verticale, XZ fige - un
+	# traitement a part car la logique generique ci-dessous (to_target.y mis
+	# a 0.0) considererait sinon cette etape comme "atteinte" instantanement
+	# (meme XZ que l'etape precedente, voir DwarfMovement.advance_vertical).
+	if current_waypoint_mode == "stair_descent":
+		if DwarfMovementScript.advance_vertical(self, target_position, delta):
+			_advance_waypoint()
+		return
 
 	var to_target: Vector3 = target_position - global_position
 	to_target.y = 0.0
 	var distance := to_target.length()
 
-	if distance < 0.15:
+	# Seuil d'arrivee lu dans TaskDefinitions (par type de tache) - 0.15 par
+	# defaut (position de marche precalculee), plus large pour couper/
+	# cueillir qui ciblent le centre exact de l'arbre/plante (voir doc de
+	# "arrival_radius" dans TaskDefinitions.gd : sans ca, un nain pouvait
+	# rester bloque indefiniment pres d'un groupe d'arbres serres).
+	var arrival_radius: float = 0.15
+	if not current_task.is_empty():
+		arrival_radius = TaskDefs.get_arrival_radius(current_task.get("type", ""))
+
+	if distance < arrival_radius:
+		if not path_waypoints.is_empty():
+			_advance_waypoint()
+			return
 		if not current_task.is_empty():
 			is_working = true
 			work_timer = 0.0
-			current_work_duration = skills.compute_work_duration(skill_levels, current_task, work_duration)
+			# Effort de base lu dans TaskDefinitions (par type de tache) plutot
+			# que le "work_duration" fixe d'avant - work_duration ne sert plus
+			# que de repli si le type n'y figure pas (voir sa doc).
+			var base_effort: float = TaskDefs.get_base_effort(current_task.get("type", ""), work_duration)
+			current_work_duration = skills.compute_work_duration(skill_levels, current_task, base_effort)
 			_reset_pose()
 			_show_tool_for_task()
 			return
@@ -315,7 +370,23 @@ func _process(delta: float) -> void:
 		_reset_pose()
 		return
 
-	_move_toward(to_target, distance, delta)
+	if current_waypoint_mode == "underground":
+		DwarfMovementScript.advance_toward_fixed_y(self, to_target, distance, delta, target_position.y)
+	else:
+		_move_toward(to_target, distance, delta)
+
+
+## Passe a l'etape suivante de path_waypoints (voir sa doc) - met a jour
+## target_position/current_waypoint_mode, ou repasse en mode "surface" par
+## defaut si la file est vide (securite, ne devrait arriver qu'une fois la
+## derniere etape - la vraie cible de la tache - atteinte).
+func _advance_waypoint() -> void:
+	if path_waypoints.is_empty():
+		current_waypoint_mode = "surface"
+		return
+	var next: Dictionary = path_waypoints.pop_front()
+	target_position = next["position"]
+	current_waypoint_mode = next["mode"]
 
 
 ## Les besoins critiques passent avant les taches et l'errance. La soif est
@@ -332,6 +403,12 @@ func _handle_critical_needs(delta: float) -> bool:
 			if not current_task.is_empty():
 				task_queue.requeue_task(current_task)
 				current_task = {}
+			# Une interruption en pleine descente d'escalier abandonne le
+			# reste des etapes - le nain reprendra depuis la surface la
+			# prochaine fois qu'il piochera cette tache (voir
+			# _advance_waypoint/current_waypoint_mode).
+			path_waypoints.clear()
+			current_waypoint_mode = "surface"
 			_process_seeking_dry_land(delta)
 		else:
 			_start_resting()
@@ -448,6 +525,11 @@ const IDLE_WANDER_RADIUS := 20.0
 ## lacs profonds sont donc contournes plutot que traverses (voir
 ## VoxelWorld.water_depth_at).
 func _pick_new_target() -> void:
+	# Repli systematique sur le mode "surface" (mouvement habituel, suit le
+	# relief) - une errance oisive n'a jamais d'etapes intermediaires (voir
+	# path_waypoints), meme si le nain venait de terminer une tache
+	# souterraine juste avant.
+	current_waypoint_mode = "surface"
 	var center: Vector2 = voxel_world.colony_spawn_center if voxel_world != null else Vector2(grid_width / 2.0, grid_depth / 2.0)
 	var x := clampf(center.x + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_width - 1))
 	var z := clampf(center.y + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_depth - 1))

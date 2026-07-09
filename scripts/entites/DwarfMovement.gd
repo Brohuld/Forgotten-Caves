@@ -4,12 +4,17 @@ extends RefCounted
 ## "self" implicite, et lit/ecrit ses proprietes via dwarf.get()/dwarf.set()
 ## (acces dynamique Godot, necessaire car "dwarf" est type generiquement
 ## Node3D, pas Dwarf).
-## WATER_SLOWDOWN_FACTOR/SLOPE_SLOWDOWN_FACTOR/TREE_AVOID_RADIUS/
-## TREE_AVOID_STRENGTH sont declarees ici (les "const" ne sont pas visibles
-## via get(), elles doivent donc vivre la ou elles sont utilisees).
+## WATER_SLOWDOWN_FACTOR/LEVEL_CHANGE_SLOWDOWN_FACTOR/STAIR_SLOWDOWN_FACTOR/
+## TREE_AVOID_RADIUS/TREE_AVOID_STRENGTH sont declarees ici (les "const" ne
+## sont pas visibles via get(), elles doivent donc vivre la ou elles sont
+## utilisees).
 
-const WATER_SLOWDOWN_FACTOR := 0.4  # facteur applique a move_speed quand le nain traverse une case d'eau
-const SLOPE_SLOWDOWN_FACTOR := 0.6  # facteur applique en montee
+## Facteurs de vitesse = 1/cout - regles de pathing validees avec Francois le
+## 2026-07-08 (voir memoire "Regles de pathing des nains") : plat=1, eau=3,
+## denivele sans escalier=2, escalier=1.5.
+const WATER_SLOWDOWN_FACTOR := 0.333        # eau (cout 3)
+const LEVEL_CHANGE_SLOWDOWN_FACTOR := 0.5   # denivele d'1 niveau SANS escalier (cout 2) - montee ET descente
+const STAIR_SLOWDOWN_FACTOR := 0.667        # sur une colonne d'escalier (cout 1.5)
 const TREE_AVOID_RADIUS := 1.3      # evitement des arbres (steering)
 const TREE_AVOID_STRENGTH := 1.6
 
@@ -54,8 +59,10 @@ static func advance_toward(dwarf: Node3D, to_target: Vector3, distance: float, d
 	var effective_speed: float = move_speed
 	if is_on_water(dwarf):
 		effective_speed *= WATER_SLOWDOWN_FACTOR
-	elif is_climbing(dwarf, direction):
-		effective_speed *= SLOPE_SLOWDOWN_FACTOR
+	elif is_on_stairs(dwarf):
+		effective_speed *= STAIR_SLOWDOWN_FACTOR
+	elif is_changing_level(dwarf, direction):
+		effective_speed *= LEVEL_CHANGE_SLOWDOWN_FACTOR
 	var step: float = min(effective_speed * delta, distance)
 	dwarf.global_position += direction * step
 	# La hauteur suit le relief case par case (pas de y fige a ground_level).
@@ -72,28 +79,135 @@ static func advance_toward(dwarf: Node3D, to_target: Vector3, distance: float, d
 
 ## Hauteur du sol (sommet de colonne + 1) a une position XZ donnee. Repli
 ## sur ground_level si hors carte (get_top_block_y renvoie -1).
+## Cas particulier "colonne d'escalier" (voir VoxelWorld.stair_columns) :
+## dig_stairs() vide TOUS les niveaux de la colonne (top a bottom), donc
+## get_top_block_y y renverrait desormais un niveau bien plus bas que
+## l'entree reelle de l'escalier - sans ce cas particulier, un nain qui
+## traverse simplement le dessus d'un escalier (sans tache de descente
+## active, voir advance_vertical) glissait instantanement au FOND de tout
+## escalier croise (bug remonte par Francois 2026-07-08 : "aucun nain ne
+## descend pour creuser un couloir" - la vraie descente, elle, est geree a
+## part par le systeme d'etapes de Dwarf.gd, pas par cette fonction).
 static func ground_y_at(dwarf: Node3D, x: float, z: float) -> float:
 	var voxel_world: Node3D = dwarf.get("voxel_world")
-	var top: int = voxel_world.get_top_block_y(int(floor(x)), int(floor(z)))
+	var xi := int(floor(x))
+	var zi := int(floor(z))
+	var stair_range: Dictionary = voxel_world.get_stair_range(xi, zi)
+	if not stair_range.is_empty():
+		return float(stair_range["top"]) + 1.0
+	var top: int = voxel_world.get_top_block_y(xi, zi)
 	if top < 0:
 		return dwarf.get("ground_level")
 	return float(top) + 1.0
 
 
+## Vrai si le nain se trouve actuellement sur une colonne d'escalier -
+## utilise pour appliquer STAIR_SLOWDOWN_FACTOR plutot que
+## LEVEL_CHANGE_SLOWDOWN_FACTOR lors d'une traversee normale (hors descente
+## active).
+static func is_on_stairs(dwarf: Node3D) -> bool:
+	var voxel_world: Node3D = dwarf.get("voxel_world")
+	var pos: Vector3 = dwarf.global_position
+	return not voxel_world.get_stair_range(int(floor(pos.x)), int(floor(pos.z))).is_empty()
+
+
 ## Compare la hauteur du sol juste devant le nain (dans le sens de
 ## deplacement) a sa hauteur actuelle - effet simple, pas de vraie physique
-## de pente.
-static func is_climbing(dwarf: Node3D, direction: Vector3) -> bool:
+## de pente. Detecte un changement de niveau dans les DEUX sens (montee ET
+## descente, regle 5 : meme cout pour les deux) - anciennement nommee
+## "is_climbing" et ne detectait que la montee.
+static func is_changing_level(dwarf: Node3D, direction: Vector3) -> bool:
 	var ahead_x: float = dwarf.global_position.x + direction.x * 0.5
 	var ahead_z: float = dwarf.global_position.z + direction.z * 0.5
 	var here_y := ground_y_at(dwarf, dwarf.global_position.x, dwarf.global_position.z)
 	var ahead_y := ground_y_at(dwarf, ahead_x, ahead_z)
-	return ahead_y > here_y + 0.1
+	return absf(ahead_y - here_y) > 0.1
 
 
 static func is_on_water(dwarf: Node3D) -> bool:
 	var voxel_world: Node3D = dwarf.get("voxel_world")
 	return voxel_world.is_water(int(floor(dwarf.global_position.x)), int(floor(dwarf.global_position.z)))
+
+
+## Descente/montee dediee d'un escalier (voir Dwarf.gd, mode "stair_descent")
+## - purement verticale, XZ fige au centre de la colonne d'escalier pendant
+## tout le mouvement. Necessaire car advance_toward ignore totalement l'axe
+## Y pour savoir si le nain est "arrive" (to_target.y = 0.0 dans Dwarf.gd) -
+## un point intermediaire a la meme position XZ mais un Y different serait
+## sinon considere atteint instantanement, sautant tout le cout de temps de
+## l'escalier (STAIR_SLOWDOWN_FACTOR, cout 1.5). Renvoie true une fois le Y
+## cible atteint.
+static func advance_vertical(dwarf: Node3D, target_position: Vector3, delta: float) -> bool:
+	dwarf.global_position.x = target_position.x
+	dwarf.global_position.z = target_position.z
+	var move_speed: float = dwarf.get("move_speed")
+	var step: float = move_speed * STAIR_SLOWDOWN_FACTOR * delta
+	var current_y: float = dwarf.global_position.y
+	var diff: float = target_position.y - current_y
+	var dwarf_model: Node3D = dwarf.get("dwarf_model")
+	dwarf_model.preview_animation = "Marche"
+	if absf(diff) <= step:
+		dwarf.global_position.y = target_position.y
+		return true
+	dwarf.global_position.y = current_y + signf(diff) * step
+	return false
+
+
+## Deplacement horizontal a Y FIGE (voir Dwarf.gd, mode "underground") -
+## utilise pour la derniere etape vers une cible en sous-sol, une fois
+## l'escalier descendu : get_top_block_y ne peut pas servir de reference la
+## (le "plafond" reste intact au-dessus d'un couloir mine, voir doc de
+## VoxelWorld._remove_block_silent - la colonne semble donc encore pleine
+## bien plus haut). Le Y correct est deja connu (celui atteint au bas de
+## l'escalier) et reste fixe pendant toute cette derniere approche, au lieu
+## d'etre recalcule via ground_y_at comme le fait advance_toward.
+static func advance_toward_fixed_y(dwarf: Node3D, to_target: Vector3, distance: float, delta: float, fixed_y: float) -> void:
+	var direction := to_target.normalized()
+	var move_speed: float = dwarf.get("move_speed")
+	var step: float = min(move_speed * delta, distance)
+	dwarf.global_position += direction * step
+	dwarf.global_position.y = fixed_y
+	var target_yaw: float = atan2(direction.x, direction.z)
+	var rotation_speed: float = dwarf.get("rotation_speed")
+	dwarf.rotation.y = lerp_angle(dwarf.rotation.y, target_yaw, rotation_speed * delta)
+	var dwarf_model: Node3D = dwarf.get("dwarf_model")
+	dwarf_model.preview_animation = "Marche"
+
+
+## Calcule les etapes intermediaires necessaires pour qu'un nain rejoigne
+## une tache "miner" dont la cible peut etre en sous-sol (regles 1 et 4,
+## voir memoire "Regles de pathing des nains") - Array de
+## {"position":Vector3, "mode":"surface"/"stair_descent"/"underground"}, ou
+## [] si aucune etape intermediaire n'est necessaire (denivele naturel d'au
+## plus 1 niveau, ou tache sans notion de profondeur). Portee volontairement
+## limitee a UN SEUL escalier direct par trajet. Le blocage "aucun escalier
+## connectant" (regle 4, denivele >1 niveau) est verifie EN AMONT par
+## TaskQueue.pop_nearest_task (voir VoxelWorld.can_walk_to_level) - cette
+## tache n'aurait donc pas du etre assignee dans ce cas ; le repli "aucune
+## etape" ci-dessous n'est qu'une securite qui ne devrait jamais s'activer
+## en pratique.
+static func compute_task_waypoints(dwarf: Node3D, task: Dictionary) -> Array:
+	if task.get("type", "") != "miner":
+		return []
+	var voxel_world: Node3D = dwarf.get("voxel_world")
+	var bx: int = task["bx"]
+	var bz: int = task["bz"]
+	var target_level: int = task["by"]
+	var current_level: int = int(round(dwarf.global_position.y))
+	if absi(current_level - target_level) <= 1:
+		return []
+	var stair: Dictionary = voxel_world.find_connecting_stair(bx, bz, target_level)
+	if stair.is_empty():
+		return []
+	var col: Vector2i = stair["column"]
+	var stair_top_pos := Vector3(col.x + 0.5, float(stair["top"]), col.y + 0.5)
+	var stair_bottom_pos := Vector3(col.x + 0.5, float(stair["bottom"]), col.y + 0.5)
+	var target_pos := Vector3(bx + 0.5, float(target_level), bz + 0.5)
+	return [
+		{"position": stair_top_pos, "mode": "surface"},
+		{"position": stair_bottom_pos, "mode": "stair_descent"},
+		{"position": target_pos, "mode": "underground"},
+	]
 
 
 ## Cellule de grille (voir _trees_grid/TREE_GRID_CELL_SIZE) contenant une

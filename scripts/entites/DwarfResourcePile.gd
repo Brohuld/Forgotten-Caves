@@ -33,10 +33,19 @@ const NIGHT_DARKEN_STRENGTH := 0.8
 ## sol. Le tas est une vraie entite (groupe "resource_piles", meta
 ## resource_name/count) - les recoltes proches du meme type fusionnent dans
 ## le meme tas au lieu de creer un nouveau tas a chaque fois.
-static func collect_resource(dwarf: Node3D, resource_name: String) -> void:
+## "pos_override" (facultatif) : position explicite du tas, pour une tache ou
+## la position du nain au moment de l'appel n'est PAS le bon endroit ou le
+## materiau doit tomber - voir DwarfTaskResolver.complete_escalier_task (le
+## nain reste immobile en haut pendant tout le creusage multi-niveaux, le
+## tas doit "tomber" au fond du trou, pas rester a hauteur du nain). Repli
+## sur dwarf.global_position (comportement historique) si non fourni -
+## correct pour toutes les autres taches (miner/couper/cueillir/detruire/
+## puiser), ou le nain se tient deja au bon endroit.
+static func collect_resource(dwarf: Node3D, resource_name: String, pos_override = null) -> void:
 	var inventory: Node = dwarf.get("inventory")
 	inventory.add_resource(resource_name, 1)
-	add_to_resource_pile(dwarf, resource_name, dwarf.global_position)
+	var pos: Vector3 = pos_override if pos_override != null else dwarf.global_position
+	add_to_resource_pile(dwarf, resource_name, pos)
 	if OS.is_debug_build():
 		print("Recolte : +1 %s (total %d)" % [resource_name, inventory.get_count(resource_name)])
 
@@ -55,6 +64,14 @@ static func add_to_resource_pile(dwarf: Node3D, resource_name: String, pos: Vect
 	pile.add_to_group("resource_piles")
 	pile.set_meta("resource_name", resource_name)
 	pile.set_meta("count", 1)
+	# Niveau du bloc de terrain sous le tas, pour le masquage par niveau de
+	# vue (voir update_view_level plus bas, meme regle >= que Forest.gd/
+	# BerryBushes.gd/GroundDecoration.gd). "voxel_world" expose sur le nain
+	# (Dwarf.gd) - repli sur pos.y - 1.0 (convention "position = sommet du
+	# bloc + 1", voir spawn_starting_wood_stock) si introuvable.
+	var voxel_world: Node3D = dwarf.get("voxel_world")
+	var ground_block_y: int = voxel_world.get_top_block_y(int(pos.x), int(pos.z)) if voxel_world != null else int(pos.y - 1.0)
+	pile.set_meta("ground_block_y", ground_block_y)
 	dwarf.get_parent().add_child(pile)
 	build_pile_visual(pile, resource_name)
 
@@ -66,6 +83,22 @@ static func find_nearby_pile(dwarf: Node3D, resource_name: String, pos: Vector3)
 		if pile.global_position.distance_to(pos) <= PILE_MERGE_RADIUS:
 			return pile
 	return null
+
+
+## Masque/affiche tous les tas au sol selon le niveau de vue courant - meme
+## regle que Forest.gd/BerryBushes.gd/GroundDecoration.gd
+## (_is_instance_hidden) : un tas est cache des que le niveau de son bloc de
+## terrain (meta "ground_block_y", pose a la creation) atteint le niveau de
+## vue (>=), pas seulement quand on le depasse (le "dessus" a ce niveau est
+## desormais un capuchon non-marchable, plus le vrai sol, voir
+## VoxelMeshBuilder._add_boundary_cube_faces). Simple Node3D individuels (pas
+## de MultiMesh ici) : on bascule juste "visible", pas besoin de l'astuce
+## d'echelle quasi-nulle utilisee ailleurs. Appele par
+## CameraRig._update_view_level().
+static func update_view_level(tree: SceneTree, view_level: int) -> void:
+	for pile in tree.get_nodes_in_group("resource_piles"):
+		var ground_block_y: int = int(pile.get_meta("ground_block_y", -999))
+		pile.visible = ground_block_y < view_level
 
 
 ## Cree STARTING_WOOD_PILE_COUNT tas de bois de STARTING_WOOD_PILE_SIZE
@@ -106,6 +139,7 @@ static func spawn_starting_wood_stock(parent: Node3D, voxel_world: Node3D, inven
 		pile.add_to_group("resource_piles")
 		pile.set_meta("resource_name", resource_name)
 		pile.set_meta("count", STARTING_WOOD_PILE_SIZE)
+		pile.set_meta("ground_block_y", top)
 		pile.scale = Vector3.ONE * clampf(1.0 + float(STARTING_WOOD_PILE_SIZE) * 0.03, 1.0, PILE_MAX_SCALE)
 		# "parent" est encore en train d'entrer dans l'arbre de scene au
 		# moment de cet appel (VoxelWorld._ready tourne avant que son propre

@@ -195,6 +195,8 @@ func get_icon_texture(kind: String, color: Color, icon_size: int, glyph_size: in
 			_draw_detruire_icon(glyph, color)
 		"interdire":
 			_draw_interdire_icon(glyph, color)
+		"escalier":
+			_draw_escalier_icon(glyph, color)
 	var inset := int(round((icon_size - glyph_size) / 2.0))
 	img.blend_rect(glyph, Rect2i(Vector2i.ZERO, Vector2i(glyph_size, glyph_size)), Vector2i(inset, inset))
 
@@ -449,6 +451,29 @@ func _draw_interdire_icon(img: Image, color: Color) -> void:
 	var bar_half_w := s * 0.30
 	var bar_h := s * 0.16
 	_fill_rect_px(img, center - bar_half_w, center - bar_h * 0.5, bar_half_w * 2.0, bar_h, Color(1, 1, 1))
+
+
+## Escalier : marches empilees en diagonale (rectangles axe-aligne
+## uniquement, meme technique que _draw_construire_icon) - chaque marche est
+## un peu plus large ET plus basse que la precedente, silhouette d'escalier
+## classique lisible en petit format. Voir [[feedback_bad_at_icon_geometry]].
+func _draw_escalier_icon(img: Image, color: Color) -> void:
+	var s := float(img.get_width())
+	var steps := 4
+	var step_w := s * 0.16
+	var step_h := s * 0.15
+	var x0 := s * 0.14
+	var y0 := s * 0.18
+	var border_color := color.darkened(0.35)
+	var bhw := s * 0.025
+	for i in range(steps):
+		var w: float = step_w * float(i + 1)
+		var y: float = y0 + float(i) * step_h
+		_fill_rect_px(img, x0, y, w, step_h, color)
+		_stroke_segment(img, Vector2(x0, y), Vector2(x0 + w, y), bhw, border_color)
+		_stroke_segment(img, Vector2(x0, y + step_h), Vector2(x0 + w, y + step_h), bhw, border_color)
+		_stroke_segment(img, Vector2(x0, y), Vector2(x0, y + step_h), bhw, border_color)
+		_stroke_segment(img, Vector2(x0 + w, y), Vector2(x0 + w, y + step_h), bhw, border_color)
 
 
 func _fill_circle(img: Image, cx: float, cy: float, r: float, color: Color) -> void:

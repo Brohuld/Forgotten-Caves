@@ -130,7 +130,7 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 
 - **Tracé de rivière** (`VoxelWorld._place_river`) : le relief naturel est sondé sur toute la largeur du lit (+ marge de berge) à chaque rangée ; l'eau part du bout du trajet dont le relief est le plus haut et redescend en escalier (jamais au-dessus du relief environnant, jamais un point milieu comme source) ; une rupture de niveau = une cascade, valable sur toute la largeur du lit à la fois (jamais en escalier décalé).
 - **Règles physiques figées** (voir mémoire projet, à respecter avant toute modification) : R1-R3 pour les rivières (berges obligatoires des deux côtés, sens du courant constant, ondulation acceptée seulement sans changement de niveau), C1-C5 pour les cascades (la case d'eau du niveau supérieur doit se retrouver en case d'eau recouverte par la cascade une rangée plus loin dans le sens du courant, jamais l'inverse obligatoire, jamais de cascade sans eau au-dessus).
-- **Forme de cascade** (`WaterfallShapes.gd`) : un vrai quart de cylindre (pas un mur plat), rempli en volume. **Géométrie gelée** (`_build_quarter_cylinder_mesh`/`_build_shape` : rayon/position/rotation) après plusieurs régressions de positionnement — ne plus modifier sans autorisation explicite. Seule la couleur reste ajustable.
+- **Forme de cascade** (`WaterfallShapes.gd`) : un vrai quart de cylindre (pas un mur plat), rempli en volume, une seule instance par colonne de cascade (`_build_shape`), aucune écriture dans la grille (purement décoratif). Géométrie sensible (gel levé le 2026-07-08) : vérifier les 6 critères de référence après toute modification, ne pas se contenter d'une relecture de code.
 - **Effets décoratifs** : petits nuages d'écume mobiles (`WaterfallFoamClouds.gd`, plus foncés en haut/plus clairs en bas, assombris par météo/nuit) et traits de chute verticaux multicolores (`WaterfallStreaks.gd`, animés le long de la courbe).
 - **Disparition par niveau** (2026-07-04) : cascades (forme + traits + écume) cachées quand leur niveau de rivière n'est plus visible, même mécanisme que le paquet 6.
 
@@ -140,6 +140,17 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 3. Un code hérité masquait toutes les faces (sauf le dessous) de tout bloc d'eau d'une colonne de cascade — conçu à l'origine pour cacher un mur de blocs empilés qui n'existe plus depuis le correctif n°1 ; il masquait donc par erreur la surface même du bassin. Supprimé entièrement.
 
 **Leçon de méthode** : avant d'annoncer un correctif de génération de terrain comme suffisant, simuler le pipeline complet (données ET logique de rendu/face-culling) hors du jeu, pas seulement relire le code.
+
+**Refonte complète de la génération de terrain (2026-07-10, à confirmer en jeu).** Validée d'abord sur un prototype isolé (`scripts/prototypes/CubeSolTestV2.gd`, réutilisant les vraies classes partagées `VoxelHydrology.gd`/`VoxelMeshBuilder.gd`/`WaterfallShapes.gd`/`VoxelVeins.gd`) avant tout report dans le jeu :
+
+- **Rivières/lacs relancés** avec largeur de rivière et nombre/taille de lacs aléatoires (proportionnels à la taille de carte), après correction d'un bug de mur manquant (`R1_WALL_MARGIN`, l'ancien calcul garantissait seulement une inégalité large, jamais stricte) et d'un bug de niveau d'eau incohérent à la jonction lac/rivière (la rivière pouvait creuser le lac d'un niveau).
+- **Hauteur de terre aléatoire** (1 à 3 niveaux par colonne, au lieu d'une constante fixe à 3) reportée dans `VoxelWorld.gd`.
+- **Bug de berge transparente corrigé** : une berge de rivière/lac de 2 niveaux ou plus au-dessus de l'eau laissait son niveau intermédiaire invisible (jamais marqué "découvert", donc absent du maillage) dès qu'elle n'était pas juste à côté d'une cascade — la révélation "falaise", jusque-là réservée aux rangées de cascade, est désormais généralisée à toute berge.
+- **Passe de rendu "murs au-dessus de la coupe" retirée** (`VoxelMeshBuilder.gd`) : ajoutée le 2026-07-08 pour garder visibles les murs d'un trou/escalier creusé en baissant la vue en dessous, elle se déclenchait aussi sur du relief naturel jamais miné (falaises/berges), révélant leur forme à tort. **Régression assumée** : un trou/escalier creusé perd de nouveau ses murs visibles vu d'en dessous — à reprendre avec une vraie distinction creusé/naturel.
+- **Teinte de débogage magenta retirée** (`DEBUG_SOL_TINT`, modèle CUBE+SOL) : la face du dessus à la coupe courante affiche de nouveau la vraie couleur du matériau.
+- **Vecteur de composition précalculé** (`PackedByteArray`) testé en benchmark isolé à l'échelle maximale (250×250×100) : génération de base ~924ms (acceptable), mais le calcul des filons (jusqu'à 17 évaluations de bruit par bloc de pierre) est trop lent pour être précalculé — décision : les filons restent hors du vecteur, gérés séparément comme aujourd'hui.
+
+Chargement de la carte 250×250 confirmé par François (9,1s). Le reste (berges, hauteur de terre aléatoire, retrait des passes de debug) n'a pas encore été revérifié en jeu.
 
 ### 10. Végétation saisonnière
 
@@ -156,6 +167,23 @@ Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une
 - `GroundDecoration.gd` : toute la décoration est générée UNE fois au démarrage (jamais de vraie régénération dynamique) — "plus de fleurs" au printemps et "-30% en été" sont obtenus en taguant chaque décoration à sa création avec deux booléens indépendants, combinés avec le masquage par niveau de vue/minage déjà existant.
 - Disparition des fruits en hiver : logique générique dans `SeasonSystem.gd`, sur le groupe `"cueillette"` (arbres fruitiers + buissons + plantes). Limite connue acceptée : un arbre/buisson qui repousse en plein hiver n'est remis en mode hiver qu'au prochain changement de saison (cas jugé rare).
 - `SeasonSystem` a été déplacé après `BerryBushes`/`GroundDecoration` dans `Main.tscn` (l'ordre des `_ready()` de nœuds frères suit l'ordre de déclaration) — nécessaire pour que leurs `MultiMeshInstance3D`/décorations existent avant le premier appel de reteinte.
+
+---
+
+### 11. Pathing des nains & escaliers
+
+Implémenté d'après les règles validées avec François le 2026-07-08, resté non commité jusqu'ici.
+
+- **Coûts de déplacement** (`DwarfMovement.gd`) : plat = 1, escalier = 1.5, dénivelé d'1 niveau sans escalier = 2, eau = 3 (montée et descente traitées à l'identique). Un nain sur une colonne d'escalier ralentit selon `STAIR_SLOWDOWN_FACTOR`, un changement de niveau sans escalier selon `LEVEL_CHANGE_SLOWDOWN_FACTOR`.
+- **Creusage d'escalier** (`VoxelWorld.dig_stairs`, geste clic + molette + clic dans `ActionDragController.gd`) : une seule tâche couvre toute la plage top→bottom d'une colonne (`TaskQueue.add_stair_task`), au lieu d'une tâche par niveau. Bouton dédié dans la barre d'action + icône (`ActionMenuBar.gd`/`IconRenderer.gd`).
+- **Accessibilité des tâches** (`TaskQueue.pop_nearest_task`) : une tâche de minage n'est proposée à un nain que si le bloc est réellement atteignable (`VoxelWorld.can_reach_block`) et à un niveau accessible sans escalier manquant (`VoxelWorld.can_walk_to_level`) — corrige un bug remonté par François ("aucun nain ne descend pour creuser un couloir").
+- **Descente d'escalier dédiée** (`DwarfMovement.advance_vertical`/`advance_toward_fixed_y`) : trajet en 3 étapes (surface → descente verticale figée en XZ → approche finale à Y fixe) pour qu'un nain traverse correctement un escalier déjà creusé au lieu de considérer la cible atteinte instantanément.
+
+**Perf niveau de vue (molette)** (`Forest.gd`/`BerryBushes.gd`/`GroundDecoration.gd`/`CameraRig.gd`, 2026-07-08) : arbres/buissons/décorations indexés par niveau de sol (`_level_buckets`), pour qu'un changement de niveau de vue ne touche que les objets concernés au lieu de rebalayer toute la carte à chaque cran de molette. **Connu comme un problème persistant mais non urgent** (François) — acceptable pour l'instant, à surveiller/retravailler plus tard si besoin.
+
+**Bug "deux clics" corrigé** (`ActionController.gd`/`ActionDragController.gd`) : cause identifiée et corrigée par François, les 3 `print()` de diagnostic temporaires ont été retirés le 2026-07-10.
+
+**À CONFIRMER EN JEU** (aucun de ces points n'a été retesté visuellement à ce stade) : coûts de déplacement, creusage d'escalier, accessibilité des tâches, descente d'escalier.
 
 ---
 
@@ -186,6 +214,8 @@ sessions de jeu (pas des bugs confirmes, juste des zones a surveiller) :
 **Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Le bug Couper/Cueillir est résolu (voir paquet 1). Reste à confirmer en jeu par François : les ajustements chêne/sapin/buissons et l'interface (paquets 4-5) et le nouveau cycle de végétation saisonnière (paquet 10).
 
 **Revue de code du 2026-07-06 (scan complet, 116 findings + 5 hors scan) : TERMINÉE ET CONFIRMÉE EN JEU.** Traitée en 8 paquets thématiques (A à H) après les 4 phases initiales de correctifs critiques (C7-C18, dont la dette d'architecture A1 : `ActionController.gd` et `Dwarf.gd` découpés en plusieurs fichiers par responsabilité, voir structure du projet ci-dessus). Paquet A (déterminisme/seed, système `GameRandom.gd`), B (duplication de code), C (robustesse), D (print() de debug), E (fonctions/fichiers trop longs), F (ordre d'initialisation implicite), G (performance), H (divers - dernier paquet) tous corrigés et confirmés en jeu par François le 2026-07-06. Bilan final : 91 corrigés, 25 vérifiés déjà corrects (aucun changement nécessaire), 3 ignorés (décision explicite), 2 encore ouverts (`VoxelHydrology._place_river()`/`VoxelWorld.generate_flat_terrain()` - geometrie "Cascade GELÉE", autorisation explicite de François requise avant toute modification). Détail complet par item : dossier `Code Review` (hors de ce dépôt git), fichier `Revue_de_code_2026-07-06.html`. À surveiller particulièrement si un souci apparaît : position des armes dans le dos (`DwarfWeaponBuilder.attach_to_back`, ajustement à l'estime) et assombrissement nocturne des tas de ressources (`DwarfResourcePile.gd`, effectif seulement à la création du tas, pas de mise à jour continue).
+
+**Pathing des nains & escaliers (paquet 11) : implémenté, non encore reconfirmé en jeu** (voir paquet 11 ci-dessus) — règles de coût validées le 2026-07-08, code déployé le 2026-07-10.
 
 Ne pas commencer la Phase 2 DU JEU (Ateliers & artisanat, ci-dessous) avant confirmation explicite.
 

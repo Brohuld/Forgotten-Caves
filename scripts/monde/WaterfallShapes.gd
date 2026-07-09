@@ -66,9 +66,10 @@ func _color_for_height(y: float, radius: float) -> Color:
 	return WATERFALL_COLOR.lerp(dark_color, t)
 
 
-## GEOMETRIE GELEE - NE PAS MODIFIER SANS AUTORISATION EXPLICITE DE FRANCOIS
-## (voir memoire projet [[project_forgotten_caves_waterfall_shape_spec]] - 6
-## criteres de reference a consulter avant toute modif de ce fichier).
+## Geometrie sensible (gel leve le 2026-07-08, modifiable normalement -
+## voir [[feedback_waterfall_shape_frozen]]) : verifier les 6 criteres de
+## [[project_forgotten_caves_waterfall_shape_spec]] un par un apres toute
+## modification de ce fichier, ne pas se contenter d'une relecture de code.
 ## Construit un vrai quart de cylindre PLEIN (pas juste la peau courbe) via
 ## SurfaceTool - arc 0-90° ("haut" vers "droite"), plus les 2 capuchons plats
 ## (les 2 bouts, en eventail depuis l'axe) et les 2 faces planes radiales (a
@@ -187,9 +188,10 @@ func _ready() -> void:
 ## s'eloignant dans le sens du courant. Une seule rotation autour de l'axe
 ## vertical (Y) suffit pour aligner cet axe "droite" sur la direction du
 ## courant (dx,dz).
-## GEOMETRIE GELEE - NE PAS MODIFIER SANS AUTORISATION EXPLICITE DE FRANCOIS
-## (voir memoire projet [[project_forgotten_caves_waterfall_shape_spec]] - 6
-## criteres de reference a consulter avant toute modif de ce fichier).
+## Geometrie sensible (gel leve le 2026-07-08, modifiable normalement -
+## voir [[feedback_waterfall_shape_frozen]]) : verifier les 6 criteres de
+## [[project_forgotten_caves_waterfall_shape_spec]] un par un apres toute
+## modification de ce fichier, ne pas se contenter d'une relecture de code.
 func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 	var dx: int = int(col["dx"])
 	var dz: int = int(col["dz"])
@@ -215,7 +217,7 @@ func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 
 	# Cas particulier d'une cascade sur plusieurs niveaux : la chute reelle
 	# (col.top - pool_surface_y) peut depasser 1 niveau ; le rayon de base
-	# (SHAPE_RADIUS/radius, geometrie GELEE) reste a 1 dans tous les cas -
+	# (SHAPE_RADIUS/radius) reste a 1 dans tous les cas -
 	# on etire seulement l'instance en hauteur (echelle Y locale, PAS la
 	# geometrie elle-meme) pour que le sommet de la forme rejoigne le vrai
 	# sommet de la chute. La largeur (axe X, "profondeur" de la courbe hors
@@ -227,7 +229,7 @@ func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 		mi.scale.y = drop
 	# Memorise le niveau (indice de bloc) du sommet de CETTE cascade, pour
 	# update_view_level - ne touche ni geometrie ni position/rotation/
-	# echelle (regles gelees ci-dessus, inchangees).
+	# echelle (inchangees par rapport a ce qui precede).
 	mi.set_meta("waterfall_top", float(col["top"]))
 	return mi
 
@@ -235,7 +237,7 @@ func _build_shape(col: Dictionary, mat: StandardMaterial3D) -> MeshInstance3D:
 ## Cache/reaffiche chaque forme de cascade selon que son sommet (col.top,
 ## memorise dans _build_shape) est au-dessus ou non du niveau de vue
 ## courant - meme convention que VoxelWorld ("y > view_level" = cache).
-## Simple bascule de "visible" sur le noeud deja construit, geometrie GELEE
+## Simple bascule de "visible" sur le noeud deja construit, geometrie
 ## non touchee.
 func update_view_level(level: int) -> void:
 	for child in get_children():

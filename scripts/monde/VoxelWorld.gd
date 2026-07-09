@@ -38,11 +38,16 @@ var vein_system: VoxelVeinsScript = VoxelVeinsScript.new()
 
 # Dimensions de la carte - SOURCE UNIQUE (single source of truth). Tous les
 # autres scripts qui ont besoin des dimensions de la carte (CameraRig,
-# ActionController, Forest/BerryBushes/GroundDecoration/Dwarf) lisent
-# directement WIDTH/DEPTH/HEIGHT ci-dessous plutot que de dupliquer ces
-# valeurs, pour eviter toute desynchronisation.
-const WIDTH := 250   # axe X
-const DEPTH := 250   # axe Z
+# ActionController, Forest/BerryBushes/GroundDecoration/Dwarf,
+# VoxelHydrology.gd) lisent directement WIDTH/DEPTH/HEIGHT ci-dessous plutot
+# que de dupliquer ces valeurs, pour eviter toute desynchronisation (voir le
+# bug C19, cause par une telle duplication dans VoxelHydrology.gd).
+# WIDTH/DEPTH ne sont plus des const : StartMenu.gd les ecrit AVANT
+# change_scene_to_file (meme mecanisme que use_fixed_seed/requested_seed plus
+# bas) selon la taille de carte choisie a l'ecran d'accueil. HEIGHT reste
+# fixe (la taille de carte ne concerne que X/Z, pas la hauteur).
+static var WIDTH: int = 250   # axe X
+static var DEPTH: int = 250   # axe Z
 const HEIGHT := 50  # axe Y (hauteur totale, y=0 = fond)
 
 ## Point de spawn unique de la colonie (nains + stock de bois de depart),
@@ -51,8 +56,12 @@ const HEIGHT := 50  # axe Y (hauteur totale, y=0 = fond)
 ## %VoxelWorld.colony_spawn_center.
 var colony_spawn_center: Vector2 = Vector2.ZERO
 
-# Nombre de niveaux de terre en surface (le reste en dessous = pierre)
-const DIRT_HEIGHT := 3
+# Nombre de niveaux de terre en surface (le reste en dessous = pierre) -
+# tire au sort PAR COLONNE (voir generate_flat_terrain), pas une valeur fixe -
+# meme comportement que valide dans le prototype CubeSolTestV2.gd
+# (2026-07-10, Francois : "on garde le comportement aleatoire").
+const DIRT_HEIGHT_MIN := 1
+const DIRT_HEIGHT_MAX := 3
 
 # Marge au-dessus du terrain pour pouvoir construire des murs en hauteur
 const BUILD_CEILING := HEIGHT + 10
@@ -69,8 +78,19 @@ enum BlockType { EMPTY, DIRT, STONE, WOOD_WALL, STONE_WALL, WATER }
 var is_frozen: bool = false
 var snow_coverage: float = 0.0  # 0..1, pilote par TemperatureSystem.gd
 
-# Grille du monde : cle = Vector3i (position bloc), valeur = BlockType
+# Grille du monde : cle = Vector3i (position bloc), valeur = BlockType. C'est
+# le CUBE (voir modele CUBE+SOL, memoire "Modele CUBE+SOL" 2026-07-08).
 var grid: Dictionary = {}
+
+## Le SOL (fine couche sur laquelle on marche, voir modele CUBE+SOL) - cle =
+## Vector3i, valeur = BlockType. Stockage SPARSE : une position n'apparait ici
+## QUE si son SOL diverge de la regle par defaut (voir get_sol() ci-dessous) -
+## jamais peuplee pendant la generation initiale (le SOL de tout bloc frais
+## est par definition la valeur par defaut), seulement plus tard par le
+## minage/la construction (pas encore implemente). Meme esprit que
+## "discovered" : un dictionnaire qui ne grandit qu'avec les evenements
+## reels, jamais une grille dense pre-remplie sur toute la carte.
+var sol_grid: Dictionary = {}
 
 # Filons (position -> id materiau) : voir vein_system.vein_grid. Dictionnaire
 # separe plutot qu'un nouveau BlockType par materiau, pour eviter de faire
@@ -98,6 +118,42 @@ var discovered: Dictionary = {}
 ## ActionValidator.valid_mine_rect_cells/valid_puiser_rect_cells). Cle =
 ## Vector2i(x,z), valeur toujours true (meme convention que "discovered").
 var forbidden_cells: Dictionary = {}
+
+## Escaliers creuses (voir dig_stairs) : Vector3i (position bloc, deja EMPTY
+## dans "grid") -> {"piece": "bas"/"haut"/"hautbas" (voir dig_stairs),
+## "material": BlockType du bloc qui occupait cette case AVANT le creusage}.
+## Le materiau est conserve pour que la plaque d'escalier reprenne la
+## couleur reelle de ce qu'elle traverse (terre/pierre/mur), comme une paroi
+## minee normale - pas une couleur arbitraire (voir
+## VoxelMeshBuilder._stair_color_for). Meme principe que vein_grid
+## (dictionnaire separe plutot qu'un nouveau BlockType) - lu par
+## VoxelMeshBuilder.gd pour dessiner une plaque de hauteur partielle a la
+## place du vide habituel. Navigation verticale REELLE des nains non geree
+## pour l'instant (voir memoire "Phase 2 Sprint 1") - seuls le menu/
+## creusage/rendu sont couverts par cette premiere passe.
+var stair_grid: Dictionary = {}
+
+## Cases VIDES connues comme reliees a la surface par un chemin continu de
+## cases vides (6-connexe, voir _mark_reachable_from) - Vector3i -> true.
+## Sert a distinguer un "trou" (progresse toujours depuis le sommet reel
+## d'une colonne, jamais bloque) d'un "couloir" (case creusee via le niveau
+## de vue dans de la roche encore fermee de tous cotes, qui ne devient
+## executable par un nain qu'une fois reliee - voir can_reach_block,
+## consultee par TaskQueue.pop_nearest_task). Decision Francois 2026-07-08 :
+## la designation d'un couloir reste autorisee immediatement, seule son
+## EXECUTION attend la connexion. Mise a jour incrementale a chaque
+## _remove_block_silent, jamais recalculee entierement.
+var reachable: Dictionary = {}
+
+## Etendue verticale (top/bottom, en niveau de station debout - voir doc de
+## can_walk_to_level) de l'escalier de chaque colonne (x,z) qui en contient
+## un - Vector2i(x,z) -> {"top": int, "bottom": int}. Rempli directement par
+## dig_stairs() (qui connait deja top_y/bottom_y), lu par can_walk_to_level/
+## find_connecting_stair et par DwarfMovement.ground_y_at - regles de
+## pathing des nains, voir memoire "Regles de pathing des nains" (Francois
+## 2026-07-08) : un nain ne peut monter/descendre que d'1 niveau max sans
+## escalier, au-dela un escalier est obligatoire.
+var stair_columns: Dictionary = {}
 
 # 6 directions possibles autour d'un bloc (droite/gauche/haut/bas/avant/arriere)
 const DIRECTIONS := [
@@ -291,10 +347,13 @@ const VIEW_LEVEL_MARGIN_ABOVE := 15
 
 ## Change le niveau de "coupe" visible (voir view_level) et reconstruit le
 ## mesh en consequence. Appele par CameraRig a chaque changement de niveau
-## (molette de la souris).
+## (molette de la souris). grid_changed=false (voir rebuild_mesh) : la grille
+## elle-meme n'a pas bouge, seul le niveau de coupe change - permet a
+## VoxelMeshBuilder de reutiliser son cache par couche au lieu de tout
+## reconstruire (perf 2026-07-08, voir sa doc).
 func set_view_level(level: int) -> void:
 	view_level = clampi(level, 0, HEIGHT - 1 + VIEW_LEVEL_MARGIN_ABOVE)
-	rebuild_mesh()
+	rebuild_mesh(false)
 
 
 ## Hauteur de colline (en blocs, 0..hill_amplitude) a une position (x,z), a
@@ -315,6 +374,47 @@ func _hill_height_at(x: int, z: int) -> int:
 ## Cherche jusqu'a BUILD_CEILING pour tenir compte des murs construits en hauteur.
 func get_top_block_y(x: int, z: int) -> int:
 	for y in range(BUILD_CEILING - 1, -1, -1):
+		if get_block(Vector3i(x, y, z)) != BlockType.EMPTY:
+			return y
+	return -1
+
+
+## Materiau du SOL a une position donnee (voir modele CUBE+SOL, memoire
+## "Modele CUBE+SOL" 2026-07-08) - jamais "dessus" d'un bloc, un concept
+## explicitement banni : le SOL est sa propre couche, independante du CUBE.
+## Regle par defaut (utilisee tant que "pos" n'a pas d'entree explicite dans
+## "sol_grid", donc pour tout bloc frais/jamais perturbe) :
+## - Si le CUBE a "pos" est plein (terre/pierre/eau/mur), le SOL reprend LE
+##   MEME materiau (Francois 2026-07-08 : "bloc metal = CUBE metal + SOL
+##   metal") - couvre aussi bien la pierre/les filons (le SOL suit le CUBE,
+##   filon compris, sans logique dediee) que l'eau (CUBE=eau => SOL=eau,
+##   aucun lit distinct).
+## - Sinon (CUBE vide) : SOL=terre UNIQUEMENT sur la couche d'air marchable
+##   juste au-dessus du sommet REEL de la colonne (get_top_block_y + 1), et
+##   seulement si ce sommet n'est PAS de l'eau (une colonne d'eau n'a pas de
+##   "terre" flottant au-dessus de sa surface - voir cas CUBE=eau ci-dessus,
+##   deja couvert). Partout ailleurs (ciel au-dessus de ce niveau), SOL=vide.
+func get_sol(pos: Vector3i) -> int:
+	if sol_grid.has(pos):
+		return sol_grid[pos]
+	var cube_type: int = get_block(pos)
+	if cube_type != BlockType.EMPTY:
+		return cube_type
+	var top_y: int = get_top_block_y(pos.x, pos.z)
+	if top_y >= 0 and pos.y == top_y + 1 and get_block(Vector3i(pos.x, top_y, pos.z)) != BlockType.WATER:
+		return BlockType.DIRT
+	return BlockType.EMPTY
+
+
+## Meme principe que get_top_block_y, mais plafonne la recherche a "max_y" -
+## utilise par Miner pour cibler le bloc visible au niveau de vue courant
+## (view_level) plutot que le sommet reel de la colonne, qui peut etre
+## masque par la coupe (feedback Francois 2026-07-08 : miner un bloc vu en
+## coupe a un niveau inferieur minait en realite le sommet, invisible a ce
+## moment-la).
+func get_top_block_y_at_or_below(x: int, z: int, max_y: int) -> int:
+	var start_y: int = mini(BUILD_CEILING - 1, max_y)
+	for y in range(start_y, -1, -1):
 		if get_block(Vector3i(x, y, z)) != BlockType.EMPTY:
 			return y
 	return -1
@@ -473,6 +573,17 @@ func build_block(x: int, z: int, material: String) -> void:
 ## bois d'arbre) - "bois"/"pierre" sont deja les compteurs GENERIQUES, pas
 ## besoin de double alimentation comme pour la coupe d'arbre.
 func remove_block(x: int, y: int, z: int) -> String:
+	var resource_name := _remove_block_silent(x, y, z)
+	rebuild_mesh()
+	return resource_name
+
+
+## Coeur de remove_block, SANS le rebuild_mesh() final - extrait pour
+## dig_stairs() ci-dessous, qui retire plusieurs blocs d'affilee et ne veut
+## reconstruire le mesh qu'une seule fois a la toute fin (pas un rebuild par
+## niveau creuse, meme raisonnement perf que le cache par couche de
+## VoxelMeshBuilder.gd).
+func _remove_block_silent(x: int, y: int, z: int) -> String:
 	var pos := Vector3i(x, y, z)
 	if not grid.has(pos):
 		push_warning("VoxelWorld.remove_block: case deja vide a (%d, %d, %d)" % [x, y, z])
@@ -499,7 +610,22 @@ func remove_block(x: int, y: int, z: int) -> String:
 			# une seule fois, au moment ou ce bloc devient visible.
 			if grid[neighbor_pos] == BlockType.STONE:
 				vein_system.maybe_place_vein(neighbor_pos, VeinMaterials.all())
-	rebuild_mesh()
+	# Connectivite (voir "reachable") : ce bloc, maintenant vide, est-il
+	# relie a la surface ? Soit il vient d'exposer le ciel (c'etait le
+	# sommet reel de sa colonne - cas "trou", toujours accessible), soit un
+	# voisin est deja une case vide reliee (cas "couloir" prolonge depuis un
+	# point deja accessible). Sinon (couloir creuse via le niveau de vue
+	# dans de la roche encore fermee de tous cotes) il reste NON accessible
+	# tant qu'un chemin ne le relie pas.
+	var is_open_sky: bool = get_top_block_y(x, z) < y
+	var has_reachable_neighbor: bool = false
+	if not is_open_sky:
+		for dir in DIRECTIONS:
+			if reachable.has(pos + dir):
+				has_reachable_neighbor = true
+				break
+	if is_open_sky or has_reachable_neighbor:
+		_mark_reachable_from(pos)
 	if vein_id != "":
 		return vein_id
 	if type == BlockType.DIRT:
@@ -513,14 +639,186 @@ func remove_block(x: int, y: int, z: int) -> String:
 	return ""
 
 
+## Propage "reachable" par inondation (BFS) depuis "start" (deja vide et
+## relie a la surface) a travers les cases vides adjacentes pas encore
+## marquees - typiquement 0 ou 1 nouvelle case a chaque minage simple, mais
+## peut en relier beaucoup d'un coup si ce minage vient de joindre deux
+## poches jusque-la separees.
+func _mark_reachable_from(start: Vector3i) -> void:
+	if reachable.has(start):
+		return
+	var queue: Array = [start]
+	reachable[start] = true
+	while not queue.is_empty():
+		var current: Vector3i = queue.pop_back()
+		for dir in DIRECTIONS:
+			var n: Vector3i = current + dir
+			if reachable.has(n):
+				continue
+			if grid.get(n, BlockType.EMPTY) != BlockType.EMPTY:
+				continue
+			# Ne jamais suivre le ciel ouvert au-dessus d'une colonne : ces
+			# cases sont "vides" simplement parce qu'elles n'ont jamais ete
+			# generees (aucune entree dans "grid"), et s'etendent sans limite
+			# vers le haut - sans ce garde-fou, la moindre case minee au
+			# sommet reel de sa colonne ("trou") declenchait une inondation
+			# infinie a travers tout le ciel de la carte, gelant le jeu
+			# (feedback Francois 2026-07-08 : gel total sur Creuser/Miner/
+			# Escalier). Une case n'est suivie que si elle est au niveau ou
+			# EN DESSOUS du sommet reel ACTUEL de sa propre colonne (donc soit
+			# deja creusee sous plafond, soit tout juste exposee) - jamais
+			# au-dessus.
+			if n.y > get_top_block_y(n.x, n.z):
+				continue
+			reachable[n] = true
+			queue.append(n)
+
+
+## Vrai si un nain peut atteindre ce bloc SOLIDE pour le miner maintenant :
+## soit c'est le sommet reel de sa colonne (un "trou" se creuse toujours
+## depuis la surface, jamais bloque), soit un de ses 6 voisins est deja une
+## case vide reliee a la surface (voir "reachable") - un "couloir" ne se
+## creuse que depuis un point deja accessible, pas "dans le vide" via le
+## niveau de vue. Consultee par TaskQueue.pop_nearest_task pour ne faire
+## executer que les taches "miner" actuellement possibles (la designation,
+## elle, reste toujours autorisee - regle Francois 2026-07-08).
+func can_reach_block(x: int, y: int, z: int) -> bool:
+	if y == get_top_block_y(x, z):
+		return true
+	var pos := Vector3i(x, y, z)
+	for dir in DIRECTIONS:
+		if reachable.has(pos + dir):
+			return true
+	return false
+
+
+## Etendue de l'escalier de la colonne (x,z), ou {} si aucun escalier n'y a
+## ete creuse - voir "stair_columns" plus haut.
+func get_stair_range(x: int, z: int) -> Dictionary:
+	return stair_columns.get(Vector2i(x, z), {})
+
+
+## Cherche un escalier permettant a un nain d'atteindre le niveau "to_y" (sa
+## future position debout) sur la colonne (to_x,to_z) OU une de ses 4
+## voisines immediates (un "couloir" cible part typiquement du pied d'un
+## escalier) - portee volontairement limitee a UN SEUL escalier direct par
+## trajet (pas de chainage de plusieurs escaliers), voir memoire "Regles de
+## pathing des nains". Renvoie {} si aucun escalier ne couvre ce niveau.
+func find_connecting_stair(to_x: int, to_z: int, to_y: int) -> Dictionary:
+	var candidates: Array = [Vector2i(to_x, to_z),
+		Vector2i(to_x + 1, to_z), Vector2i(to_x - 1, to_z),
+		Vector2i(to_x, to_z + 1), Vector2i(to_x, to_z - 1)]
+	for col in candidates:
+		var stair_range: Dictionary = stair_columns.get(col, {})
+		if stair_range.is_empty():
+			continue
+		var top: int = int(stair_range["top"]) + 1
+		var bottom: int = int(stair_range["bottom"])
+		if to_y < bottom or to_y > top:
+			continue
+		return {"column": col, "top": top, "bottom": bottom}
+	return {}
+
+
+## Vrai si un nain peut marcher du niveau "from_y" (sa position actuelle) au
+## niveau "to_y" sur la colonne (to_x,to_z) - soit un denivele naturel d'au
+## plus 1 niveau (toujours autorise, regle 4), soit un denivele plus grand
+## mais couvert par un escalier deja creuse (voir find_connecting_stair).
+## Ne concerne QUE le deplacement du nain, pas le droit de miner (voir
+## can_reach_block - un "trou" reste creusable a n'importe quelle
+## profondeur, seule la MARCHE d'un nain y est limitee).
+func can_walk_to_level(from_y: int, to_x: int, to_z: int, to_y: int) -> bool:
+	if absi(from_y - to_y) <= 1:
+		return true
+	return not find_connecting_stair(to_x, to_z, to_y).is_empty()
+
+
+## Vrai si la case contient un bloc (n'importe quel type non-vide) - utilise
+## par ActionDragController.gd pour borner l'extension d'un escalier a la
+## molette (on ne peut pas creuser un escalier a travers du vide deja mine,
+## voir max_stair_bottom).
+func is_solid(x: int, y: int, z: int) -> bool:
+	return grid.get(Vector3i(x, y, z), BlockType.EMPTY) != BlockType.EMPTY
+
+
+## Creuse une colonne d'escalier sur plusieurs niveaux d'affilee (geste
+## clic+molette+clic, voir ActionDragController.on_stair_click/extend_stair) :
+## top_y = niveau de depart (sommet actuel de la colonne, cote surface),
+## bottom_y = niveau le plus profond atteint (top_y >= bottom_y). Chaque
+## niveau est retire comme un minage classique (_remove_block_silent, memes
+## ressources renvoyees) puis marque dans stair_grid selon sa position dans
+## la plage :
+## - top_y (le plus haut) -> "bas" (l'escalier descend depuis la surface/le
+##   niveau ouvert au-dessus, rien en dessous de ce demi-bloc)
+## - bottom_y (le plus bas) -> "haut" (l'escalier remonte vers le niveau
+##   au-dessus, sol plein juste en dessous)
+## - niveaux intermediaires -> "hautbas" (traverse : remonte d'un cote,
+##   descend de l'autre)
+## - plage d'un seul niveau -> "bas" par defaut (cas limite rare)
+## Renvoie les ressources recoltees (nom -> quantite), pour que
+## DwarfTaskResolver.gd les ajoute a l'inventaire du nain. Un seul
+## rebuild_mesh() a la toute fin (pas un par niveau). Le type de bloc
+## (BlockType) est capture AVANT le retrait pour etre conserve dans
+## stair_grid - c'est lui qui determine la couleur de la plaque (voir doc de
+## stair_grid), pas juste la forme.
+func dig_stairs(x: int, z: int, top_y: int, bottom_y: int) -> Dictionary:
+	var resources: Dictionary = {}
+	var single_level := top_y == bottom_y
+	for y in range(top_y, bottom_y - 1, -1):
+		var pos := Vector3i(x, y, z)
+		if not grid.has(pos):
+			continue
+		var block_type: int = grid[pos]
+		var resource_name := _remove_block_silent(x, y, z)
+		if resource_name != "":
+			resources[resource_name] = resources.get(resource_name, 0) + 1
+		var piece_type: String
+		if single_level:
+			piece_type = "bas"
+		elif y == top_y:
+			piece_type = "bas"
+		elif y == bottom_y:
+			piece_type = "haut"
+		else:
+			piece_type = "hautbas"
+		stair_grid[pos] = {"piece": piece_type, "material": block_type}
+	# Etendue de la colonne (voir "stair_columns") - fusionnee avec une
+	# eventuelle etendue existante (geste "etendre l'escalier" sur une
+	# colonne deja partiellement creusee) pour toujours couvrir le sommet le
+	# plus haut et le fond le plus bas creuses sur cette colonne.
+	var col_key := Vector2i(x, z)
+	var existing_range: Dictionary = stair_columns.get(col_key, {})
+	var merged_top: int = maxi(existing_range.get("top", top_y), top_y)
+	var merged_bottom: int = mini(existing_range.get("bottom", bottom_y), bottom_y)
+	stair_columns[col_key] = {"top": merged_top, "bottom": merged_bottom}
+	rebuild_mesh()
+	return resources
+
+
 ## Remplit la grille : pierre en bas, terre au-dessus, avec un relief de
-## collines (voir hill_amplitude/_hill_height_at). La terre reste limitee
-## aux DIRT_HEIGHT niveaux du haut (niveaux 1-3 depuis la surface) ; dans la
-## pierre en dessous, chaque bloc a une chance (par materiau, voir
-## vein_noises/RARITY_THRESHOLDS) de devenir un filon plutot que de la
-## pierre nue.
+## collines (voir hill_amplitude/_hill_height_at). La terre reste limitee aux
+## DIRT_HEIGHT_MIN..DIRT_HEIGHT_MAX niveaux du haut du CUBE plein (tire au
+## sort par colonne) ; dans la pierre en dessous,
+## chaque bloc a une chance (par materiau, voir vein_noises/
+## RARITY_THRESHOLDS) de devenir un filon plutot que de la pierre nue.
+## Modele CUBE+SOL (Francois 2026-07-09, "1 layer = 1 bloc = CUBE+SOL") : la
+## couche "surface_y" elle-meme n'est PLUS un CUBE plein pour une colonne
+## SECHE - elle reste vide (CUBE=vide, SOL=terre via get_sol()) car
+## Francois l'a confirme explicitement : "l'herbe est le SOL de la surface
+## qui a un cube vide". Le CUBE plein (dont les niveaux de terre, voir
+## DIRT_HEIGHT_MIN/MAX) descend donc d'un cran, jusqu'a "fill_top_y" =
+## surface_y - 1. Les
+## colonnes D'EAU restent inchangees (fill_top_y = surface_y, pas de couche
+## vide au-dessus - decision Francois 2026-07-08 : CUBE=SOL=eau, aucun lit
+## distinct).
 func generate_flat_terrain() -> void:
 	var veins: Array = VeinMaterials.all()  # deja triee du plus rare au plus commun
+	# Flux dedie "sous_sol" (meme nom que CubeSolTestV2.gd) pour la hauteur de
+	# terre aleatoire par colonne - recupere UNE SEULE FOIS avant la boucle
+	# (comme terrain_rng plus haut dans _ready()), puis randi_range() appele a
+	# chaque colonne pour avancer l'etat plutot que de retirer le meme flux a
+	# chaque fois (ce qui redonnerait la meme valeur partout).
+	var dirt_rng: RandomNumberGenerator = GameRandom.get_rng("sous_sol")
 	# Colonnes (x,z) couvertes par un lac ou la riviere -> profondeur en
 	# niveaux, PLUS le decalage de relief force pour ces colonnes (lacs
 	# aplatis, riviere en paliers) et les colonnes de cascade (voir
@@ -546,11 +844,45 @@ func generate_flat_terrain() -> void:
 			var surface_y: int = HEIGHT - 1 + hill_offset
 			var waterfall: Dictionary = waterfalls.get(pos2d, {})
 			var bank_face: Dictionary = bank_faces.get(pos2d, {})
+			# REVERT 2026-07-09 (Francois : "ca a supprime le relief" - je
+			# n'ai pas reussi a isoler le mecanisme exact malgre plusieurs
+			# verifications de l'arithmetique, donc je restaure le
+			# comportement d'origine ici par prudence plutot que de
+			# continuer a deviner sur du code qui touche a toute la carte).
+			# fill_top_y = surface_y partout (plus de decalage -1 pour les
+			# colonnes seches) - le "CUBE vide + SOL terre" en surface sera
+			# reobtenu autrement (voir memoire "Modele CUBE+SOL").
+			var fill_top_y: int = surface_y
+			var dirt_height: int = dirt_rng.randi_range(DIRT_HEIGHT_MIN, DIRT_HEIGHT_MAX)
+			# Berge de riviere/lac GENERALE (2026-07-10, bug Francois : "mur
+			# de 2 niveaux, le premier niveau est transparent") - meme
+			# principe que "is_bank_face" plus bas (reserve aux rangees de
+			# cascade), mais pour TOUTE colonne seche adjacente a une
+			# colonne d'eau plus basse (riviere loin d'une chute, ou bord de
+			# lac). Sans ca, seul le sommet (y == fill_top_y) est
+			# "decouvert" : une berge de 2+ niveaux laisse un ou plusieurs
+			# blocs intermediaires jamais decouverts, donc absents du
+			# maillage (VoxelMeshBuilder ne dessine que "discovered") - un
+			# vrai trou, pas juste gris.
+			var river_bank_reveal_bottom: int = fill_top_y + 1  # aucune reveal par defaut
+			if water_depth == 0:
+				for dir2d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+					var npos: Vector2i = pos2d + dir2d
+					if npos.x < 0 or npos.x >= WIDTH or npos.y < 0 or npos.y >= DEPTH:
+						continue
+					var n_water_depth: int = water_columns.get(npos, 0)
+					if n_water_depth == 0:
+						continue
+					var n_hill_offset: int = hill_overrides.get(npos, _hill_height_at(npos.x, npos.y))
+					var n_surface_y: int = HEIGHT - 1 + n_hill_offset
+					if n_surface_y >= surface_y:
+						continue
+					river_bank_reveal_bottom = mini(river_bank_reveal_bottom, n_surface_y - n_water_depth + 1)
 			for y in range(max_y):
 				var type := BlockType.EMPTY
-				if y <= surface_y:
+				if y <= fill_top_y:
 					type = BlockType.STONE
-					if y > surface_y - DIRT_HEIGHT:
+					if y > fill_top_y - dirt_height:
 						type = BlockType.DIRT
 				# Remplace les "water_depth" derniers niveaux (depuis la
 				# surface DE CETTE COLONNE) par de l'eau, au lieu du seul
@@ -596,7 +928,8 @@ func generate_flat_terrain() -> void:
 				# meme etendue verticale que la chute d'eau elle-meme juste
 				# a cote.
 				var is_bank_face: bool = not bank_face.is_empty() and y >= int(bank_face["bottom"]) - 1 and y <= int(bank_face["top"])
-				if y == surface_y or is_edge_column or type == BlockType.WATER or is_water_floor or is_waterfall_face or is_bank_face:
+				var is_river_bank_face: bool = y >= river_bank_reveal_bottom
+				if y == fill_top_y or is_edge_column or type == BlockType.WATER or is_water_floor or is_waterfall_face or is_bank_face or is_river_bank_face:
 					discovered[pos] = true
 					# Le filon d'un bloc de pierre n'a d'interet que s'il peut
 					# un jour etre vu ou mine - le calculer pour TOUTE la
@@ -662,7 +995,11 @@ var hydrology: VoxelHydrologyScript = VoxelHydrologyScript.new()
 
 
 func _compute_water_columns() -> Dictionary:
-	return hydrology.compute_water_columns(water_noise, Callable(self, "_hill_height_at"))
+	# WIDTH/DEPTH passes en parametres (comme VoxelMeshBuilder.rebuild()) au
+	# lieu d'etre dupliques en const dans VoxelHydrology.gd - c'est cette
+	# duplication qui avait cause le bug C19 quand la carte etait passee de
+	# 100x100 a 250x250.
+	return hydrology.compute_water_columns(water_noise, Callable(self, "_hill_height_at"), WIDTH, DEPTH)
 
 
 func get_block(pos: Vector3i) -> int:
@@ -677,7 +1014,16 @@ const VoxelMeshBuilderScript := preload("res://scripts/monde/voxel/VoxelMeshBuil
 var mesh_builder: VoxelMeshBuilderScript = VoxelMeshBuilderScript.new()
 
 
-func rebuild_mesh() -> void:
+## grid_changed (true par defaut) : transmis a VoxelMeshBuilder.rebuild(),
+## qui invalide son cache par couche uniquement si vrai (voir sa doc, perf
+## 2026-07-08). A laisser au defaut (true) partout SAUF depuis
+## set_view_level(), le seul appelant qui ne touche ni grid/discovered ni
+## climat/saison/neige - tous les autres (build_block/remove_block/
+## set_climate_state/generation initiale/SeasonSystem.gd) gardent le
+## comportement historique (invalidation systematique, donc toujours a jour).
+##
+func rebuild_mesh(grid_changed: bool = true) -> void:
 	mesh_builder.rebuild(grid, discovered, vein_system, view_level, WIDTH, DEPTH,
 			is_frozen, snow_coverage, climate_id, season_id, terrain_noise, stone_noise,
-			DIRECTIONS, mesh_instance, Callable(self, "get_top_block_y"))
+			DIRECTIONS, mesh_instance, Callable(self, "get_top_block_y"), stair_grid, grid_changed,
+			Callable(self, "get_sol"))

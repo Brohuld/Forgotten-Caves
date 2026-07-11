@@ -107,19 +107,22 @@ func _build_streak_group(col: Dictionary) -> Node3D:
 	# Pas de materiau unique ici : chaque trait recoit le sien (voir boucle
 	# ci-dessous, _streak_materials construits une fois dans _ready).
 
+	# Flux GameRandom dedie ("cascade_traits") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M92).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("cascade_traits")
 	for i in range(STREAKS_PER_COLUMN):
 		var streak := MeshInstance3D.new()
 		streak.mesh = box
-		streak.material_override = _streak_materials[randi() % _streak_materials.size()]
+		streak.material_override = _streak_materials[rng.randi() % _streak_materials.size()]
 		# Depart etale sur toute la courbe (pas tous au sommet en meme temps),
 		# sinon les traits arriveraient groupes/synchronises.
-		var start_angle: float = randf_range(0.0, PI * 0.5)
-		var speed: float = randf_range(ANGULAR_SPEED_MIN, ANGULAR_SPEED_MAX)
+		var start_angle: float = rng.randf_range(0.0, PI * 0.5)
+		var speed: float = rng.randf_range(ANGULAR_SPEED_MIN, ANGULAR_SPEED_MAX)
 		# Decalage aleatoire fixe sur l'axe Z local (largeur du bloc,
 		# perpendiculaire a la courbe) - sans ca, tous les traits d'une meme
 		# colonne resteraient dans le meme plan, empiles au centre du bloc
 		# plutot qu'etales dans sa largeur.
-		var z_jitter: float = randf_range(-0.35, 0.35)
+		var z_jitter: float = rng.randf_range(-0.35, 0.35)
 		streak.set_meta("angle", start_angle)
 		streak.set_meta("speed", speed)
 		streak.set_meta("z_jitter", z_jitter)

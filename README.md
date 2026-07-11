@@ -6,25 +6,7 @@ Jeu de gestion de colonie de nains en 3D par blocs (voxels), inspiré de Dwarf F
 
 - Moteur : Godot 4.7 (GDScript)
 - Rendu : Forward+ (3D)
-- Plateformes cibles : Windows, macOS
-
-## Structure du projet
-
-`scripts/` est rangé par catégorie (depuis le Sprint 22) :
-
-```
-ForgottenCavesGame/
-├── project.godot        # Fichier de configuration du projet
-├── scenes/
-│   └── Main.tscn         # Scène de départ : caméra + lumière + grille de blocs + tous les acteurs
-├── scripts/
-│   ├── data/             # Tables de données statiques, éditables (matériaux, climats, créatures)
-│   ├── entites/          # Scripts de comportement des acteurs vivants (Dwarf, Forest, BerryBushes...)
-│   ├── monde/            # Terrain et décor (VoxelWorld, GroundDecoration, cascades)
-│   ├── ui/                # Interface (CharacterSheetUI)
-│   └── systemes/          # Logique globale (ActionController, TaskQueue, Inventory, CameraRig, cycles)
-└── assets/               # Modèles, textures, sons...
-```
+- Plateformes cibles : Windows, macOS (portage iPad/iPhone envisagé mais pas encore traité, voir section Portabilité)
 
 ## Prise en main
 
@@ -32,193 +14,169 @@ ForgottenCavesGame/
 2. Ouvrir Godot, cliquer sur "Importer", sélectionner le fichier `project.godot`
 3. Appuyer sur F5 (Run Project, pas F6 "Run Current Scene") pour lancer le jeu
 
-## Contrôles caméra
+Le jeu démarre sur `StartMenu.tscn` (écran de saisie de graine de génération de carte) avant de charger `Main.tscn`, la scène de jeu proprement dite.
 
+## Contrôles
+
+**Caméra** (`CameraRig.gd`) :
 - Déplacement : Z / Q / S / D
-- Rotation : A et E (pas Q, déjà pris par le déplacement)
+- Rotation : A et E
 - Zoom : + et - (ou Ctrl+molette)
-- Changer de niveau de profondeur (coupe façon Dwarf Fortress) : molette de la souris
+- Changer de niveau de vue (coupe horizontale façon Dwarf Fortress) : molette de la souris
 - Angle de vue : maintenir le clic molette et glisser la souris
-- Vitesse du temps : Espace (pause), F1/F2/F3 (x1/x2/x4)
+
+**Actions** (`ActionMenuBar.gd`) : boutons Construire/Couper/Cueillir/Creuser/Puiser/Détruire/Interdire, chacun avec un raccourci clavier physique. Vitesse du temps : Espace (pause), F1/F2/F3 (x1/x2/x4).
+
+## Structure du projet
+
+```
+ForgottenCavesGame/
+├── project.godot           # Configuration du projet (autoload GameRandom, scène de démarrage StartMenu)
+├── scenes/
+│   ├── StartMenu.tscn       # Écran de saisie de graine, scène de démarrage réelle
+│   ├── Main.tscn            # Scène de jeu : terrain + acteurs + UI (voir Architecture ci-dessous)
+│   └── prototypes/          # Scènes de test isolées (voir section Prototypes)
+├── scripts/
+│   ├── data/                 # Tables de données statiques (matériaux, climats, créatures, tâches)
+│   ├── entites/               # Acteurs vivants et végétation (Dwarf, Forest, BerryBushes, Birds...)
+│   ├── monde/                 # Terrain voxel et décor (VoxelWorld, cascades, décoration de sol)
+│   ├── systemes/               # Logique globale transversale (actions, tâches, climat, caméra, UI générique...)
+│   ├── ui/                     # Interface spécifique (fiche de personnage, portraits)
+│   └── prototypes/             # Modèle 3D du nain (EN PRODUCTION malgré le nom) + prototypes isolés jetables
+└── assets/, shaders/, themes/, tools/   # Ressources (actuellement peu peuplés - tout le rendu est procédural)
+```
+
+## Architecture générale
+
+Le jeu ne charge aucun modèle 3D ni texture externe pour son terrain/sa végétation/ses personnages : tout est généré par code au démarrage (formes procédurales, couleurs calculées, icônes dessinées pixel par pixel). Cette section décrit les systèmes majeurs, dans l'ordre où un nouveau développeur devrait les découvrir.
+
+### 1. Scène de jeu et ordre des nœuds (`Main.tscn`)
+
+`Main.tscn` place environ 25 nœuds racine, dans un ordre volontaire (plusieurs systèmes lisent l'état d'un autre nœud dès leur `_ready()`, donc l'ordre de déclaration compte) :
+
+```
+DwarfModelPrewarm → WorldEnvironment/DirectionalLight3D/Moon → DayNightCycle → WeatherSystem
+→ VoxelWorld → CloudSystem → WaterfallShapes/WaterfallStreaks/WaterfallFoamClouds → Forest
+→ Birds → TemperatureSystem → BerryBushes → GroundDecoration → SeasonSystem → TaskQueue
+→ Inventory → CameraRig → Colony (Dwarf1/2/3) → ActionUI → CharacterSheetUI
+```
+
+Points notables :
+- `DwarfModelPrewarm` est délibérément premier : construire le tout premier modèle 3D de nain coûte plusieurs secondes, autant l'absorber pendant que le reste charge.
+- `VoxelWorld` doit exister avant tout ce qui dépend de sa géométrie (cascades, forêt, décor, caméra).
+- La plupart des systèmes climatiques/temporels (DayNightCycle/WeatherSystem/SeasonSystem/TemperatureSystem) communiquent entre eux via des références par nom unique (`%NomDuNoeud`), pas par ordre — l'ordre ne compte que pour les tout premiers appels en `_ready()`.
+
+### 2. Le terrain voxel (`scripts/monde/`)
+
+`VoxelWorld.gd` est le cœur du terrain : une grille 3D de blocs (terre/pierre/eau/murs), jusqu'à 250×250 en X/Z. Il a été découpé en plusieurs fichiers par responsabilité, tous dans `scripts/monde/voxel/`, qui reçoivent l'état nécessaire en paramètres plutôt que de garder leur propre copie :
+
+| Fichier | Rôle |
+|---|---|
+| `VoxelMeshBuilder.gd` | Construit le mesh visible : culling des faces cachées, choix de la couleur par bloc (bruit/pénombre/AO), cache de géométrie par (niveau Y, chunk 16×16) pour ne recalculer que la zone réellement modifiée. |
+| `VoxelBlockAppearance.gd` | Primitives pures de géométrie (quads/boîtes) et de couleur, sans état - extrait de VoxelMeshBuilder.gd. |
+| `VoxelHydrology.gd` | Génération des lacs/rivière/cascades (partie la plus retravaillée du terrain - règles R1-R3/C1-C5 documentées dans le code). |
+| `VoxelVeins.gd` | Filons de métaux/pierres précieuses dans la pierre, et leurs pépites 3D incrustées. |
+| `VoxelConnectivity.gd` | Accessibilité (parcours en largeur) et creusage d'escaliers. |
+| `VoxelRaycast.gd` | Raymarching voxel pour savoir quel bloc/quelle face est réellement visible sous le curseur. |
+
+**Niveau de vue (molette)** : le jeu affiche une coupe horizontale du terrain (comme Dwarf Fortress), pilotée par `CameraRig.gd` qui appelle `VoxelWorld.set_view_level()`. Tout ce qui est au-dessus du niveau courant est caché. Un brouillard de guerre simple (case jamais minée = grise) est géré par un flag "découvert" par colonne.
+
+### 3. Les nains (`scripts/entites/Dwarf*.gd`)
+
+`Dwarf.gd` est le point d'entrée d'un nain (une instance par nain, tous dans le groupe Godot `"dwarves"`), mais la majorité de la logique est extraite dans des fichiers compagnons qui reçoivent le nain en paramètre (`dwarf: Node3D`) plutôt que d'hériter :
+
+| Fichier | Rôle |
+|---|---|
+| `DwarfMovement.gd` | Déplacement, évitement d'obstacles, coûts de terrain (eau/escalier/dénivelé). |
+| `DwarfNeeds.gd` | Besoins critiques : faim, énergie, soif. |
+| `DwarfTaskResolver.gd` | Résolution d'une tâche terminée (miner/couper/construire/cueillir/puiser/détruire/escalier). |
+| `DwarfVisuals.gd` | Apparence et accessoires visuels d'action (outil en main, indicateurs). |
+| `DwarfResourcePile.gd` | Tas de ressources déposés au sol. |
+| `DwarfSkills.gd` | Caractéristiques et compétences (gain d'XP, calcul de durée de travail). |
+
+Le modèle 3D visuel du nain vit dans `scripts/prototypes/` (voir section 8) mais est bien utilisé en jeu, pas un prototype jetable.
+
+### 4. Végétation et décor (`scripts/entites/`, `scripts/monde/`)
+
+- `Forest.gd` + `ForestGeometryBuilder.gd` : arbres (forêt + fruitiers), cycle de vie (coupe/repousse/teinte saisonnière). La géométrie pure (racines/tronc/branches/feuillage) est dans `ForestGeometryBuilder.gd`, le cycle de vie reste dans `Forest.gd`.
+- `BerryBushes.gd` : buissons et plantes à baies, même logique de repousse et de teinte saisonnière.
+- `GroundDecoration.gd` : herbe/fleurs/cailloux, purement décoratifs, générés une fois au démarrage.
+- `Birds.gd`, `CloudSystem.gd` : décor animé sans interaction gameplay.
+- `WaterfallShapes.gd`, `WaterfallStreaks.gd`, `WaterfallFoamClouds.gd` : rendu visuel des cascades (le bloc EAU sous-jacent est géré par `VoxelHydrology.gd`, ces 3 fichiers n'ajoutent qu'un habillage décoratif par-dessus).
+
+Arbres/buissons/décor partagent des `MultiMeshInstance3D` par type de pièce plutôt que des milliers de nœuds individuels, pour la performance.
+
+### 5. Actions et tâches (`scripts/systemes/Action*.gd`, `TaskQueue.gd`)
+
+`ActionController.gd` est le point d'entrée de l'UI d'action (barre de boutons + désignation à la souris), mais délègue à plusieurs fichiers spécialisés (même pattern de délégation que les nains - fonctions statiques recevant le contrôleur en paramètre) :
+
+| Fichier | Rôle |
+|---|---|
+| `ActionDragController.gd` | Cœur du glisser-déposer/sélection rectangle et création des tâches (Miner/Construire/Puiser/Couper/Cueillir/Détruire/Interdire). |
+| `ActionValidator.gd` | Détermine quelles cases d'un rectangle sont des cibles légales pour un mode donné. |
+| `ActionInspector.gd` | Inspection/survol en lecture seule (panneau d'info). |
+| `ActionMenuBar.gd` | Construit la barre de boutons et le sous-menu Construire à partir de tables de données. |
+| `ActionShortcuts.gd` | Raccourcis clavier (changement de mode, sous-type Creuser, contrôle du temps). |
+
+`TaskQueue.gd` est la file d'attente centrale des tâches désignées ; les nains y piochent la tâche accessible la plus proche au lieu d'errer.
+
+`IconRenderer.gd` dessine toutes les icônes (marqueurs de tâche, climat, boutons) pixel par pixel en mémoire - jamais de fichier image externe.
+
+### 6. Climat, temps et saisons (`scripts/systemes/`)
+
+Quatre systèmes indépendants, chacun un minuteur/état propre, qui se lisent mutuellement via des références par nom unique (`%NomDuNoeud`) :
+
+- `DayNightCycle.gd` : cycle jour/nuit visuel (ciel, lumière, lune). Expose des champs de base (`base_light_energy`, couleurs de ciel) que les autres systèmes lisent pour composer leurs propres effets par-dessus.
+- `WeatherSystem.gd` : météo (Normal/Brouillard/Pluie/Neige), ajoute ses effets par-dessus ceux de DayNightCycle.
+- `SeasonSystem.gd` : 4 saisons en boucle, reteinte le terrain et la végétation à chaque changement.
+- `TemperatureSystem.gd` : température, gel du sol et neige - déterministe par saison/épisode "vague de froid" (pas un simple seuil de température continu).
+- `ClimateUI.gd` : bandeaux heure/saison/météo affichés à l'écran, purement visuel.
+
+### 7. Interface (`scripts/ui/`, `scripts/systemes/InventoryUI.gd`)
+
+- `CharacterSheetUI.gd` : icônes de nains cliquables + fiche de personnage à onglets (État général/Caractéristiques/Compétences/Équipement).
+- `PortraitRenderer.gd` : portrait 3D d'un nain (mini `SubViewport` isolé cadré sur la tête).
+- `InventoryUI.gd` : panneau d'inventaire groupé par catégorie.
+
+### 8. Modèle 3D du nain (`scripts/prototypes/DwarfModel3D.gd` et builders)
+
+Malgré son emplacement dans `scripts/prototypes/` (héritage historique : c'était un prototype avant intégration), `DwarfModel3D.gd` est le vrai modèle 3D utilisé par tous les nains en jeu, référencé directement par `Dwarf.gd`. Sa construction est répartie en fichiers spécialisés :
+
+| Fichier | Rôle |
+|---|---|
+| `DwarfWeaponBuilder.gd` | Armes (5 configurations - pas encore utilisées en jeu, en attente du système de combat). |
+| `DwarfOutfitBuilder.gd` | Tenues/armures. |
+| `DwarfHairBuilder.gd` | Coiffures et barbes. |
+| `Model3DUtils.gd` | Utilitaires géométriques partagés entre les builders ci-dessus. |
+
+**Le reste de `scripts/prototypes/`** (`CubeSolTest.gd`/`CubeSolTestV2.gd`, `CompositionBenchmark.gd`, `DwarfVariationGrid.gd`) sont de vrais prototypes isolés et jetables, sans aucun lien avec le jeu principal - utilisés pour dérisquer une idée (modèle de bloc CUBE+SOL, benchmark de génération) avant de la reporter dans le code de production. Leurs scènes associées sont dans `scenes/prototypes/`.
+
+### 9. Systèmes transversaux génériques (`scripts/systemes/`)
+
+Conçus explicitement pour qu'un futur type d'objet (porte, meuble, arme posée, ennemi...) puisse s'y brancher sans toucher au système lui-même :
+
+- `Hoverable.gd` + `PointerResolver.gd` + `EntityDescriptions.gd` : survol/ciblage générique. Un objet devient survolable en portant une `Area3D` sur un layer dédié ; `PointerResolver.gd` arbitre terrain vs objet par distance réelle ; `EntityDescriptions.gd` fournit le texte de description.
+- `Gravity.gd` : un objet posé au sol (tas de ressources aujourd'hui) retombe au premier support disponible quand le bloc sous lui est retiré, via une convention de groupe (`GRAVITY_GROUPS`).
+- `ViewLevelIndex.gd` : factorise la règle de visibilité par niveau de vue (seuil, indexation, scan complet/incrémental), utilisée par la végétation et le décor.
+- `GameRandom.gd` (autoload) : fournit un flux aléatoire indépendant et déterministe par nom (`GameRandom.get_rng("nom_flux")`), dérivé de la graine de partie - garantit qu'une même graine reproduit exactement la même carte/apparence, quel que soit l'ordre d'exécution des systèmes.
+- `NightDarken.gd` : formule d'assombrissement nocturne partagée par les objets non éclairés (nuages, écume de cascade, tas de ressources).
+
+### 10. Tables de données (`scripts/data/`)
+
+Données statiques éditables sans toucher à la logique : `ClimateDefinitions.gd`, `NainNames.gd`, `SkillDefinitions.gd`, `TaskDefinitions.gd`, et sous `materiaux/` : `TreeSpecies.gd`, `BerryTypes.gd`, `MetalTypes.gd`, `GemTypes.gd` (regroupés par `VeinMaterials.gd`). Chaque table suit le même pattern (`const TABLE` + fonction statique de recherche par id) - ajouter une entrée à la table suffit généralement à ajouter une variante en jeu, sans autre modification de code.
+
+## Conventions de code
+
+- **Découpage sans héritage** : un fichier trop volumineux est découpé en fichiers de fonctions **statiques** qui reçoivent leur contexte en paramètre (`dwarf: Node3D`, `controller: CanvasLayer`, etc.) plutôt qu'en sous-classes ou en références typées croisées - évite les dépendances circulaires entre scripts qui se préchargent mutuellement (voir Dwarf*/Action*/DwarfModel3D+builders).
+- **Accès dynamique (`get()`/`set()`/`call()`)** : quand une fonction extraite reçoit un nœud générique (`Node3D`, `CanvasLayer`) plutôt que le type exact, elle lit/écrit ses propriétés dynamiquement - un `preload()` typé ne permettrait pas d'éviter la dépendance circulaire, et une lecture de constante (`Script.CONSTANTE`) ne fonctionne qu'à travers un `preload()` réellement typé, jamais via ce type générique.
+- **Déterminisme par graine** : tout tirage aléatoire qui doit être reproductible pour une graine donnée passe par `GameRandom.get_rng("nom_flux")`, jamais par le RNG global de Godot (`randf()`, `Array.shuffle()`...).
+- **Aucun asset externe pour le contenu procédural** : terrain, végétation, nains et icônes sont entièrement générés par code (formes procédurales, `Image.create`/`set_pixel` pour les icônes) plutôt que chargés depuis des fichiers - un choix initial pour éviter des soucis de rendu rencontrés tôt dans le projet avec des textures externes.
+
+## Portabilité
+
+Le projet cible actuellement Windows/macOS avec clavier + souris. Plusieurs points sont identifiés mais volontairement non traités en l'absence de portage iPad/iPhone planifié : résolution de fenêtre fixe (`project.godot`), contrôles caméra et raccourcis d'action sans équivalent tactile (`CameraRig.gd`, `ActionMenuBar.gd`). Voir les commentaires de ces fichiers pour le détail.
 
 ## Suivi du projet
 
-Le planning de sprints est dans `Forgotten_Caves_Sprints.xlsx` (dossier parent).
-
----
-
-## Historique de développement
-
-Le développement a dépassé les 85 sprints numérotés individuellement, ce qui rendait ce fichier illisible. **À partir de cette réorganisation (2026-07-04), l'historique est regroupé par paquet thématique plutôt que par numéro de sprint.** Les numéros de sprint ne sont plus l'identifiant principal (gardés ponctuellement entre parenthèses quand utile).
-
-### 1. Fondations & MVP
-
-Terrain en blocs (grille 3D, culling des faces cachées), navigation caméra (pan/rotation/zoom/niveau de profondeur), premier nain autonome, désignation de tâches (Miner/Couper), récolte + inventaire global, file de tâches par priorité de distance, construction multi-matériaux (bois/pierre/terre) par cliquer-glisser avec mur fantôme, besoins de base (faim/énergie), interface minimale (fiche personnage, icônes d'action). Session de validation de bout en bout confirmée — ce socle (MVP) est stable et n'a plus été remis en cause depuis.
-
-**Notes utiles** : `Input.is_physical_key_pressed`/`event.physical_keycode` (position physique de la touche, pas le caractère affiché) pour que ZQSD/A/E fonctionnent en AZERTY. Le mur "fantôme" pendant la construction est un `MeshInstance3D` semi-transparent ajouté directement dans la scène 3D. Chaque tâche de construction a un id unique, le nain émet un signal à la fin (succès ou échec) pour que l'UI retire le bon fantôme sans dépendre du rendu du terrain.
-
-**Écran de démarrage & graine reproductible (Sprint 80-83)** : avant `Main.tscn`, un premier écran (`StartMenu.gd`, scène de démarrage désignée dans `project.godot`) propose de saisir une graine (seed) de génération de carte — la même graine tapée deux fois reproduit exactement la même carte (relief/lacs/rivière/cascades), utile pour rejouer un bug précis pendant les tests. Champ laissé vide = carte aléatoire comme avant. La dernière graine utilisée est sauvegardée (`user://last_seed.txt`) et reproposée par défaut au lancement suivant.
-
-**Bug Couper/Cueillir (RÉSOLU 2026-07-05)** : aucune icône de tâche n'apparaissait et l'arbre/buisson désigné n'était jamais réellement récolté. Cause réelle : l'évitement d'arbres pendant le déplacement du nain (`Dwarf.gd`) excluait mal la cible elle-même de ce calcul, l'empêchant de jamais l'atteindre physiquement.
-
-### 2. Colonie & profils des nains
-
-Passage à 3 nains simultanés (groupe Godot `"dwarves"`, plus de référence unique `%Dwarf`), chacun avec 6 caractéristiques aléatoires (Force/Agilité/Constitution/Intelligence/Beauté/Bonheur) purement informatives, 3 compétences (Minage/Bûcheronnage/Construction, table `SkillDefinitions.gd`) qui réduisent la durée de travail et augmentent la chance de ressource bonus, accessoires d'action (outil en main pendant le travail, "Z z z" flottant au repos, baie approchée de la bouche au repas).
-
-**Bonheur** : stat existante, sans aucun effet de gameplay pour l'instant — reporté explicitement à beaucoup plus tard (décision 2026-07-02).
-
-### 3. Apparence des nains
-
-Trois générations successives : (a) silhouette procédurale articulée par code, (b) sprite 2D illustré avec normal map + recoloration par shader (masque de régions cheveux/barbe/vêtements/armure), (c) **abandon du sprite au profit d'un vrai modèle 3D low-poly** (`DwarfModel3D.gd`), développé dans une longue série de sprints de prototype isolé (`scenes/prototypes/`) avant intégration.
-
-Le modèle 3D final couvre : coiffures/barbes multi-styles, corpulence réglable, 4 tenues (tunique simple/cape/armure légère/lourde), système d'armes à 5 configurations (1 main/2 mains/1 main+bouclier/deux armes/distance, non utilisé en jeu pour l'instant — viendra avec le combat en Phase 4), animations par rotation réelle des articulations (marche/travail/combat/manger/dormir), portraits 3D (mini `SubViewport` isolé par nain) et fiche personnage à 3 onglets (État général/Caractéristiques/Compétences). Noms générés aléatoirement (prénom norrois du Dvergatal, domaine public + clan inventé).
-
-**Leçons Godot retenues** (récurrentes dans cette série) :
-- Un `Sprite3D` en mode billboard ignore la rotation du nœud — les animations doivent passer par position/échelle, jamais par rotation, tant que le personnage est un billboard.
-- Un shader spatial personnalisé n'a pas de billboard natif intégré (seul `BaseMaterial3D` sait le faire) — le billboard doit être refait à la main si on utilise un `material_override` shader.
-- `add_child()` appelé dans `_ready()` peut échouer silencieusement ; `look_at()` appelé avant `add_child()` plante ("Node not inside tree"). Toujours vérifier la console avant de soupçonner autre chose.
-- Les nains restent volontairement non éclairés (`SHADING_MODE_UNSHADED`) : les passer en éclairage réel casserait le rendu isolé du portrait 3D — identifié, pas encore traité.
-
-**Statut** : intégration confirmée par l'utilisateur ; le design de base des nains est validé, plus de retour en arrière prévu sur ce socle visuel.
-
-### 4. Interface & confort d'utilisation
-
-Menu de construction en sous-menu matériau, fiche personnage progressive (PV/Faim/Énergie puis 3 onglets), fenêtre d'inspection au clic (nom + fruits restants pour un arbre/buisson, type de bloc/mur), icônes de tâche flottantes en forme d'outil (pioche/hache/panier, dessinées pixel par pixel en mémoire — jamais de fichier image externe, pour éviter le bug de blocs blancs rencontré avec des textures de filons), sélection multiple de nains (glisser-rectangle + Ctrl/Maj+clic sur portrait, anneau bleu au sol), panneau d'information au survol, boutons de vitesse du temps (Pause/x1/x2/x4, avec raccourcis clavier), onglet Équipement en lecture seule (stub, pas encore un vrai système d'artisanat).
-
-**Note** : toute icône/marqueur généré à l'exécution doit être dessiné via `Image.create`/`set_pixel` en mémoire plutôt que chargé depuis un fichier — convention adoptée après un bug de rendu (textures de filons, voir paquet 6) jamais totalement élucidé.
-
-**Icônes de tâche retracées + tailles de police (2026-07-05, à confirmer en jeu)** : les icônes hache/pioche ont été entièrement retracées suite à un bug de rendu identifié (l'ancien traçage de trait épais "en tampon circulaire" recouvrait complètement les petites formes voisines sur un canevas de 40x40 — remplacé par un traçage en polygones via `_stroke_segment`/`_fill_quad`). Toutes les tailles de police de l'interface ont été augmentées : un `Theme` Godot global (`themes/DefaultTheme.tres`, référencé dans `project.godot`) fixe la taille par défaut pour tout élément sans taille explicite, en complément des tailles explicites déjà présentes (relevées elles aussi). Le dessin des icônes a été extrait d'`ActionController.gd` vers `IconRenderer.gd` (voir dette d'architecture A1, `Forgotten_Caves_Sprints.xlsx`).
-
-### 5. Végétation, cueillette & décor
-
-Arbres par espèce (chêne/sapin/bouleau, silhouettes distinctes, bois différencié), décor de sol (herbe/fleurs/cailloux, densité et couleur liées au climat), arbres fruitiers (pommier/oranger/cerisier) et 5 types de buissons à baies (groseille/myrtille/fraise/framboise/cassis, avec un visuel distinct "buisson" vs "plante basse"), action **Cueillir** dédiée (récolte sans détruire la plante), repousse progressive (nouveaux arbres si la densité baisse, baies qui repoussent une par une), compétence Agriculture (vitesse + bonus de rendement), calories différenciées par aliment, tas de ressources visuels au sol à chaque récolte (remplace l'ancien item flottant animé).
-
-**Refonte perf (Sprint 34)** : arbres/buissons/décor ne sont plus des dizaines de milliers de nœuds individuels mais partagent des `MultiMeshInstance3D` par type de pièce — chaque objet est construit une fois (temporairement), "récolté" (transform + couleur capturés dans un tableau qui reste en mémoire) puis ses nœuds temporaires libérés. Un arbre coupé ne peut donc plus disparaître par simple `queue_free()` : `hide_tree_visuals()` met à l'échelle zéro les seules instances qui lui appartiennent.
-
-**Ajustements chêne/sapin/buissons (2026-07-05, à confirmer en jeu)** : chêne agrandi de 20% en hauteur/largeur (échelle globale de l'arbre) et feuillage encore élargi de 30% en plus (rayon des boules de feuillage, indépendant du tronc), tronc assombri. Sapin : hauteur totale +30% sans changer le diamètre du feuillage (le rayon des cônes ne dépend pas de la hauteur totale), espace tronc visible/bas du feuillage réduit, tronc assombri. Buissons ("myrtille"/"groseille"/"cassis") : baies rétrécies, comptées séparément des plantes basses via `BUISSON_BERRIES_COUNT` (10, vs 4 pour fraise/framboise), réparties aléatoirement à 360° en hauteur et en angle autour du corps du buisson (avant : plage d'élévation biaisée, baies visibles seulement d'un côté).
-
-### 6. Sous-sol : filons, niveaux & brouillard de guerre
-
-Filons de métaux/pierres précieuses dans la pierre (14 matériaux, triés du plus rare au plus commun, bruit 3D indépendant par matériau, pépites 3D incrustées via `MultiMeshInstance3D` — tentative de texture d'atlas abandonnée après un bug de blocs blancs jamais résolu, revert complet vers couleur unie + pépites). Système de coupe par niveau (`view_level`) : tout ce qui est au-dessus du niveau courant n'est pas dessiné, ce qui révèle une coupe horizontale complète et colorée (façon Dwarf Fortress), avec brouillard de guerre (une zone jamais minée reste grise jusqu'à exposition).
-
-**Complété le 2026-07-04** : arbres, buissons et décorations de sol (herbe/fleurs/cailloux) disparaissent désormais complètement quand on descend sous leur niveau de sol, exactement comme le terrain — jusque-là seul `VoxelWorld` réagissait à `view_level`. `Forest.gd`/`BerryBushes.gd` exposent `update_view_level(level)` (restaure/masque les instances via les transforms d'origine, conservés en mémoire) ; `GroundDecoration.gd` (dont chaque décoration n'a pas de nœud persistant) fait de même via un tableau parallèle du niveau de sol par instance. `CameraRig.gd` notifie ces systèmes à chaque changement de niveau, en plus de `VoxelWorld.set_view_level()`.
-
-### 7. Carte & performance
-
-Carte agrandie de 20x20x30 à 100x100x50 blocs, densité d'arbres/buissons/décor exprimée en "par 1000 cases" (indépendante de la taille de carte), `rebuild_mesh()` limité à la portion découverte (pas toute la grille) à chaque changement.
-
-**Complété et confirmé en jeu le 2026-07-07** : carte portée à 250x250 blocs. Trois correctifs de performance nécessaires pour absorber cette taille sans dégrader le chargement/FPS :
-- Génération des filons de minerai différée au moment où un bloc de pierre devient réellement découvert (surface/bord de carte à la génération, exposition par minage ensuite) au lieu d'être calculée pour toute la roche de la carte, y compris la roche jamais vue — c'était le principal poste de temps de la génération du terrain.
-- Évitement d'arbres des nains (steering) indexé par grille spatiale (cellule du nain + les 8 voisines) au lieu d'un balayage de tous les arbres de la carte à chaque image.
-- Segments radiaux/anneaux des sphères et cylindres procéduraux (feuillage d'arbre, baies, herbe/fleurs, écume de cascade, nuages) réduits explicitement au lieu de garder les valeurs par défaut de Godot (64 segments, conçues pour un objet unique bien visible) — ces formes servent de modèle à des milliers d'instances via `MultiMesh` ; les valeurs par défaut faisaient grimper le rendu à environ 765 millions de primitives par image et effondraient le FPS dès le lancement (~4 IPS).
-
-Chargement de la carte 250x250 ramené à 8.6s, FPS stable en jeu (confirmé par François). Génération des arbres/buissons/décorations également revue (taille des paquets `await process_frame` corrigée après une régression où le nombre de pauses scalait avec une dimension de la carte au lieu du nombre d'objets réellement générés).
-
-### 8. Cycle jour/nuit, météo & saisons
-
-Cycle jour/nuit complet (lever/coucher exact par saison, jeu démarrant à 7h du matin, lumière + ambiant pilotés par script), ombres réelles (matériaux du terrain/arbres/décor passés en éclairage réel, sauf les nains), système météo (Normal/Brouillard/Pluie/Neige, particules réelles), 4 saisons avec calendrier affiché (1 jour = 2 minutes réelles, 1 mois = 20 jours, 1 saison = 3 mois), climat/température, nuages et oiseaux décoratifs (forme cumulus, teinte selon météo/nuit).
-
-**Bugs coûteux résolus** (leçon générale : un post-effet en aval peut masquer complètement un correctif fait en amont) :
-- Couleurs "trop sombres" qui ne réagissaient à aucun correctif → cause réelle : `ambient_light_source` de la scène ne se mettait pas à jour assez vite pour un cycle de 2 minutes ; remplacé par une couleur pilotée directement par script à chaque frame.
-- Ciel resté gris en plein jour malgré plusieurs correctifs de couleur → cause réelle : `fog_sky_affect` recouvrait le ciel par défaut, indépendamment de l'heure/la météo.
-- Bandeau horaire "bande blanche à droite" → cause réelle : tout `Gradient` créé par code garde 2 points par défaut qu'il faut explicitement vider avant d'ajouter les siens ; un premier correctif (boucle de suppression) a provoqué un plantage au lancement (boucle infinie dès 1 point restant), corrigé ensuite.
-- **Couplage DayNightCycle.gd/WeatherSystem.gd fiabilisé (revue de code, Phase 2 du plan de correction, C8/C10/I49/I56, 2026-07-06)** : la composition météo (assombrissement/teinte du ciel appliqués par-dessus l'énergie lumineuse et les couleurs du ciel) ne dépendait QUE de l'ordre des nœuds dans `Main.tscn`, sans aucune garde dans le code — un réordonnancement accidentel aurait cassé silencieusement le rendu. `DayNightCycle.gd` expose désormais des champs publics (`base_light_energy`/`base_sky_top_color`/`base_sky_horizon_color`/`base_ground_bottom_color`/`base_ground_horizon_color`) que `WeatherSystem.gd` lit directement via `%DayNightCycle`, indépendamment de l'ordre d'exécution des `_process()`. Confirmé en jeu par François.
-
-### 9. Rivières, cascades & relief
-
-Le chantier le plus long du projet. Relief en collines douces (bruit), lacs, une rivière qui traverse la carte, soif des nains (ressource "eau" récoltée via le bouton **Puiser**). Plusieurs réécritures complètes du tracé de rivière et de la forme de cascade, jusqu'à la version actuelle :
-
-- **Tracé de rivière** (`VoxelWorld._place_river`) : le relief naturel est sondé sur toute la largeur du lit (+ marge de berge) à chaque rangée ; l'eau part du bout du trajet dont le relief est le plus haut et redescend en escalier (jamais au-dessus du relief environnant, jamais un point milieu comme source) ; une rupture de niveau = une cascade, valable sur toute la largeur du lit à la fois (jamais en escalier décalé).
-- **Règles physiques figées** (voir mémoire projet, à respecter avant toute modification) : R1-R3 pour les rivières (berges obligatoires des deux côtés, sens du courant constant, ondulation acceptée seulement sans changement de niveau), C1-C5 pour les cascades (la case d'eau du niveau supérieur doit se retrouver en case d'eau recouverte par la cascade une rangée plus loin dans le sens du courant, jamais l'inverse obligatoire, jamais de cascade sans eau au-dessus).
-- **Forme de cascade** (`WaterfallShapes.gd`) : un vrai quart de cylindre (pas un mur plat), rempli en volume, une seule instance par colonne de cascade (`_build_shape`), aucune écriture dans la grille (purement décoratif). Géométrie sensible (gel levé le 2026-07-08) : vérifier les 6 critères de référence après toute modification, ne pas se contenter d'une relecture de code.
-- **Effets décoratifs** : petits nuages d'écume mobiles (`WaterfallFoamClouds.gd`, plus foncés en haut/plus clairs en bas, assombris par météo/nuit) et traits de chute verticaux multicolores (`WaterfallStreaks.gd`, animés le long de la courbe).
-- **Disparition par niveau** (2026-07-04) : cascades (forme + traits + écume) cachées quand leur niveau de rivière n'est plus visible, même mécanisme que le paquet 6.
-
-**3 bugs de cascade corrigés le 2026-07-04**, tous des violations de la règle C2 (pas d'eau sous la cascade) :
-1. Un remplissage vertical devenu obsolète (censé être remplacé par la forme décorative depuis longtemps, jamais fait) enterrait la vraie surface du bassin sous une colonne d'eau fictive — supprimé.
-2. Quand deux chutes se suivent immédiatement (relief en plusieurs petits paliers), la seconde recopiait une position théorique jamais mise à jour au lieu de la position réellement posée par la première — corrigé en retenant les colonnes réellement posées, rangée par rangée, dans l'ordre réel du courant (confirmé par simulation : 0 violation sur 2000 cartes générées hors jeu).
-3. Un code hérité masquait toutes les faces (sauf le dessous) de tout bloc d'eau d'une colonne de cascade — conçu à l'origine pour cacher un mur de blocs empilés qui n'existe plus depuis le correctif n°1 ; il masquait donc par erreur la surface même du bassin. Supprimé entièrement.
-
-**Leçon de méthode** : avant d'annoncer un correctif de génération de terrain comme suffisant, simuler le pipeline complet (données ET logique de rendu/face-culling) hors du jeu, pas seulement relire le code.
-
-**Refonte complète de la génération de terrain (2026-07-10, à confirmer en jeu).** Validée d'abord sur un prototype isolé (`scripts/prototypes/CubeSolTestV2.gd`, réutilisant les vraies classes partagées `VoxelHydrology.gd`/`VoxelMeshBuilder.gd`/`WaterfallShapes.gd`/`VoxelVeins.gd`) avant tout report dans le jeu :
-
-- **Rivières/lacs relancés** avec largeur de rivière et nombre/taille de lacs aléatoires (proportionnels à la taille de carte), après correction d'un bug de mur manquant (`R1_WALL_MARGIN`, l'ancien calcul garantissait seulement une inégalité large, jamais stricte) et d'un bug de niveau d'eau incohérent à la jonction lac/rivière (la rivière pouvait creuser le lac d'un niveau).
-- **Hauteur de terre aléatoire** (1 à 3 niveaux par colonne, au lieu d'une constante fixe à 3) reportée dans `VoxelWorld.gd`.
-- **Bug de berge transparente corrigé** : une berge de rivière/lac de 2 niveaux ou plus au-dessus de l'eau laissait son niveau intermédiaire invisible (jamais marqué "découvert", donc absent du maillage) dès qu'elle n'était pas juste à côté d'une cascade — la révélation "falaise", jusque-là réservée aux rangées de cascade, est désormais généralisée à toute berge.
-- **Passe de rendu "murs au-dessus de la coupe" retirée** (`VoxelMeshBuilder.gd`) : ajoutée le 2026-07-08 pour garder visibles les murs d'un trou/escalier creusé en baissant la vue en dessous, elle se déclenchait aussi sur du relief naturel jamais miné (falaises/berges), révélant leur forme à tort. **Régression assumée** : un trou/escalier creusé perd de nouveau ses murs visibles vu d'en dessous — à reprendre avec une vraie distinction creusé/naturel.
-- **Teinte de débogage magenta retirée** (`DEBUG_SOL_TINT`, modèle CUBE+SOL) : la face du dessus à la coupe courante affiche de nouveau la vraie couleur du matériau.
-- **Vecteur de composition précalculé** (`PackedByteArray`) testé en benchmark isolé à l'échelle maximale (250×250×100) : génération de base ~924ms (acceptable), mais le calcul des filons (jusqu'à 17 évaluations de bruit par bloc de pierre) est trop lent pour être précalculé — décision : les filons restent hors du vecteur, gérés séparément comme aujourd'hui.
-
-Chargement de la carte 250×250 confirmé par François (9,1s). Le reste (berges, hauteur de terre aléatoire, retrait des passes de debug) n'a pas encore été revérifié en jeu.
-
-### 10. Végétation saisonnière
-
-**Implémenté le 2026-07-05, NON VÉRIFIÉ EN JEU** (pas de rendu Godot possible côté agent — à confirmer par François). Complément visuel au paquet 8 (cycle des saisons) et au paquet 5 (végétation) : chaque saison change l'aspect de la végétation existante, sans regénérer la carte.
-
-- **Printemps** : herbe et buissons plus clairs, feuillage de TOUS les arbres (sapin inclus) plus clair, ~40% de fleurs de décoration en plus (fleurs "bonus" taguées à la génération, cachées les autres saisons).
-- **Été** : couleurs des arbres = référence (aucun changement, saison neutre), herbe légèrement plus jaune, ~30% des décorations (herbe/fleurs/cailloux) masquées.
-- **Automne** : teinte rouge/orange sur les feuilles des arbres ET sur les buissons, sauf les sapins.
-- **Hiver** : feuilles des arbres quasi disparues (sauf sapins, qui restent verts) ; buissons teinte grise ; fruits des arbres fruitiers, plantes et buissons totalement indisponibles (`fruits_left` mis à 0, restauré au dégel) — aucune récolte possible.
-
-**Détails techniques** :
-- `Forest.gd` : la teinte de saison est désormais séparée en deux tables — `SEASON_FOLIAGE_TINT` (chêne/bouleau/arbres fruitiers) et `SEASON_CONE_TINT` (sapin uniquement, jamais rougi ni éclairci en hiver). La "chute des feuilles" en hiver passe par le canal alpha de la teinte (transparence activée sur les matériaux des boules de feuillage/petites feuilles) plutôt que par une manipulation de transform, pour ne pas entrer en conflit avec `update_view_level()`/`hide_tree_visuals()` (qui restaurent en permanence la transform d'origine indépendamment de la saison).
-- `BerryBushes.gd` : `apply_season_tint()` ne teinte que le corps du buisson (`PartType.BUSH_BODY`), jamais les plantes basses (fraise/framboise).
-- `GroundDecoration.gd` : toute la décoration est générée UNE fois au démarrage (jamais de vraie régénération dynamique) — "plus de fleurs" au printemps et "-30% en été" sont obtenus en taguant chaque décoration à sa création avec deux booléens indépendants, combinés avec le masquage par niveau de vue/minage déjà existant.
-- Disparition des fruits en hiver : logique générique dans `SeasonSystem.gd`, sur le groupe `"cueillette"` (arbres fruitiers + buissons + plantes). Limite connue acceptée : un arbre/buisson qui repousse en plein hiver n'est remis en mode hiver qu'au prochain changement de saison (cas jugé rare).
-- `SeasonSystem` a été déplacé après `BerryBushes`/`GroundDecoration` dans `Main.tscn` (l'ordre des `_ready()` de nœuds frères suit l'ordre de déclaration) — nécessaire pour que leurs `MultiMeshInstance3D`/décorations existent avant le premier appel de reteinte.
-
----
-
-### 11. Pathing des nains & escaliers
-
-Implémenté d'après les règles validées avec François le 2026-07-08, resté non commité jusqu'ici.
-
-- **Coûts de déplacement** (`DwarfMovement.gd`) : plat = 1, escalier = 1.5, dénivelé d'1 niveau sans escalier = 2, eau = 3 (montée et descente traitées à l'identique). Un nain sur une colonne d'escalier ralentit selon `STAIR_SLOWDOWN_FACTOR`, un changement de niveau sans escalier selon `LEVEL_CHANGE_SLOWDOWN_FACTOR`.
-- **Creusage d'escalier** (`VoxelWorld.dig_stairs`, geste clic + molette + clic dans `ActionDragController.gd`) : une seule tâche couvre toute la plage top→bottom d'une colonne (`TaskQueue.add_stair_task`), au lieu d'une tâche par niveau. Bouton dédié dans la barre d'action + icône (`ActionMenuBar.gd`/`IconRenderer.gd`).
-- **Accessibilité des tâches** (`TaskQueue.pop_nearest_task`) : une tâche de minage n'est proposée à un nain que si le bloc est réellement atteignable (`VoxelWorld.can_reach_block`) et à un niveau accessible sans escalier manquant (`VoxelWorld.can_walk_to_level`) — corrige un bug remonté par François ("aucun nain ne descend pour creuser un couloir").
-- **Descente d'escalier dédiée** (`DwarfMovement.advance_vertical`/`advance_toward_fixed_y`) : trajet en 3 étapes (surface → descente verticale figée en XZ → approche finale à Y fixe) pour qu'un nain traverse correctement un escalier déjà creusé au lieu de considérer la cible atteinte instantanément.
-
-**Perf niveau de vue (molette)** (`Forest.gd`/`BerryBushes.gd`/`GroundDecoration.gd`/`CameraRig.gd`, 2026-07-08) : arbres/buissons/décorations indexés par niveau de sol (`_level_buckets`), pour qu'un changement de niveau de vue ne touche que les objets concernés au lieu de rebalayer toute la carte à chaque cran de molette. **Connu comme un problème persistant mais non urgent** (François) — acceptable pour l'instant, à surveiller/retravailler plus tard si besoin.
-
-**Bug "deux clics" corrigé** (`ActionController.gd`/`ActionDragController.gd`) : cause identifiée et corrigée par François, les 3 `print()` de diagnostic temporaires ont été retirés le 2026-07-10.
-
-**À CONFIRMER EN JEU** (aucun de ces points n'a été retesté visuellement à ce stade) : coûts de déplacement, creusage d'escalier, accessibilité des tâches, descente d'escalier.
-
----
-
-## Scénarios de test à vérifier manuellement (revue de code, paquet H)
-
-Cas limites identifiés par la revue de code du 2026-07-06 sans scénario de
-test documenté nulle part ailleurs - a verifier au fil des prochaines
-sessions de jeu (pas des bugs confirmes, juste des zones a surveiller) :
-
-- **File de tâches vide** (`TaskQueue.gd`) : cas exact à l'origine du bug
-  critique C7 (déjà corrigé) - revérifier qu'une file vide ne replante pas.
-- **Repousse hivernale des baies** (`BerryBushes.gd`, `_winter_active`) :
-  vérifier qu'un buisson qui repousse en plein hiver se comporte bien.
-- **Saison + niveau de vue** (`Forest.gd`, `_winter_fruits_hidden` +
-  `update_view_level()`) : un vrai bug a déjà été trouvé ici le 2026-07-06
-  (fruits visibles en hiver) - surveiller en priorité après un changement de
-  saison combiné à un minage/changement de niveau de vue.
-- **Cliquer-glisser cas limites** (`ActionController.gd`) : rectangle vide,
-  glisser en dehors de la carte.
-- **Fin de tâche cas limites** (`Dwarf.gd`, `_complete_task`) : cible détruite
-  entre-temps (ex: arbre coupé par un autre nain avant la fin), et
-  interaction énergie critique + recherche d'eau (`is_seeking_dry_land`).
-
----
-
-## État actuel du projet
-
-**Phase 1 (nains de base et environnement) n'est pas refermée.** Les paquets 6 à 9 (filons/niveaux, cycle jour/nuit/météo/saisons, rivières/cascades/relief) ont été retestés et confirmés en jeu par François le 2026-07-05. Le bug Couper/Cueillir est résolu (voir paquet 1). Reste à confirmer en jeu par François : les ajustements chêne/sapin/buissons et l'interface (paquets 4-5) et le nouveau cycle de végétation saisonnière (paquet 10).
-
-**Revue de code du 2026-07-06 (scan complet, 116 findings + 5 hors scan) : TERMINÉE ET CONFIRMÉE EN JEU.** Traitée en 8 paquets thématiques (A à H) après les 4 phases initiales de correctifs critiques (C7-C18, dont la dette d'architecture A1 : `ActionController.gd` et `Dwarf.gd` découpés en plusieurs fichiers par responsabilité, voir structure du projet ci-dessus). Paquet A (déterminisme/seed, système `GameRandom.gd`), B (duplication de code), C (robustesse), D (print() de debug), E (fonctions/fichiers trop longs), F (ordre d'initialisation implicite), G (performance), H (divers - dernier paquet) tous corrigés et confirmés en jeu par François le 2026-07-06. Bilan final : 91 corrigés, 25 vérifiés déjà corrects (aucun changement nécessaire), 3 ignorés (décision explicite), 2 encore ouverts (`VoxelHydrology._place_river()`/`VoxelWorld.generate_flat_terrain()` - geometrie "Cascade GELÉE", autorisation explicite de François requise avant toute modification). Détail complet par item : dossier `Code Review` (hors de ce dépôt git), fichier `Revue_de_code_2026-07-06.html`. À surveiller particulièrement si un souci apparaît : position des armes dans le dos (`DwarfWeaponBuilder.attach_to_back`, ajustement à l'estime) et assombrissement nocturne des tas de ressources (`DwarfResourcePile.gd`, effectif seulement à la création du tas, pas de mise à jour continue).
-
-**Pathing des nains & escaliers (paquet 11) : implémenté, non encore reconfirmé en jeu** (voir paquet 11 ci-dessus) — règles de coût validées le 2026-07-08, code déployé le 2026-07-10.
-
-Ne pas commencer la Phase 2 DU JEU (Ateliers & artisanat, ci-dessous) avant confirmation explicite.
-
-**Phase 2 (à venir) — Ateliers & artisanat** : ateliers de production, qualité/usure des objets, champs & agriculture, stockage, et l'équipement réel (habits/armures/armes fabricables et utilisables, pas seulement l'apparence du modèle 3D — décision du 2026-07-02, traité avec les ateliers plutôt qu'en sprint isolé).
-
-Voir `Forgotten_Caves_Sprints.xlsx` (dossier parent) pour le détail phase par phase.
+- Planning de sprints/phases : `Forgotten_Caves_Sprints.xlsx` (dossier parent).
+- Revue de code (suivi qualité, findings ouverts/corrigés) : dossier `Code Review` (hors de ce dépôt).

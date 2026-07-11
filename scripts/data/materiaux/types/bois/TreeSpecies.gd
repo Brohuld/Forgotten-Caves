@@ -10,7 +10,7 @@ extends RefCounted
 ##   size_multiplier commun a tous les arbres (voir Forest.gd) - grandit
 ##   tronc/feuilles/branches/racines proportionnellement pour cette espece.
 ## - feuillage_echelle : multiplicateur applique uniquement aux blobs de
-##   feuillage (voir Forest.gd/_build_foliage_touffu), independant de
+##   feuillage (voir ForestGeometryBuilder.build_foliage_touffu), independant de
 ##   echelle_base.
 ##
 ## FRUIT_SPECIES (arbres fruitiers, places a part de la foret "normale" -
@@ -28,7 +28,7 @@ extends RefCounted
 ##
 ## Pour ajouter une espece : ajouter une entree ici avec les memes champs
 ## (reutiliser une "forme" existante, ou en gerer une nouvelle dans
-## Forest._build_foliage si besoin d'une silhouette vraiment differente).
+## ForestGeometryBuilder.build_foliage si besoin d'une silhouette vraiment differente).
 
 const SPECIES := [
 	{
@@ -49,7 +49,7 @@ const SPECIES := [
 		"nom": "Sapin",
 		"wood_resource": "bois_sapin",
 		"forme": "conique",
-		# Le rayon des cones (voir Forest._build_foliage_conique,
+		# Le rayon des cones (voir ForestGeometryBuilder.build_foliage_conique,
 		# lerp(0.48, 0.10, t)) ne depend pas de "hauteur" - seul le span
 		# vertical du feuillage suit cette valeur, le diametre max reste 0.48
 		# quelle que soit la hauteur totale de l'arbre.

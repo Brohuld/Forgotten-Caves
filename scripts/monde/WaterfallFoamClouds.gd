@@ -15,6 +15,10 @@ extends Node3D
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## Calcul du facteur d'assombrissement nocturne partage avec CloudSystem.gd/
+## DwarfResourcePile.gd (corrige I88 2026-07-11 - voir doc de _process plus
+## bas pour la raison du changement).
+const NightDarkenScript := preload("res://scripts/systemes/NightDarken.gd")
 
 ## Cacher une instance de MultiMesh avec une echelle Vector3.ZERO pile
 ## (Basis totalement degenere) peut corrompre le rendu de tout le MultiMesh
@@ -23,11 +27,12 @@ const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 const HIDDEN_INSTANCE_SCALE := 0.0001
 
 @onready var voxel_world: Node3D = %VoxelWorld
-## Memes sources que CloudSystem.gd : la meteo (teinte/force) et la lumiere
-## directionnelle (nuit) pour assombrir l'ecume exactement comme les nuages
-## du ciel.
+## Memes sources que CloudSystem.gd : la meteo (teinte/force) et le cycle
+## jour/nuit (nuit) pour assombrir l'ecume exactement comme les nuages du
+## ciel. Reference au NOEUD (pas juste au script) pour lire son champ
+## d'instance base_light_energy - voir doc de _process plus bas.
 @onready var _weather_system: Node = %WeatherSystem
-@onready var _light: DirectionalLight3D = %DirectionalLight3D
+@onready var _day_night_cycle: Node = %DayNightCycle
 
 ## "Tout petits nuages" - un amas minuscule de quelques bosses par cascade,
 ## bien plus petit que les nuages du ciel (CloudSystem.gd).
@@ -164,28 +169,37 @@ func _build_shared_mesh() -> void:
 ## chacune avec son propre point d'ancrage (autour du centre donne), son
 ## dephasage de flottement et sa couleur (avec un leger jitter individuel).
 func _add_cloud(center: Vector3, color: Color, col_top: float) -> void:
+	# Flux GameRandom dedie ("cascade_nuages") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M91).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("cascade_nuages")
 	for i in range(PUFFS_PER_CLOUD):
-		var jitter := Vector3(randf_range(-0.10, 0.10), randf_range(-0.04, 0.04), randf_range(-0.10, 0.10))
+		var jitter := Vector3(rng.randf_range(-0.10, 0.10), rng.randf_range(-0.04, 0.04), rng.randf_range(-0.10, 0.10))
 		_anchor.append(center + jitter)
-		_phase.append(randf_range(0.0, TAU))
-		_drift_speed.append(randf_range(DRIFT_SPEED_MIN, DRIFT_SPEED_MAX))
-		var s: float = randf_range(PUFF_SCALE_MIN, PUFF_SCALE_MAX)
+		_phase.append(rng.randf_range(0.0, TAU))
+		_drift_speed.append(rng.randf_range(DRIFT_SPEED_MIN, DRIFT_SPEED_MAX))
+		var s: float = rng.randf_range(PUFF_SCALE_MIN, PUFF_SCALE_MAX)
 		_local_scale.append(Vector3(s, s * 0.7, s))
-		var a: float = clampf(color.a + randf_range(-0.08, 0.08), 0.2, 0.8)
+		var a: float = clampf(color.a + rng.randf_range(-0.08, 0.08), 0.2, 0.8)
 		_instance_base_color.append(Color(color.r, color.g, color.b, a))
 		_col_top.append(col_top)  # pour update_view_level
 
 
-## Meme ordre que CloudSystem._process - la lumiere directionnelle
-## (DayNightCycle) et la meteo (WeatherSystem) ont deja tourne ce meme frame
-## avant ce script (meme ordre des noeuds dans Main.tscn), donc lire leurs
-## valeurs ici est a jour.
+## Lit DayNightCycle.base_light_energy (via l'utilitaire partage
+## NightDarken.gd) plutot que %DirectionalLight3D.light_energy directement
+## (corrige I88 2026-07-11) : light_energy est deja potentiellement modifiee
+## par WeatherSystem au moment ou ce script s'execute, et surtout ce calcul
+## ne fonctionnait jusqu'ici QUE parce que DayNightCycle/WeatherSystem
+## tournent avant ce script dans Main.tscn - un futur reordonnancement des
+## noeuds aurait casse cet assombrissement silencieusement, sans aucune
+## erreur (meme piege deja corrige dans CloudSystem.gd, voir son commentaire
+## sur "aurait rendu le resultat dependant de l'ordre d'execution"). En
+## passant par base_light_energy (source de verite independante de l'ordre),
+## ce calcul reste correct quel que soit l'ordre des noeuds.
 func _process(delta: float) -> void:
 	_time += delta * DayNightCycleScript.game_speed
 	_update_all_transforms()
 
-	var day_energy: float = DayNightCycleScript.LIGHT_ENERGY[1]
-	var night_factor: float = 1.0 - clampf(_light.light_energy / maxf(day_energy, 0.001), 0.0, 1.0)
+	var night_factor: float = NightDarkenScript.night_factor(_day_night_cycle)
 
 	if _weather_system:
 		_update_all_colors(_weather_system.cloud_tint_color(), _weather_system.cloud_tint_strength(), night_factor)

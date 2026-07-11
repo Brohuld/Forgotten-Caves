@@ -51,20 +51,19 @@ const INTERDIRE_ENTITY_RADIUS := 2.0
 
 
 ## Miner utilise le meme rectangle "monde" que Construire (un simple clic =
-## rectangle de 1 case, un glisser = plusieurs).
+## rectangle de 1 case, un glisser = plusieurs) - SAUF le cas "couloir",
+## gere a part par _handle_miner_press (case exacte, pas de rectangle).
 static func on_left_press(controller: CanvasLayer, screen_pos: Vector2) -> void:
+	var current_mode: int = controller.get("current_mode")
+	if current_mode == Mode.MINER:
+		_handle_miner_press(controller, screen_pos)
+		return
+
 	var hit = raycast_ground(controller, screen_pos)
 	if hit == null:
 		return
 
-	var current_mode: int = controller.get("current_mode")
-	if current_mode == Mode.MINER:
-		var cell := cell_from_hit(hit)
-		controller.set("drag_start", cell)
-		controller.set("drag_end", cell)
-		controller.set("is_dragging", true)
-		update_mine_drag_preview(controller)
-	elif current_mode == Mode.PUISER:
+	if current_mode == Mode.PUISER:
 		var cell := cell_from_hit(hit)
 		controller.set("drag_start", cell)
 		controller.set("drag_end", cell)
@@ -130,6 +129,11 @@ static func on_left_release(controller: CanvasLayer) -> void:
 		Mode.INTERDIRE:
 			finalize_interdire_selection(controller)
 		_:
+			# Ce repli ne fonctionne que parce que Mode.CONSTRUIRE est le seul
+			# mode "rectangle" restant a ne pas avoir sa propre branche
+			# ci-dessus (voir revue de code M74) - si un futur mode rectangle
+			# est ajoute, lui donner sa propre branche explicite plutot que
+			# de le laisser tomber ici implicitement.
 			finalize_drag_selection(controller)
 	clear_drag_preview(controller)
 	# Contrairement aux autres modes, INTERDIRE reste actif apres chaque
@@ -290,25 +294,26 @@ static func finalize_gather_selection(controller: CanvasLayer, a: Vector2, b: Ve
 		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("cueillir"), TaskDefinitionsScript.get_color("cueillir"))
 
 
-## Intersection du rayon camera->souris avec le sol. Plusieurs passes pour
-## suivre le relief : la premiere passe suppose un plan plat a GROUND_LEVEL,
-## puis chaque passe suivante recalcule l'intersection au niveau VISIBLE du
-## terrain a cet endroit (get_top_block_y_at_or_below, plafonne au niveau de
-## vue courant - PAS get_top_block_y, le vrai sommet) - converge en quelques
-## iterations tant que le relief local n'est pas trop abrupt.
-##
-## Important si le niveau de vue est abaisse (molette, voir
-## VoxelWorld.view_level) : sans ce plafonnement, le rayon convergeait vers
-## le VRAI sommet de la colonne (souvent bien plus haut, invisible a
-## l'ecran), decalant (x,z) par rapport a ce que le joueur voit reellement
-## sous son curseur - designation imprecise en coupe (feedback Francois
-## 2026-07-08). Desormais coherent avec ActionValidator.valid_mine_rect_cells
-## (meme fonction, meme plafond).
+## Intersection du rayon camera->souris avec ce qui est REELLEMENT VISIBLE a
+## l'ecran (voir VoxelWorld.raycast_visible_face - raymarching voxel case par
+## case, dessus ET cotes). Remplace l'ancienne approximation par plan
+## horizontal (retirait feedback Francois 2026-07-08 sur la coupe, mais
+## traversait encore les parois verticales - falaises/berges - et retombait
+## a tort sur ce qu'il y a derriere, ex: "eau" au lieu du mur pointe -
+## feedback Francois 2026-07-10). Cette ancienne approximation reste en
+## repli (ci-dessous) pour les cas ou raycast_visible_face ne touche rien
+## (rayon vers le ciel/hors carte) - garde un point "raisonnable" pour ne
+## pas casser le glisser-selection au-dessus d'une zone non exploree.
 static func raycast_ground(controller: CanvasLayer, screen_pos: Vector2):
 	var camera: Camera3D = controller.get("camera")
 	var voxel_world: Node3D = controller.get("voxel_world")
 	var ray_origin := camera.project_ray_origin(screen_pos)
 	var ray_dir := camera.project_ray_normal(screen_pos)
+
+	var visible_hit = voxel_world.raycast_visible_face(ray_origin, ray_dir)
+	if visible_hit != null:
+		return visible_hit["hit"]
+
 	if absf(ray_dir.y) < 0.0001:
 		return null
 	var plane_y: float = GROUND_LEVEL
@@ -330,6 +335,83 @@ static func raycast_ground(controller: CanvasLayer, screen_pos: Vector2):
 
 static func cell_from_hit(hit: Vector3) -> Vector2i:
 	return Vector2i(int(floor(hit.x)), int(floor(hit.z)))
+
+
+## Point d'entree Miner (voir on_left_press) - UN SEUL raycast (pas deux
+## appels separes qui pourraient theoriquement diverger) pour a la fois
+## decider "trou" ou "couloir" ET obtenir le point de reference du repli
+## "trou". Regle (Francois 2026-07-10) : si la case visee est un CUBE plein
+## (is_solid), quelle que soit sa face touchee - y compris son dessus - on
+## creuse un couloir. Si la case visee n'a pas de CUBE (juste le SOL/herbe
+## en surface, ou le fond d'un trou deja creuse), on creuse un trou
+## classique.
+##
+## Un CUBE plein n'est JAMAIS "le sommet de sa colonne" au sens du joueur :
+## le SOL (fine couche superieure, voir VoxelWorld.get_sol) est toujours une
+## case au-dessus de lui, meme sur une colonne jamais creusee - donc
+## is_solid(cell) suffit a lui seul, pas besoin de comparer cell.y au sommet
+## de la colonne (VoxelWorld.get_top_block_y ne regarde que le CUBE et
+## ignore le SOL, ce qui faisait a tort passer une colonne vierge pour "son
+## propre sommet" et bloquait le couloir - Francois 2026-07-10).
+##
+## raycast_visible_face peut renvoyer soit un CUBE plein, soit une case SOL
+## SEUL (herbe naturelle ou fond de trou, voir sa doc - modele CUBE+SOL
+## universel). Une case SOL SEUL est TOUJOURS un trou classique
+## (is_solid=false ci-dessous), gere par le repli existant qui recalcule
+## deja correctement le vrai sommet a miner (get_top_block_y_at_or_below,
+## voir update_mine_drag_preview/finalize_mine_selection).
+static func _handle_miner_press(controller: CanvasLayer, screen_pos: Vector2) -> void:
+	var camera: Camera3D = controller.get("camera")
+	var voxel_world: Node3D = controller.get("voxel_world")
+	var ray_origin := camera.project_ray_origin(screen_pos)
+	var ray_dir := camera.project_ray_normal(screen_pos)
+	var result = voxel_world.raycast_visible_face(ray_origin, ray_dir)
+	var hit: Vector3
+	if result != null:
+		var cell: Vector3i = result["cell"]
+		if voxel_world.is_solid(cell.x, cell.y, cell.z):
+			queue_couloir_mine_task(controller, cell)
+			return
+		hit = result["hit"]
+	else:
+		# Rayon vers le ciel/hors carte (aucun voxel precis touche) - meme
+		# repli plan-horizontal que raycast_ground pour les autres modes.
+		var fallback = raycast_ground(controller, screen_pos)
+		if fallback == null:
+			return
+		hit = fallback
+	var cell2d := cell_from_hit(hit)
+	controller.set("drag_start", cell2d)
+	controller.set("drag_end", cell2d)
+	controller.set("is_dragging", true)
+	update_mine_drag_preview(controller)
+
+
+## Designation "couloir" : cible EXACTEMENT le bloc touche par le rayon
+## (cell.x/cell.y/cell.z, cell.y = la vraie coordonnee Y du mur vise) -
+## JAMAIS recalcule via get_top_block_y_at_or_below comme le fait le mode
+## "trou" (voir finalize_mine_selection) : c'est cette recherche du sommet
+## de colonne qui faisait a tort disparaitre le SOL de surface au-dessus
+## d'un couloir creuse en profondeur. Une seule case retiree, pas de
+## glisser-rectangle (tunneler un mur est un geste ponctuel).
+static func queue_couloir_mine_task(controller: CanvasLayer, cell: Vector3i) -> void:
+	var voxel_world: Node3D = controller.get("voxel_world")
+	# Memes exclusions que valid_mine_rect_cells (eau se puise, case
+	# interdite) - describe_visible_cell() donne le type exact a CETTE
+	# position (pas juste le sommet de colonne), et "non_decouvert" est
+	# exclu par construction ici (raycast_visible_face ne renvoie que des
+	# cases decouvertes ou a view_level).
+	var info: Dictionary = voxel_world.describe_visible_cell(cell)
+	if info["type"] == "eau":
+		return
+	if voxel_world.is_cell_forbidden(cell.x, cell.z):
+		return
+	var task_queue: Node = controller.get("task_queue")
+	var queued_markers: Dictionary = controller.get("queued_markers")
+	var walk_pos := Vector3(cell.x + 0.5, GROUND_LEVEL, cell.z + 0.5)
+	var task_id: int = task_queue.add_mine_task(walk_pos, cell.x, cell.y, cell.z)
+	var marker_pos := Vector3(cell.x + 0.5, cell.y + 1.4, cell.z + 0.5)
+	queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("miner"), TaskDefinitionsScript.get_color("miner"))
 
 
 ## Toutes les cases valides (dans la carte, constructibles, pas deja en
@@ -388,7 +470,10 @@ static func finalize_mine_selection(controller: CanvasLayer) -> void:
 	for cell in valid_mine_rect_cells(controller, drag_start, drag_end):
 		var top_y: int = voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, voxel_world.view_level)
 		var walk_pos := Vector3(cell.x + 0.5, GROUND_LEVEL, cell.y + 0.5)
-		var task_id: int = task_queue.add_mine_task(walk_pos, cell.x, top_y, cell.y)
+		# clear_sol_above=true : c'est le flux "trou" classique - la vraie
+		# surface juste au-dessus du bloc mine doit s'ouvrir avec lui (voir
+		# doc de TaskQueue.add_mine_task).
+		var task_id: int = task_queue.add_mine_task(walk_pos, cell.x, top_y, cell.y, true)
 		var marker_pos := Vector3(cell.x + 0.5, top_y + 1.4, cell.y + 0.5)
 		queued_markers[task_id] = spawn_task_marker(controller, marker_pos, TaskDefinitionsScript.get_icon_kind("miner"), TaskDefinitionsScript.get_color("miner"))
 
@@ -585,7 +670,8 @@ static func finalize_interdire_selection(controller: CanvasLayer) -> void:
 ## besoin d'un registre separe. Lu par ActionDragController
 ## (handle_chop_click/handle_gather_click/finalize_chop_selection/
 ## finalize_gather_selection, voir plus bas) et par
-## ActionInspector.describe_gatherable (affichage au survol).
+## EntityDescriptions.describe_gatherable (affichage au survol, voir
+## ActionInspector.describe_pointed_object).
 static func toggle_interdit_entity(target: Node) -> void:
 	target.set_meta("interdit", not target.get_meta("interdit", false))
 
@@ -738,8 +824,12 @@ static func cancel_task(controller: CanvasLayer, task_id: int) -> void:
 				d.set("current_task", {})
 				d.set("is_working", false)
 				d.set("work_timer", 0.0)
-				d.call("_hide_tools")
-				d.call("_reset_pose")
+				# Garde de presence (revue de code M98) : evite un crash si
+				# Dwarf.gd renomme/retire une de ces methodes.
+				if d.has_method("_hide_tools"):
+					d.call("_hide_tools")
+				if d.has_method("_reset_pose"):
+					d.call("_reset_pose")
 				break
 	if removed.is_empty():
 		return

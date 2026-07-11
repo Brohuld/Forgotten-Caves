@@ -78,7 +78,7 @@ func _ready() -> void:
 
 
 ## Un seul maillage "unite" (sphere aplatie) partage par tous les blobs de
-## tous les nuages, comme les cimes d'arbres (Forest.gd/_make_sphere_mesh +
+## tous les nuages, comme les cimes d'arbres (ForestGeometryBuilder.make_sphere_mesh +
 ## MultiMeshInstance3D). Legere transparence pour un aspect leger.
 func _build_shared_mesh() -> void:
 	_mmi = MultiMeshInstance3D.new()

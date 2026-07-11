@@ -34,6 +34,20 @@ const MONTHS_PER_SEASON := 3
 
 @export var season_duration_seconds: float = 7200.0
 
+## StartMenu.gd (ecran affiche avant Main.tscn) ecrit cette valeur AVANT le
+## changement de scene - meme contrat que VoxelWorld.use_fixed_seed/
+## requested_seed (voir sa doc) : SEUL StartMenu.gd a le droit d'ECRIRE, tout
+## autre script ne fait que LIRE. Toujours un index valide dans
+## ClimateDefs.SEASONS : StartMenu presente TOUJOURS un choix concret
+## (preselectionne au hasard, ou force par un clic) - contrairement a la
+## graine de carte, pas de notion de "vide = aleatoire" ici, donc pas besoin
+## d'un bool "use_fixed_*" separe. Ce choix precede la creation du seed de
+## partie et en est totalement independant : la meme graine peut desormais
+## demarrer dans des saisons differentes d'une partie a l'autre (corrige
+## I79/2026-07-11 : la saison de depart n'est plus tiree via le flux
+## GameRandom("saisons"), remplace par ce choix explicite).
+static var requested_season_index: int = 0
+
 var current_season_index: int = 0
 var _time_left: float = 0.0
 
@@ -51,14 +65,11 @@ var _time_left: float = 0.0
 
 
 func _ready() -> void:
-	# Saison de depart tiree au hasard plutot que toujours "Ete" (premiere
-	# entree de ClimateDefs.SEASONS). Pas d'appel a randomize() ici - le
-	# generateur aleatoire global est deja initialise par graine au moment ou
-	# ce noeud demarre (VoxelWorld._ready() s'execute avant, meme ordre que
-	# dans Main.tscn - voir BerryBushes.gd/Forest.gd pour le meme principe),
-	# donc la saison de depart reste reproductible pour une graine de carte
-	# donnee.
-	current_season_index = randi_range(0, ClimateDefs.SEASONS.size() - 1)
+	# Saison de depart choisie dans StartMenu.gd (preselectionnee au hasard,
+	# ou forcee par un clic) - voir doc de requested_season_index. Bornee
+	# defensivement (clampi) au cas ou ClimateDefs.SEASONS changerait de
+	# taille sans mise a jour correspondante de StartMenu.gd.
+	current_season_index = clampi(requested_season_index, 0, ClimateDefs.SEASONS.size() - 1)
 	_time_left = season_duration_seconds
 	# Forest/BerryBushes/GroundDecoration generent par paquets (voir leur
 	# BATCH_SIZE, await process_frame) - cette generation peut donc encore
@@ -71,8 +82,6 @@ func _ready() -> void:
 	# _apply_season() - sans quoi apply_season_tint()/apply_season()
 	# liraient des tableaux partiellement remplis alors que le MultiMesh
 	# partage aurait encore un instance_count de 0 (crash).
-	if OS.is_debug_build():
-		print("[Perf] SeasonSystem : attente fin generation a %.1f s depuis le debut de la scene" % ((Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0))
 	await _wait_for_world_generation()
 	_apply_season()
 	if OS.is_debug_build():

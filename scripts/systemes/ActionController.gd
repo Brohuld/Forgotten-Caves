@@ -50,6 +50,10 @@ var inventory_ui: InventoryUIScript = InventoryUIScript.new()
 
 const ActionDragControllerScript := preload("res://scripts/systemes/ActionDragController.gd")
 const ActionInspectorScript := preload("res://scripts/systemes/ActionInspector.gd")
+## Raccourcis clavier (mode/sous-type/sortie/temps) - voir _handle_*_shortcuts
+## et _handle_mode_exit plus bas, simples relais (revue de code C26,
+## 2026-07-11).
+const ActionShortcutsScript := preload("res://scripts/systemes/ActionShortcuts.gd")
 
 ## Rangee de boutons d'action + sous-menu Construire construits PAR CODE a
 ## partir d'une table de donnees (ActionMenuBar.MODE_ENTRIES/
@@ -692,13 +696,7 @@ func _unhandled_input(event: InputEvent) -> void:
 ## desactive" (equivalent clavier de allow_unpress, qui ne couvre que le
 ## clic souris/tactile).
 func _handle_mode_shortcuts(event: InputEvent) -> bool:
-	if event is InputEventKey and event.pressed and not event.echo:
-		var mode_id: String = ActionMenuBarScript.mode_for_shortcut(event.physical_keycode)
-		if mode_id != "":
-			var btn: Button = mode_buttons[mode_id]
-			btn.button_pressed = not btn.button_pressed
-			return true
-	return false
+	return ActionShortcutsScript.handle_mode_shortcuts(self, event)
 
 
 ## Raccourcis 1/2 pour choisir le sous-type de Creuser (Miner/Escalier) -
@@ -708,14 +706,7 @@ func _handle_mode_shortcuts(event: InputEvent) -> bool:
 ## d'allow_unpress (un sous-type reste toujours selectionne) - un simple
 ## button_pressed = true suffit donc, pas de bascule.
 func _handle_miner_subtype_shortcuts(event: InputEvent) -> bool:
-	if current_mode != Mode.MINER:
-		return false
-	if event is InputEventKey and event.pressed and not event.echo:
-		var subtype_id: String = ActionMenuBarScript.miner_subtype_for_shortcut(event.physical_keycode)
-		if subtype_id != "":
-			miner_submenu_buttons[subtype_id].button_pressed = true
-			return true
-	return false
+	return ActionShortcutsScript.handle_miner_subtype_shortcuts(self, event)
 
 
 ## Sortir du mode par Esc ou clic droit : quel que soit le mode d'action
@@ -730,22 +721,7 @@ func _handle_miner_subtype_shortcuts(event: InputEvent) -> bool:
 ## _handle_mode_shortcuts ci-dessus. set_input_as_handled() evite qu'un clic
 ## droit "fuite" vers autre chose (ex: la camera) le meme frame.
 func _handle_mode_exit(event: InputEvent) -> bool:
-	if current_mode == Mode.NONE:
-		return false
-	var is_escape: bool = event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE
-	var is_right_click: bool = event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT
-	if is_escape or is_right_click:
-		_cancel_drag()
-		if stair_active:
-			ActionDragControllerScript.cancel_stair(self)
-		if _select_dragging_active:
-			_select_dragging_active = false
-			_select_button_down = false
-			_select_box.visible = false
-		_reset_mode_selection()
-		get_viewport().set_input_as_handled()
-		return true
-	return false
+	return ActionShortcutsScript.handle_mode_exit(self, event)
 
 
 ## Raccourcis clavier pour le controle du temps - Espace=pause, F1=vitesse
@@ -754,25 +730,7 @@ func _handle_mode_exit(event: InputEvent) -> bool:
 ## cours (Miner/Construire/etc). Renvoie true si l'evenement a ete consomme
 ## (l'appelant doit alors return).
 func _handle_time_shortcuts(event: InputEvent) -> bool:
-	if event is InputEventKey and event.pressed and not event.echo:
-		match event.keycode:
-			KEY_SPACE:
-				climate_ui.toggle_pause()
-				get_viewport().set_input_as_handled()
-				return true
-			KEY_F1:
-				climate_ui.on_time_speed_pressed(1.0)
-				get_viewport().set_input_as_handled()
-				return true
-			KEY_F2:
-				climate_ui.on_time_speed_pressed(2.0)
-				get_viewport().set_input_as_handled()
-				return true
-			KEY_F3:
-				climate_ui.on_time_speed_pressed(4.0)
-				get_viewport().set_input_as_handled()
-				return true
-	return false
+	return ActionShortcutsScript.handle_time_shortcuts(self, event)
 
 
 ## Glisser/selection/creation de taches - simples delegations vers

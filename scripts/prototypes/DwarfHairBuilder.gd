@@ -103,11 +103,15 @@ static func build_hair_short(model: Node3D, parent: Node, head_y: float) -> void
 ## Construit une meche individuelle (voir la double boucle base_dirs x
 ## variantes dans build_hair_short).
 static func build_hair_tuft(model: Node3D, parent: Node, base_pos: Vector3, hair_radius: float, base_dir: Vector3, tuft_index: int) -> void:
-	var jitter := Vector3(randf_range(-0.15, 0.15), randf_range(-0.15, 0.15), randf_range(-0.15, 0.15))
+	# Flux GameRandom dedie ("nains_apparence") plutot que le RNG global -
+	# meme flux que Model3DUtils.color_variant(), deja utilise par ce fichier
+	# via hair_color_variant() plus bas (revue de code M95).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_apparence")
+	var jitter := Vector3(rng.randf_range(-0.15, 0.15), rng.randf_range(-0.15, 0.15), rng.randf_range(-0.15, 0.15))
 	var dir: Vector3 = (base_dir + jitter).normalized()
 	var tuft := MeshInstance3D.new()
 	var tuft_mesh := SphereMesh.new()
-	var tuft_radius: float = hair_radius * randf_range(0.10, 0.16)
+	var tuft_radius: float = hair_radius * rng.randf_range(0.10, 0.16)
 	tuft_mesh.radius = tuft_radius
 	tuft_mesh.height = tuft_radius * 2.0
 	tuft.mesh = tuft_mesh

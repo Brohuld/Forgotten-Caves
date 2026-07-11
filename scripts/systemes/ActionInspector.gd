@@ -16,8 +16,8 @@ extends RefCounted
 ## fois GRID_WIDTH/GRID_DEPTH.
 
 const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials.gd")
-const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
-const ActionDragControllerScript := preload("res://scripts/systemes/ActionDragController.gd")
+const PointerResolverScript := preload("res://scripts/systemes/PointerResolver.gd")
+const EntityDescriptionsScript := preload("res://scripts/entites/EntityDescriptions.gd")
 
 const DWARF_CLICK_RADIUS_PX := 28.0
 
@@ -49,96 +49,76 @@ static func dwarf_at_screen_pos(controller: CanvasLayer, screen_pos: Vector2) ->
 	return closest
 
 
-## Les tas de ressources au sol (groupe "resource_piles") sont detectes en
-## priorite, avant les arbres/buissons.
-static func closest_resource_pile(controller: CanvasLayer, hit: Vector3) -> Node3D:
-	var closest: Node3D = null
-	var closest_dist := 1.0
-	for pile in controller.get_tree().get_nodes_in_group("resource_piles"):
-		var d: float = Vector2(pile.global_position.x - hit.x, pile.global_position.z - hit.z).length()
-		if d < closest_dist:
-			closest_dist = d
-			closest = pile
-	return closest
-
-
-static func describe_resource_pile(pile: Node3D) -> String:
-	var resource_name: String = String(pile.get_meta("resource_name"))
-	var count: int = int(pile.get_meta("count"))
-	return "Pile de %d %s" % [count, resource_name.capitalize()]
-
-
-## Reutilise action_validator.closest_in_group (deja utilise pour Couper/
-## Cueillir dans ActionDragController.gd) au lieu de refaire a la main la
-## meme recherche.
-static func inspect_label_for(controller: CanvasLayer, hit: Vector3) -> String:
-	var pile := closest_resource_pile(controller, hit)
-	if pile != null:
-		return describe_resource_pile(pile)
-
-	var action_validator = controller.get("action_validator")
-	var closest_target: Node3D = action_validator.closest_in_group(hit, "cueillette", controller.get_tree(), 2.0)
-	if closest_target == null:
-		closest_target = action_validator.closest_in_group(hit, "trees", controller.get_tree(), 2.0)
-
-	if closest_target:
-		return describe_gatherable(closest_target)
-
-	var gx := int(floor(hit.x))
-	var gz := int(floor(hit.z))
-	if gx < 0 or gx >= VoxelWorldScript.WIDTH or gz < 0 or gz >= VoxelWorldScript.DEPTH:
+## Traduit un resultat PointerResolver.resolve() en texte a afficher - AUCUNE
+## connaissance du type d'entite ici (voir EntityDescriptions.describe_by_kind,
+## qui lit la metadonnee "hover_kind" posee par l'entite elle-meme). Remplace
+## l'ancienne recherche par proximite (rayon fixe 1.0-2.0 unites) qui
+## debordait sur les cases voisines pres d'une berge/falaise - un tas/arbre
+## "presque a cote" pouvait gagner a tort sur le terrain reellement vise
+## (feedback Francois 2026-07-10).
+static func describe_pointed_object(controller: CanvasLayer, result) -> String:
+	if result == null:
 		return ""
+	if result["kind"] == "entity":
+		var node: Node3D = result["node"]
+		if node == null or not is_instance_valid(node):
+			return ""
+		return EntityDescriptionsScript.describe_by_kind(node)
 	var voxel_world: Node3D = controller.get("voxel_world")
-	return describe_block(voxel_world, gx, gz)
+	return describe_block_at(voxel_world, result["cell"])
 
 
-## Nom + etat de recolte d'un arbre/buisson/plante, via les metadonnees deja
-## posees par Forest.gd/BerryBushes.gd ("species_name", "fruits_left").
-## Suffixe "[Interdit]" si toggle_interdit_entity (ActionDragController.gd) a
-## marque ce noeud - sans ca, rien ne permet au joueur de savoir qu'un arbre
-## est interdit (Couper/Cueillir echouent silencieusement dessus, voir
-## handle_chop_click/handle_gather_click).
-static func describe_gatherable(node: Node) -> String:
-	var species_name: String = node.get_meta("species_name", "?")
-	var suffix: String = "  [Interdit]" if node.get_meta("interdit", false) else ""
-	if not node.is_in_group("cueillette"):
-		return species_name + suffix
-	var fruits_left: int = node.get_meta("fruits_left", -1)
-	if fruits_left < 0:
-		return species_name + suffix
-	if fruits_left == 0:
-		return "%s (vide)%s" % [species_name, suffix]
-	return "%s - %d fruit(s) restant(s)%s" % [species_name, fruits_left, suffix]
-
-
-## Nom d'un bloc de sol (terre/pierre/mur), via VoxelWorld.get_block_info().
-## Si le bloc de pierre contient un filon, affiche son nom (VeinMaterials).
-## Meme suffixe "[Interdit]" que describe_gatherable ci-dessus, si
-## VoxelWorld.is_cell_forbidden(gx,gz).
-static func describe_block(voxel_world: Node3D, gx: int, gz: int) -> String:
-	var info: Dictionary = voxel_world.get_block_info(gx, gz)
-	var suffix: String = "  [Interdit]" if voxel_world.is_cell_forbidden(gx, gz) else ""
+## Nom d'un bloc de sol (terre/pierre/mur) a une case EXACTE, via
+## VoxelWorld.describe_visible_cell() - PAS get_block_info() (qui recalcule
+## le sommet de la colonne et ratait donc une paroi de falaise/berge visee
+## en biais, voir doc de raycast_visible_face). Si le bloc de pierre contient
+## un filon, affiche son nom (VeinMaterials). Meme suffixe "[Interdit]" que
+## describe_gatherable ci-dessus, si VoxelWorld.is_cell_forbidden(gx,gz).
+static func describe_block_at(voxel_world: Node3D, cell: Vector3i) -> String:
+	var info: Dictionary = voxel_world.describe_visible_cell(cell)
+	var suffix: String = "  [Interdit]" if voxel_world.is_cell_forbidden(cell.x, cell.z) else ""
+	# Coordonnees (x, y, z) de la case visee, remises dans le texte de survol
+	# (perdues lors du passage au raymarching voxel/PointerResolver generique
+	# 2026-07-10) - utiles pour correler ce qui est affiche avec les positions
+	# loggees en debug (ex: "discovered.has(pos)").
+	var coords: String = " (%d, %d, %d)" % [cell.x, cell.y, cell.z]
 	match info["type"]:
+		"non_decouvert":
+			return "Terrain non decouvert" + coords
 		"terre":
-			return "Terre" + suffix
+			# "Herbe" pour une case SOL SEUL (CUBE vide - surface naturelle ou
+			# fond de trou, voir modele CUBE+SOL), "Terre" pour un vrai CUBE
+			# plein (creuser y donnera bien de la terre) - meme type "terre"
+			# cote donnees (get_sol renvoie DIRT dans les 2 cas), mais le
+			# joueur doit pouvoir les distinguer au survol (Francois
+			# 2026-07-10).
+			var label := "Terre" if voxel_world.is_solid(cell.x, cell.y, cell.z) else "Herbe"
+			return label + suffix + coords
 		"pierre":
 			var materiau: String = info["materiau"]
 			if materiau != "":
 				var mat: Dictionary = VeinMaterials.get_type(materiau)
-				return "Filon de %s%s" % [mat.get("nom", materiau), suffix]
-			return "Pierre" + suffix
+				return "Filon de %s%s%s" % [mat.get("nom", materiau), suffix, coords]
+			return "Pierre" + suffix + coords
 		"mur_bois":
-			return "Mur en bois" + suffix
+			return "Mur en bois" + suffix + coords
 		"mur_pierre":
-			return "Mur en pierre" + suffix
+			return "Mur en pierre" + suffix + coords
 		"eau":
-			return "Eau"
+			return "Eau" + coords
 		_:
 			return ""
 
 
 ## Mis a jour chaque frame - decrit ce qui se trouve sous la souris (nain,
-## arbre/buisson, bloc de sol), quel que soit le mode courant.
+## ou n'importe quel objet resolu par PointerResolver : terrain, tas, arbre,
+## buisson, et tout futur objet avec un collider Hoverable), quel que soit
+## le mode courant. Utilise PointerResolver.resolve() (raycast physique sur
+## les colliders Hoverable + raymarching voxel pour le terrain, comparaison
+## par distance reelle) plutot qu'une recherche par proximite avec un rayon
+## fixe - qui debordait sur les cases voisines pres d'une berge/falaise
+## (feedback Francois 2026-07-10 : "il faut une logique tres precise et
+## generique").
 static func update_hover_info_panel(controller: CanvasLayer) -> void:
 	var info_label: Label = controller.get("info_label")
 	var screen_pos: Vector2 = controller.get_viewport().get_mouse_position()
@@ -148,12 +128,15 @@ static func update_hover_info_panel(controller: CanvasLayer) -> void:
 		info_label.text = "%s\nTache : %s" % [hovered_dwarf.dwarf_name, hover_task_description(hovered_dwarf)]
 		return
 
-	var hit = ActionDragControllerScript.raycast_ground(controller, screen_pos)
-	if hit == null:
+	var camera: Camera3D = controller.get("camera")
+	var ray_origin := camera.project_ray_origin(screen_pos)
+	var ray_dir := camera.project_ray_normal(screen_pos)
+	var result = PointerResolverScript.resolve(controller, ray_origin, ray_dir)
+	if result == null:
 		info_label.text = "Survolez un element de la carte..."
 		return
 
-	var label := inspect_label_for(controller, hit)
+	var label := describe_pointed_object(controller, result)
 	info_label.text = label if label != "" else "Survolez un element de la carte..."
 
 

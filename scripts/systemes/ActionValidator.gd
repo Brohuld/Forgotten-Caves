@@ -12,7 +12,7 @@ extends RefCounted
 ## rectangle et la boucle de filtrage hors-grille, commun a toutes les
 ## fonctions valid_*_rect_cells ci-dessous (seul le filtre METIER
 ## constructible/minable/eau differe d'une fonction a l'autre).
-func _rect_cells_in_bounds(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int) -> Array:
+static func _rect_cells_in_bounds(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int) -> Array:
 	var min_x := mini(a.x, b.x)
 	var max_x := maxi(a.x, b.x)
 	var min_z := mini(a.y, b.y)
@@ -28,7 +28,7 @@ func _rect_cells_in_bounds(a: Vector2i, b: Vector2i, grid_width: int, grid_depth
 
 ## Cases valides pour Construire : dans la carte, constructibles (voir
 ## VoxelWorld.can_build), pas deja en attente de construction.
-func valid_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node, pending_columns: Dictionary) -> Array:
+static func valid_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node, pending_columns: Dictionary) -> Array:
 	var cells: Array = []
 	for cell in _rect_cells_in_bounds(a, b, grid_width, grid_depth):
 		if not voxel_world.can_build(cell.x, cell.y):
@@ -47,7 +47,7 @@ func valid_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int
 ## niveau de coupe courant, pas forcement le sommet reel de la colonne (voir
 ## get_top_block_y_at_or_below) - choix de Francois 2026-07-08, pour pouvoir
 ## miner directement une poche revelee en coupe a un niveau inferieur.
-func valid_mine_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node, view_level: int) -> Array:
+static func valid_mine_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node, view_level: int) -> Array:
 	var cells: Array = []
 	for cell in _rect_cells_in_bounds(a, b, grid_width, grid_depth):
 		if voxel_world.get_top_block_y_at_or_below(cell.x, cell.y, view_level) < 0:
@@ -66,7 +66,7 @@ func valid_mine_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth
 ## SANS exclure les cases deja interdites (sinon impossible de les
 ## re-selectionner pour les re-autoriser - Interdire doit justement pouvoir
 ## cibler les deux etats).
-func valid_interdire_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
+static func valid_interdire_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
 	var cells: Array = []
 	for cell in _rect_cells_in_bounds(a, b, grid_width, grid_depth):
 		if voxel_world.get_top_block_y(cell.x, cell.y) < 0:
@@ -79,7 +79,7 @@ func valid_interdire_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_
 
 ## Cases valides pour Puiser - dans la carte, avec de l'eau non gelee en
 ## surface. Pas de suivi "en attente" : l'eau est renouvelable.
-func valid_puiser_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
+static func valid_puiser_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
 	# L'eau gelee (glace) ne se puise pas - etat global, voir
 	# VoxelWorld.is_frozen/TemperatureSystem.gd.
 	if voxel_world.is_frozen:
@@ -100,7 +100,7 @@ func valid_puiser_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_dep
 ## "terre" reutilise le type DIRT (voir VoxelWorld.build_block) et est donc
 ## INDISTINGUABLE de la terre naturelle - PAS ciblable par Detruire pour
 ## l'instant (limite connue, pas un bug).
-func valid_destroy_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
+static func valid_destroy_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_depth: int, voxel_world: Node) -> Array:
 	var cells: Array = []
 	for cell in _rect_cells_in_bounds(a, b, grid_width, grid_depth):
 		var info: Dictionary = voxel_world.get_block_info(cell.x, cell.y)
@@ -110,14 +110,21 @@ func valid_destroy_rect_cells(a: Vector2i, b: Vector2i, grid_width: int, grid_de
 	return cells
 
 
-## Recherche de cible la plus proche du point de clic "hit" (distance
-## horizontale X/Z uniquement) parmi les noeuds du groupe "group_name", dans
-## un rayon "max_dist". Renvoie null si rien trouve. Logique partagee par
+## Recherche de cible la plus proche du point de clic "hit" (distance 3D,
+## voir note ci-dessous) parmi les noeuds du groupe "group_name", dans un
+## rayon "max_dist". Renvoie null si rien trouve. Logique partagee par
 ## Couper (groupe "trees") et Cueillir (groupe "cueillette") dans
 ## ActionController.gd - purement geometrique, ne modifie rien (le marqueur
 ## visuel et l'ajout a la queue de taches restent dans
 ## ActionController.gd/_handle_chop_click/_handle_gather_click).
-func closest_in_group(hit: Vector3, group_name: String, scene_tree: SceneTree, max_dist: float) -> Node3D:
+##
+## Distance 3D (pas juste X/Z, corrige 2026-07-10) : pres d'une berge, deux
+## colonnes voisines peuvent etre tres proches en X/Z mais a des Y tres
+## differents (mur vs sol) - une distance X/Z seule pouvait alors cibler un
+## arbre/buisson au sol alors qu'on pointait un mur juste a cote. Fiable
+## depuis que "hit" vient du raymarching voxel (VoxelWorld.raycast_visible_face,
+## voir ActionDragController.raycast_ground) qui donne un hit.y correct.
+static func closest_in_group(hit: Vector3, group_name: String, scene_tree: SceneTree, max_dist: float) -> Node3D:
 	var closest: Node3D = null
 	var closest_dist := max_dist
 	for node in scene_tree.get_nodes_in_group(group_name):
@@ -127,7 +134,7 @@ func closest_in_group(hit: Vector3, group_name: String, scene_tree: SceneTree, m
 		# simplement, comme s'il n'existait deja plus.
 		if not is_instance_valid(node):
 			continue
-		var d: float = Vector2(node.global_position.x - hit.x, node.global_position.z - hit.z).length()
+		var d: float = node.global_position.distance_to(hit)
 		if d < closest_dist:
 			closest_dist = d
 			closest = node

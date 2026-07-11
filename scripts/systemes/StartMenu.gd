@@ -12,6 +12,8 @@ extends Control
 ## CharacterSheetUI.gd) - evite tout risque d'erreur de syntaxe .tscn pour
 ## une interface simple.
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+const SeasonSystemScript := preload("res://scripts/systemes/SeasonSystem.gd")
+const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 
 ## La derniere graine utilisee est sauvegardee dans ce petit fichier (dossier
 ## de sauvegarde du jeu, "user://" - persiste entre les lancements,
@@ -34,8 +36,19 @@ const MAP_SIZES := [
 ]
 const DEFAULT_MAP_SIZE := 250
 
+## Libelles Francais affiches sur les boutons de _build_season_field, une
+## entree par id de ClimateDefs.SEASONS (meme convention de capitalisation
+## que ClimateUI.gd, pas de helper display_name() partage pour l'instant).
+const SEASON_LABELS := {
+	"printemps": "Printemps",
+	"ete": "Été",
+	"automne": "Automne",
+	"hiver": "Hiver",
+}
+
 var seed_input: LineEdit
 var selected_map_size: int = DEFAULT_MAP_SIZE
+var selected_season_index: int = 0
 
 
 func _ready() -> void:
@@ -49,6 +62,7 @@ func _ready() -> void:
 	_build_title(box)
 	_build_seed_field(box)
 	_build_map_size_field(box)
+	_build_season_field(box)
 	_build_biome_field(box)
 	_build_terrain_field(box)
 	_build_launch_button(box)
@@ -73,15 +87,15 @@ func _build_panel() -> VBoxContainer:
 	panel.anchor_top = 0.5
 	panel.anchor_right = 0.5
 	panel.anchor_bottom = 0.5
-	# Agrandi pour loger les nouvelles sections (taille de carte/biome/
+	# Agrandi pour loger les nouvelles sections (taille de carte/saison/biome/
 	# terrain) en plus de la graine, et les polices plus grandes (voir
 	# HINT_FONT_SIZE/BUTTON_FONT_SIZE) - hauteur fixe comme avant (plus
 	# simple que de faire dependre le centrage vertical d'un contenu
 	# dynamique).
 	panel.offset_left = -320
 	panel.offset_right = 320
-	panel.offset_top = -310
-	panel.offset_bottom = 310
+	panel.offset_top = -360
+	panel.offset_bottom = 360
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.18, 0.20, 0.26)
 	panel_style.set_corner_radius_all(10)
@@ -170,6 +184,46 @@ func _build_map_size_field(box: VBoxContainer) -> void:
 		# ne reagir qu'a "true" evite de repasser deux fois sur la meme
 		# selection.
 		btn.toggled.connect(_on_map_size_toggled.bind(entry["size"]))
+		row.add_child(btn)
+
+
+## Rangee de boutons a selection exclusive (ButtonGroup) pour choisir la
+## saison de depart - une saison est PRESELECTIONNEE au hasard a chaque
+## ouverture de ce menu (randomize()/randi() locaux, meme convention que le
+## champ graine ci-dessus : ce choix precede toute creation de seed de
+## partie, volontairement independant de GameRandom - voir doc de
+## SeasonSystemScript.requested_season_index). Cliquer un autre bouton force
+## cette saison precise, exactement comme _build_map_size_field ci-dessus.
+func _build_season_field(box: VBoxContainer) -> void:
+	var hint := Label.new()
+	hint.text = "Saison de depart :"
+	hint.add_theme_font_size_override("font_size", HINT_FONT_SIZE)
+	hint.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(hint)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
+
+	randomize()
+	selected_season_index = randi() % ClimateDefs.SEASONS.size()
+
+	var group := ButtonGroup.new()
+	for i in range(ClimateDefs.SEASONS.size()):
+		var season_id: String = ClimateDefs.SEASONS[i]
+		var btn := Button.new()
+		btn.text = SEASON_LABELS.get(season_id, season_id)
+		btn.toggle_mode = true
+		btn.button_group = group
+		btn.button_pressed = i == selected_season_index
+		btn.add_theme_font_size_override("font_size", HINT_FONT_SIZE)
+		btn.custom_minimum_size = Vector2(150, 48)
+		# Meme regle que _on_map_size_toggled : ne reagir qu'au bouton qui
+		# devient presse, ButtonGroup emet aussi ce signal pour celui qui se
+		# depresse.
+		btn.toggled.connect(_on_season_toggled.bind(i))
 		row.add_child(btn)
 
 
@@ -267,6 +321,13 @@ func _on_map_size_toggled(is_pressed: bool, map_size: int) -> void:
 		selected_map_size = map_size
 
 
+## Ne reagit qu'au bouton qui devient presse - meme regle que
+## _on_map_size_toggled ci-dessus.
+func _on_season_toggled(is_pressed: bool, season_index: int) -> void:
+	if is_pressed:
+		selected_season_index = season_index
+
+
 func _on_launch_pressed() -> void:
 	var text: String = seed_input.text.strip_edges()
 	if text.is_empty():
@@ -282,6 +343,9 @@ func _on_launch_pressed() -> void:
 	# que use_fixed_seed/requested_seed juste au-dessus.
 	VoxelWorldScript.WIDTH = selected_map_size
 	VoxelWorldScript.DEPTH = selected_map_size
+	# Meme mecanisme pour la saison de depart (voir doc de
+	# SeasonSystemScript.requested_season_index).
+	SeasonSystemScript.requested_season_index = selected_season_index
 	get_tree().change_scene_to_file("res://scenes/Main.tscn")
 
 

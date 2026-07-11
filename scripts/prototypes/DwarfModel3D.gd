@@ -30,6 +30,12 @@ const DwarfOutfitBuilderScript := preload("res://scripts/prototypes/DwarfOutfitB
 ## Construction des cheveux/de la barbe (voir _build_hair()/_build_beard()
 ## plus bas, des relais).
 const DwarfHairBuilderScript := preload("res://scripts/prototypes/DwarfHairBuilder.gd")
+## Utilitaires partages (flat_material/edited_owner/color_variant/
+## make_trapezoid_mesh/head_surface_radius) - deplacement C25 (revue de code
+## 2026-07-11) : ce fichier avait sa PROPRE copie de ces 6 fonctions,
+## dupliquee de Model3DUtils.gd (deja utilise par les 3 builders ci-dessus) ;
+## utilise desormais directement Model3DUtils.gd, comme eux.
+const Model3DUtilsScript := preload("res://scripts/prototypes/Model3DUtils.gd")
 
 @export_group("Couleurs")
 @export var skin_color: Color = Color(0.85, 0.68, 0.52)
@@ -310,9 +316,9 @@ func _randomize_variation() -> void:
 	# chacun (voir _color_variant), pour rester coordonnes sans etre
 	# identiques.
 	var theme: Color = CLOTHING_THEMES[rng.randi() % CLOTHING_THEMES.size()]
-	clothing_color = _color_variant(theme, 0.10)
-	pants_color = _color_variant(theme, 0.10)
-	coat_color = _color_variant(theme, 0.10)
+	clothing_color = Model3DUtilsScript.color_variant(theme, 0.10)
+	pants_color = Model3DUtilsScript.color_variant(theme, 0.10)
+	coat_color = Model3DUtilsScript.color_variant(theme, 0.10)
 
 	# Gants/manteau tires au hasard (probabilite modeste, pas systematique -
 	# accessoires, pas la norme) pour que la grille de verification (voir
@@ -359,68 +365,28 @@ func _randomize_variation() -> void:
 ## chaque reconstruction) - d'ou aussi le nom explicite/stable donne a chaque
 ## noeud genere (voir _build_*).
 func _rebuild() -> void:
-	# Instrumentation de perf (voir _log_step) conditionnee a
-	# OS.is_debug_build(), pour ne pas polluer un export final. Le nettoyage
-	# des enfants precedents est mesure separement de _build_model() ci-
-	# dessous, pour pouvoir distinguer les deux sources de cout si le
-	# rebuild devient lent.
-	var _t0: int = Time.get_ticks_msec()
-	var _child_count: int = get_children().size()
 	for child in get_children():
 		remove_child(child)
 		child.free()
-	var _t1: int = Time.get_ticks_msec()
-	if OS.is_debug_build():
-		print("[Perf][DwarfModel3D] nettoyage de %d enfant(s) precedent(s) : %.3f s" % [_child_count, (_t1 - _t0) / 1000.0])
 	_build_model()
-	var _t2: int = Time.get_ticks_msec()
-	if OS.is_debug_build():
-		print("[Perf][DwarfModel3D] _build_model() (nouvelle construction) : %.3f s" % [(_t2 - _t1) / 1000.0])
 
 
-## Construit le modele complet, etape par etape. Chaque etape est chronometree
-## via _log_step, qui n'affiche que celles prenant plus de 5ms, pour ne pas
-## polluer la console sur les rebuilds normaux (~quelques ms).
+## Construit le modele complet, etape par etape.
 func _build_model() -> void:
 	var head_y: float = leg_height + torso_height + head_radius * 0.85
-	var _tperf := Time.get_ticks_msec()
 	_build_legs()
-	_tperf = _log_step("legs", _tperf)
 	_build_torso()
-	_tperf = _log_step("torso", _tperf)
 	_build_belt()
-	_tperf = _log_step("belt", _tperf)
 	_build_arms(head_y)
-	_tperf = _log_step("arms", _tperf)
 	_build_shoulder_caps()
-	_tperf = _log_step("shoulder_caps", _tperf)
 	_build_head(head_y)
-	_tperf = _log_step("head", _tperf)
 	_build_hair(head_y)
-	_tperf = _log_step("hair(%s)" % hair_style, _tperf)
 	_build_beard(head_y)
-	_tperf = _log_step("beard(%s)" % beard_style, _tperf)
 	_build_face(head_y)
-	_tperf = _log_step("face", _tperf)
 	_build_outfit(head_y)
-	_tperf = _log_step("outfit(%s)" % outfit_style, _tperf)
 	_build_coat()
-	_tperf = _log_step("coat", _tperf)
 	_build_gloves()
-	_tperf = _log_step("gloves", _tperf)
 	_build_weapons(head_y)
-	_tperf = _log_step("weapons", _tperf)
-
-
-## Affiche la duree ecoulee depuis "t_prev" si superieure a 5ms (seuil
-## purement pour filtrer le bruit des etapes triviales), et renvoie
-## l'horodatage courant pour chainer l'appel suivant.
-func _log_step(label: String, t_prev: int) -> int:
-	var now: int = Time.get_ticks_msec()
-	var dt: int = now - t_prev
-	if dt > 5 and OS.is_debug_build():
-		print("[Perf][DwarfModel3D] %s : %.3f s" % [label, dt / 1000.0])
-	return now
 
 
 ## Jambes courtes et epaisses (silhouette trapue de nain) + petites bottes
@@ -445,7 +411,7 @@ func _build_legs() -> void:
 		pivot.name = "LegPivot_%s" % side_name
 		pivot.position = Vector3(side * leg_offset, leg_height, 0)  # niveau de la hanche
 		add_child(pivot)
-		pivot.owner = _edited_owner()
+		pivot.owner = Model3DUtilsScript.edited_owner(self)
 		if side < 0.0:
 			_leg_pivot_l = pivot
 		else:
@@ -459,9 +425,9 @@ func _build_legs() -> void:
 		leg.mesh = leg_mesh
 		leg.position = Vector3(0, -leg_height * 0.5, 0)  # pend sous le pivot
 		leg.name = "Leg_%s" % side_name
-		leg.set_surface_override_material(0, _flat_material(pants_color))
+		leg.set_surface_override_material(0, Model3DUtilsScript.flat_material(pants_color))
 		pivot.add_child(leg)
-		leg.owner = _edited_owner()
+		leg.owner = Model3DUtilsScript.edited_owner(self)
 
 		var boot := MeshInstance3D.new()
 		var boot_mesh := BoxMesh.new()
@@ -469,9 +435,9 @@ func _build_legs() -> void:
 		boot.mesh = boot_mesh
 		boot.position = Vector3(0, -leg_height + 0.04, 0.03)
 		boot.name = "Boot_%s" % side_name
-		boot.set_surface_override_material(0, _flat_material(boot_color))
+		boot.set_surface_override_material(0, Model3DUtilsScript.flat_material(boot_color))
 		pivot.add_child(boot)
-		boot.owner = _edited_owner()
+		boot.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Torse en tronc de piramide (plus large aux epaules qu'a la taille), pour
@@ -483,16 +449,16 @@ func _build_torso() -> void:
 	var torso := MeshInstance3D.new()
 	var waist_w: float = torso_waist_width * corpulence
 	var depth: float = torso_depth * corpulence
-	torso.mesh = _make_trapezoid_mesh(
+	torso.mesh = Model3DUtilsScript.make_trapezoid_mesh(
 		Vector2(torso_shoulder_width, depth),
 		Vector2(waist_w, depth * 0.9),
 		torso_height
 	)
 	torso.position = Vector3(0, leg_height + torso_height * 0.5, 0)
 	torso.name = "Torso"
-	torso.set_surface_override_material(0, _flat_material(clothing_color, true))
+	torso.set_surface_override_material(0, Model3DUtilsScript.flat_material(clothing_color, true))
 	add_child(torso)
-	torso.owner = _edited_owner()
+	torso.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Fine bande a la taille (bas du torse, donc largeur torso_waist_width) :
@@ -508,9 +474,9 @@ func _build_belt() -> void:
 	belt.mesh = belt_mesh
 	belt.position = Vector3(0, leg_height + 0.05, 0)
 	belt.name = "Belt"
-	belt.set_surface_override_material(0, _flat_material(armor_color))
+	belt.set_surface_override_material(0, Model3DUtilsScript.flat_material(armor_color))
 	add_child(belt)
-	belt.owner = _edited_owner()
+	belt.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Bras "muscles" - plus epais qu'un simple cylindre fin, avec un vrai
@@ -539,7 +505,7 @@ func _build_one_arm(side: float, shoulder_y: float, arm_x_offset: float, limb_fa
 	pivot.name = "ArmPivot_%s" % side_name
 	pivot.position = Vector3(arm_x, shoulder_y, 0)
 	add_child(pivot)
-	pivot.owner = _edited_owner()
+	pivot.owner = Model3DUtilsScript.edited_owner(self)
 	if side < 0.0:
 		_arm_pivot_l = pivot
 	else:
@@ -553,9 +519,9 @@ func _build_one_arm(side: float, shoulder_y: float, arm_x_offset: float, limb_fa
 	arm.mesh = arm_mesh
 	arm.position = Vector3(0, -arm_length * 0.5, 0)  # pend sous le pivot
 	arm.name = "Arm_%s" % side_name
-	arm.set_surface_override_material(0, _flat_material(clothing_color * 0.9))
+	arm.set_surface_override_material(0, Model3DUtilsScript.flat_material(clothing_color * 0.9))
 	pivot.add_child(arm)
-	arm.owner = _edited_owner()
+	arm.owner = Model3DUtilsScript.edited_owner(self)
 
 	# Renflement du biceps : petite sphere superposee pres du haut du bras
 	var bicep := MeshInstance3D.new()
@@ -565,9 +531,9 @@ func _build_one_arm(side: float, shoulder_y: float, arm_x_offset: float, limb_fa
 	bicep.mesh = bicep_mesh
 	bicep.position = Vector3(0, -arm_length * 0.22, 0)
 	bicep.name = "Bicep_%s" % side_name
-	bicep.set_surface_override_material(0, _flat_material(clothing_color * 0.9))
+	bicep.set_surface_override_material(0, Model3DUtilsScript.flat_material(clothing_color * 0.9))
 	pivot.add_child(bicep)
-	bicep.owner = _edited_owner()
+	bicep.owner = Model3DUtilsScript.edited_owner(self)
 
 	var hand := MeshInstance3D.new()
 	var hand_mesh := SphereMesh.new()
@@ -576,9 +542,9 @@ func _build_one_arm(side: float, shoulder_y: float, arm_x_offset: float, limb_fa
 	hand.mesh = hand_mesh
 	hand.position = Vector3(0, -arm_length, 0)
 	hand.name = "Hand_%s" % side_name
-	hand.set_surface_override_material(0, _flat_material(skin_color))
+	hand.set_surface_override_material(0, Model3DUtilsScript.flat_material(skin_color))
 	pivot.add_child(hand)
-	hand.owner = _edited_owner()
+	hand.owner = Model3DUtilsScript.edited_owner(self)
 	if side < 0.0:
 		_hand_l = hand
 	else:
@@ -603,9 +569,9 @@ func _build_shoulder_caps() -> void:
 		cap.mesh = cap_mesh
 		cap.position = Vector3(side * arm_x_offset, shoulder_y, 0)
 		cap.name = "ShoulderCap_%s" % side_name
-		cap.set_surface_override_material(0, _flat_material(clothing_color))
+		cap.set_surface_override_material(0, Model3DUtilsScript.flat_material(clothing_color))
 		add_child(cap)
-		cap.owner = _edited_owner()
+		cap.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Grosse tete (proportion "nain" : tete large par rapport au corps), posee
@@ -622,23 +588,9 @@ func _build_head(head_y: float) -> void:
 	head.mesh = head_mesh
 	head.position = Vector3(0, head_y, 0)
 	head.name = "Head"
-	head.set_surface_override_material(0, _flat_material(skin_color))
+	head.set_surface_override_material(0, Model3DUtilsScript.flat_material(skin_color))
 	add_child(head)
-	head.owner = _edited_owner()
-
-
-## Jitter generique (facteur ajustable) de couleur (+/-jitter par canal,
-## clampe 0-1) - encore utilisee ici par _randomize_variation() pour les
-## themes d'habits. Copie identique disponible en tant que
-## Model3DUtils.color_variant() pour DwarfHairBuilder.gd (qui a sa propre
-## variante des cheveux, hair_color_variant, non concernee par ce champ).
-func _color_variant(base: Color, jitter: float) -> Color:
-	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_apparence")
-	return Color(
-		clampf(base.r * rng.randf_range(1.0 - jitter, 1.0 + jitter), 0.0, 1.0),
-		clampf(base.g * rng.randf_range(1.0 - jitter, 1.0 + jitter), 0.0, 1.0),
-		clampf(base.b * rng.randf_range(1.0 - jitter, 1.0 + jitter), 0.0, 1.0)
-	)
+	head.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Cheveux/barbe : simples relais vers DwarfHairBuilder.gd (voir ce fichier
@@ -683,9 +635,9 @@ func _build_one_eye(side: float, head_y: float) -> void:
 	eye_white.position = Vector3(eye_x, eye_y, eye_z)
 	eye_white.scale = Vector3(1.35, 0.85, 0.55)
 	eye_white.name = "EyeWhite_%s" % side_name
-	eye_white.set_surface_override_material(0, _flat_material(EYE_WHITE_COLOR))
+	eye_white.set_surface_override_material(0, Model3DUtilsScript.flat_material(EYE_WHITE_COLOR))
 	add_child(eye_white)
-	eye_white.owner = _edited_owner()
+	eye_white.owner = Model3DUtilsScript.edited_owner(self)
 
 	# Pupille : plus petite et foncee, meme eye_x/eye_y que le blanc (donc
 	# centree), juste plus en avant en Z pour ressortir devant.
@@ -697,9 +649,9 @@ func _build_one_eye(side: float, head_y: float) -> void:
 	eye.position = Vector3(eye_x, eye_y, eye_z + head_radius * 0.05)
 	eye.scale = Vector3(1.35, 0.85, 1.0)
 	eye.name = "Eye_%s" % side_name
-	eye.set_surface_override_material(0, _flat_material(EYE_COLOR))
+	eye.set_surface_override_material(0, Model3DUtilsScript.flat_material(EYE_COLOR))
 	add_child(eye)
-	eye.owner = _edited_owner()
+	eye.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Extrait de _build_face().
@@ -711,16 +663,16 @@ func _build_nose(head_y: float) -> void:
 	nose.mesh = nose_mesh
 	nose.position = Vector3(0, head_y - head_radius * 0.02, head_radius * 0.95)
 	nose.name = "Nose"
-	nose.set_surface_override_material(0, _flat_material(skin_color * 0.95))
+	nose.set_surface_override_material(0, Model3DUtilsScript.flat_material(skin_color * 0.95))
 	add_child(nose)
-	nose.owner = _edited_owner()
+	nose.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Bouche : une vraie courbe continue (pas des perles isolees qui liraient
 ## comme des points) - on relie une serie de points le long de l'arc par de
 ## petits segments (boites fines tournees pour suivre la tangente locale,
 ## bout a bout, voir _build_curve_segments). Le decalage en Z utilise
-## _head_surface_radius() plutot qu'un facteur fixe : la tete etant ovale
+## Model3DUtils.head_surface_radius() plutot qu'un facteur fixe : la tete etant ovale
 ## (head_height_factor), la vraie surface a la hauteur de la bouche varie
 ## avec ce facteur, un facteur fixe suppose (a tort) une tete parfaitement
 ## spherique.
@@ -730,7 +682,7 @@ func _build_mouth(head_y: float) -> void:
 	var curve_height: float = head_radius * 0.06  # amplitude de la courbe (leger sourire)
 	var dy: float = -head_radius * 0.31  # decalage vertical par rapport au centre de la tete (un peu plus bas que le nez)
 	var base_y: float = head_y + dy
-	var z: float = _head_surface_radius(dy) * 1.05  # legerement proeminent, pas enfonce
+	var z: float = Model3DUtilsScript.head_surface_radius(head_radius, head_height_factor, dy) * 1.05  # legerement proeminent, pas enfonce
 
 	var pts: Array = []
 	var points := 9
@@ -755,7 +707,7 @@ func _build_eyebrows(head_y: float) -> void:
 	var curve_height: float = head_radius * 0.05
 	var dy: float = head_radius * 0.28  # au-dessus des yeux (eye_y = head_y + 0.12*head_radius)
 	var base_y: float = head_y + dy
-	var z: float = _head_surface_radius(dy) * 1.05
+	var z: float = Model3DUtilsScript.head_surface_radius(head_radius, head_height_factor, dy) * 1.05
 
 	for side in [-1.0, 1.0]:
 		var side_name: String = "L" if side < 0.0 else "R"
@@ -792,9 +744,9 @@ func _build_curve_segments(pts: Array, thickness: float, color: Color, name_pref
 		seg.position = mid
 		seg.rotation.z = angle
 		seg.name = "%s_%d" % [name_prefix, i]
-		seg.set_surface_override_material(0, _flat_material(color))
+		seg.set_surface_override_material(0, Model3DUtilsScript.flat_material(color))
 		add_child(seg)
-		seg.owner = _edited_owner()
+		seg.owner = Model3DUtilsScript.edited_owner(self)
 
 
 ## Aiguille vers les pieces a ajouter par-dessus le corps selon
@@ -820,90 +772,3 @@ func _build_gloves() -> void:
 ## position Repos).
 func _build_weapons(head_y: float) -> void:
 	DwarfWeaponBuilderScript.build_weapons(self, self, _hand_l, _hand_r, _arm_pivot_l, _arm_pivot_r, head_y)
-
-
-## Rayon (dans le plan XZ) de la surface ovale de la tete a un decalage
-## vertical "dy" donne (relatif au centre de la tete) - permet de placer un
-## element du visage exactement sur la surface (ou legerement au-dessus)
-## sans deviner un facteur au hasard, meme si head_height_factor change la
-## forme de la tete (sphere -> ovale plus ou moins prononce). Geometrie
-## d'ellipsoide : a une hauteur donnee, le rayon horizontal restant est
-## head_radius*sin(phi), ou phi est l'angle polaire correspondant.
-func _head_surface_radius(dy: float) -> float:
-	var half_height: float = head_radius * head_height_factor
-	var cos_phi: float = clampf(dy / half_height, -1.0, 1.0)
-	var sin_phi: float = sqrt(max(1.0 - cos_phi * cos_phi, 0.0))
-	return head_radius * sin_phi
-
-
-## Construit un tronc de piramide (base rectangulaire en haut, base
-## rectangulaire differente en bas) - aucun mesh primitif de Godot ne fait ca
-## directement (CylinderMesh permet bien un rayon different en haut/bas, mais
-## uniquement pour une base ronde). Utilise pour le torse en "trapeze" (plus
-## large aux epaules qu'a la taille).
-func _make_trapezoid_mesh(size_top: Vector2, size_bottom: Vector2, height: float) -> ArrayMesh:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-
-	var hy: float = height * 0.5
-	var tw: float = size_top.x * 0.5
-	var td: float = size_top.y * 0.5
-	var bw: float = size_bottom.x * 0.5
-	var bd: float = size_bottom.y * 0.5
-
-	var top_fl := Vector3(-tw, hy, td)
-	var top_fr := Vector3(tw, hy, td)
-	var top_bl := Vector3(-tw, hy, -td)
-	var top_br := Vector3(tw, hy, -td)
-	var bot_fl := Vector3(-bw, -hy, bd)
-	var bot_fr := Vector3(bw, -hy, bd)
-	var bot_bl := Vector3(-bw, -hy, -bd)
-	var bot_br := Vector3(bw, -hy, -bd)
-
-	_add_quad(st, bot_fl, bot_fr, top_fr, top_fl)  # face avant (+Z)
-	_add_quad(st, bot_br, bot_bl, top_bl, top_br)  # face arriere (-Z)
-	_add_quad(st, bot_bl, bot_fl, top_fl, top_bl)  # face gauche (-X)
-	_add_quad(st, bot_fr, bot_br, top_br, top_fr)  # face droite (+X)
-	_add_quad(st, top_fl, top_fr, top_br, top_bl)  # dessus (+Y)
-	_add_quad(st, bot_fr, bot_fl, bot_bl, bot_br)  # dessous (-Y)
-
-	st.generate_normals()
-	return st.commit()
-
-
-## Ajoute un quadrilatere (2 triangles) a un SurfaceTool en cours, a partir
-## de 4 coins donnes dans l'ordre (peu importe le sens exact : le materiau
-## du torse desactive le "cull_mode" pour rester visible des deux cotes,
-## voir _build_torso, donc pas besoin de soigner le sens de rotation ici).
-func _add_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
-	st.add_vertex(a)
-	st.add_vertex(b)
-	st.add_vertex(c)
-	st.add_vertex(a)
-	st.add_vertex(c)
-	st.add_vertex(d)
-
-
-## Materiau plat non eclaire, coherent avec le style du reste du jeu
-## (terrain, arbres, decorations, outils - voir Forest.gd/_flat_material).
-## "double_sided" desactive le retrait des faces arriere - utilise pour le
-## torse (_make_trapezoid_mesh), dont le sens des triangles n'est pas
-## garanti face par face.
-func _flat_material(color: Color, double_sided: bool = false) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	if double_sided:
-		mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return mat
-
-
-## En mode editeur (@tool), il faut assigner "owner" a chaque noeud genere
-## pour qu'il soit visible/sauvegardable dans la scene ouverte - sans ca,
-## les formes s'affichent mais n'apparaissent pas dans l'arborescence et
-## disparaissent a la fermeture de Godot. Sans effet en jeu (owner inutile
-## a l'execution normale).
-func _edited_owner() -> Node:
-	if Engine.is_editor_hint():
-		return get_tree().edited_scene_root
-	return null

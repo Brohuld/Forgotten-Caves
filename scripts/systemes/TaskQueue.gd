@@ -26,14 +26,21 @@ func _add_task(fields: Dictionary) -> int:
 
 
 ## Ajoute une tache de minage. walk_pos = ou le nain doit se placer,
-## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld. Renvoie l'id
-## unique de la tache (icone temporaire, voir ActionController.gd).
-func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int) -> int:
+## bx/by/bz = coordonnees du bloc a retirer dans VoxelWorld. clear_sol_above
+## (Francois 2026-07-10) : uniquement pour un "trou" classique (creusage
+## vertical depuis la vraie surface) - la vraie surface (SOL) juste au-dessus
+## du bloc doit disparaitre avec lui (ouverture au ciel). JAMAIS pour un
+## "couloir" (tunnel horizontal), qui doit laisser intact tout SOL fige plus
+## haut dans la colonne (voir DwarfTaskResolver.complete_miner_task/
+## VoxelWorld.clear_sol). Renvoie l'id unique de la tache (icone temporaire,
+## voir ActionController.gd).
+func add_mine_task(walk_pos: Vector3, bx: int, by: int, bz: int, clear_sol_above: bool = false) -> int:
 	return _add_task({
 		"type": "miner",
 		"position": walk_pos,
 		"bx": bx, "by": by, "bz": bz,
 		"tree": null,
+		"clear_sol_above": clear_sol_above,
 	})
 
 

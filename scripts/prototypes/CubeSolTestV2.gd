@@ -1,4 +1,10 @@
 extends Node3D
+## Prototype V2 (succede a CubeSolTest.gd/V1, deja VALIDE) - meme modele
+## CUBE+SOL (voir doc de V1 pour le detail du principe), mais integre en plus
+## le relief/l'eau/les filons/les cascades reels (VoxelVeins.gd/
+## VoxelHydrology.gd/WaterfallShapes.gd) plutot que le terrain plat simplifie
+## de V1. Prototype ISOLE comme V1 - aucune dependance au jeu principal
+## (VoxelWorld.gd) pour sa propre logique.
 
 const VoxelVeinsScript := preload("res://scripts/monde/voxel/VoxelVeins.gd")
 const VoxelMeshBuilderScript := preload("res://scripts/monde/voxel/VoxelMeshBuilder.gd")

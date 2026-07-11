@@ -9,7 +9,7 @@ extends Node3D
 ## Dwarf.gd/_complete_task), pour que le bois recolte corresponde a
 ## l'espece de l'arbre abattu. Les arbres fruitiers (TreeSpecies.FRUIT_SPECIES)
 ## sont places a part des arbres de foret (voir _ready) - meme construction
-## que les autres, plus des fruits (_build_fruits) recoltables via l'action
+## que les autres, plus des fruits (ForestGeometryBuilder.build_fruits) recoltables via l'action
 ## "Cueillir". Ils rejoignent le groupe "cueillette" (comme les buissons a
 ## baies, voir BerryBush.gd) en plus du groupe "trees" (toujours coupables
 ## pour le bois).
@@ -43,10 +43,26 @@ extends Node3D
 ## vit dans des MultiMesh PARTAGES entre tous les arbres, on ne peut pas se
 ## contenter de tree.queue_free() pour la faire disparaitre - voir
 ## hide_tree_visuals(), a appeler AVANT de liberer le noeud arbre.
+##
+## Construction geometrique (racines/tronc/branches/feuillage/fruits)
+## extraite dans ForestGeometryBuilder.gd (revue de code C20, 2026-07-11) -
+## fonctions statiques, Forest.gd garde la propriete de tout l'etat partage
+## et passe un Callable (_record_part) pour l'enregistrement des instances.
 
 const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+const HoverableScript := preload("res://scripts/systemes/Hoverable.gd")
+const ViewLevelIndexScript := preload("res://scripts/systemes/ViewLevelIndex.gd")
+const ForestGeometryBuilderScript := preload("res://scripts/entites/ForestGeometryBuilder.gd")
+
+## Rayon/hauteur du collider de detection souris (voir Hoverable.gd) -
+## approximatif (englobe tronc + feuillage), pas besoin d'etre pixel-parfait :
+## l'important est qu'il ne deborde pas sur les cases voisines (voir
+## PointerResolver, feedback Francois 2026-07-10 sur les tas pres d'une
+## berge). Herite de tree.scale (variation par instance/espece) puisque le
+## collider est un enfant direct de "tree".
+const TREE_HOVER_RADIUS := 0.9
 
 ## Reference a VoxelWorld pour rejeter les positions d'eau (voir
 ## _pick_dry_position) a la generation initiale ET a la repousse
@@ -78,7 +94,7 @@ enum PartType { ROOTS, TRUNK, BRANCH, CONE, BLOB, LEAF }
 ## Cacher une instance en mettant son echelle a Vector3.ZERO PILE (Basis
 ## totalement degenere, determinant=0) peut corrompre le rendu de TOUT le
 ## lot d'instances du MultiMesh concerne sous un materiau a eclairage reel
-## (roughness=1.0, pas SHADING_MODE_UNSHADED - voir _make_mmi) : Godot
+## (roughness=1.0, pas SHADING_MODE_UNSHADED - voir ForestGeometryBuilder.make_mmi) : Godot
 ## calcule une matrice de normales par instance a partir de sa transform, et
 ## une base totalement degeneree produit un resultat non-inversible (NaN/
 ## Inf). Une echelle MINUSCULE mais jamais exactement zero (base non-
@@ -197,8 +213,6 @@ func _ready() -> void:
 	# point (VoxelWorld._ready(), declare avant Forest dans Main.tscn, a
 	# deja fixe sa graine) - pas de randomize() ici, ce qui rend la
 	# position des arbres reproductible par graine (voir StartMenu.gd).
-	if OS.is_debug_build():
-		print("[Perf] Forest (arbres) : debut a %.1f s depuis le debut de la scene" % ((Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0))
 	_build_shared_meshes()
 	var tile_count: float = float(grid_width * grid_depth)
 	var tree_count: int = int(round(tree_density_per_1000_tiles * tile_count / 1000.0))
@@ -215,8 +229,6 @@ func _ready() -> void:
 		if spawned % BATCH_SIZE == 0:
 			await get_tree().process_frame
 	_apply_pending_instances()
-	if OS.is_debug_build():
-		print("[Perf] Forest (arbres) : fin (%d arbres) a %.1f s depuis le debut de la scene" % [spawned, (Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0])
 	generation_done = true
 	generation_finished.emit()
 
@@ -305,18 +317,19 @@ func _spawn_new_tree_and_apply(species: Dictionary) -> void:
 
 
 ## Cree les 6 MultiMeshInstance3D partages (un par PartType), avec leur
-## maillage "unite" (rayon/taille=1, voir chaque _make_*_mesh) et un seul
-## materiau a couleur-par-instance (meme principe que les pepites de filons
-## de VoxelWorld.gd - use_colors=true + vertex_color_use_as_albedo=true).
+## maillage "unite" (rayon/taille=1, voir ForestGeometryBuilder.make_*_mesh)
+## et un seul materiau a couleur-par-instance (meme principe que les pepites
+## de filons de VoxelWorld.gd - use_colors=true + vertex_color_use_as_albedo=true).
 func _build_shared_meshes() -> void:
-	_mmi[PartType.ROOTS] = _make_mmi(_make_cylinder_mesh(0.16, 0.30, 1.0))
-	_mmi[PartType.TRUNK] = _make_mmi(_make_cylinder_mesh(0.09, 0.16, 1.0))
-	_mmi[PartType.BRANCH] = _make_mmi(_make_cylinder_mesh(0.03, 0.06, 1.0))
-	_mmi[PartType.CONE] = _make_mmi(_make_cylinder_mesh(0.0, 1.0, 1.0))
-	_mmi[PartType.BLOB] = _make_mmi(_make_sphere_mesh(1.0))
-	_mmi[PartType.LEAF] = _make_mmi(_make_box_mesh(Vector3.ONE))
+	var G := ForestGeometryBuilderScript
+	_mmi[PartType.ROOTS] = G.make_mmi(G.make_cylinder_mesh(0.16, 0.30, 1.0, TREE_CYLINDER_RADIAL_SEGMENTS), self)
+	_mmi[PartType.TRUNK] = G.make_mmi(G.make_cylinder_mesh(0.09, 0.16, 1.0, TREE_CYLINDER_RADIAL_SEGMENTS), self)
+	_mmi[PartType.BRANCH] = G.make_mmi(G.make_cylinder_mesh(0.03, 0.06, 1.0, TREE_CYLINDER_RADIAL_SEGMENTS), self)
+	_mmi[PartType.CONE] = G.make_mmi(G.make_cylinder_mesh(0.0, 1.0, 1.0, TREE_CYLINDER_RADIAL_SEGMENTS), self)
+	_mmi[PartType.BLOB] = G.make_mmi(G.make_sphere_mesh(1.0, TREE_SPHERE_RADIAL_SEGMENTS, TREE_SPHERE_RINGS), self)
+	_mmi[PartType.LEAF] = G.make_mmi(G.make_box_mesh(Vector3.ONE), self)
 	# Transparence activee UNIQUEMENT sur les materiaux BLOB/LEAF (chacun un
-	# materiau distinct, voir _make_mmi) - jamais sur CONE (sapin) ni sur les
+	# materiau distinct, voir ForestGeometryBuilder.make_mmi) - jamais sur CONE (sapin) ni sur les
 	# autres pieces. L'alpha de la teinte hiver (SEASON_FOLIAGE_TINT, tres
 	# faible) rend ces feuilles quasiment invisibles sans toucher a leur
 	# transform (evite un conflit avec update_view_level()/hide_tree_visuals()).
@@ -330,24 +343,6 @@ func _build_shared_meshes() -> void:
 		_live_colors[key] = []
 	for key in _FOLIAGE_PART_TYPES:
 		_foliage_base_colors[key] = []
-
-
-func _make_mmi(mesh: Mesh) -> MultiMeshInstance3D:
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = MultiMesh.new()
-	mmi.multimesh.transform_format = MultiMesh.TRANSFORM_3D
-	mmi.multimesh.use_colors = true
-	mmi.multimesh.mesh = mesh
-	# Meme materiau "plat" que _flat_material ci-dessous, mais a couleur par
-	# instance (vertex_color_use_as_albedo) au lieu d'une couleur fixe.
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.albedo_color = Color.WHITE
-	mat.roughness = 1.0
-	mat.metallic = 0.0
-	mmi.material_override = mat
-	add_child(mmi)
-	return mmi
 
 
 ## radial_segments/rings par defaut de Godot (64/32) sont concus pour un
@@ -365,41 +360,22 @@ const TREE_SPHERE_RADIAL_SEGMENTS := 8
 const TREE_SPHERE_RINGS := 5
 
 
-func _make_cylinder_mesh(top_radius: float, bottom_radius: float, height: float) -> CylinderMesh:
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = top_radius
-	mesh.bottom_radius = bottom_radius
-	mesh.height = height
-	mesh.radial_segments = TREE_CYLINDER_RADIAL_SEGMENTS
-	return mesh
-
-
-func _make_sphere_mesh(radius: float) -> SphereMesh:
-	var mesh := SphereMesh.new()
-	mesh.radius = radius
-	mesh.height = radius * 2.0
-	mesh.radial_segments = TREE_SPHERE_RADIAL_SEGMENTS
-	mesh.rings = TREE_SPHERE_RINGS
-	return mesh
-
-
-func _make_box_mesh(size: Vector3) -> BoxMesh:
-	var mesh := BoxMesh.new()
-	mesh.size = size
-	return mesh
-
-
 ## Tire une position au hasard en rejetant l'eau (voir VoxelWorld.is_water)
 ## - essais bornes par securite, repli sur la derniere position tiree si
 ## vraiment aucune case seche n'est trouvee (tres improbable, l'eau ne
 ## couvre qu'une petite partie de la carte).
 func _pick_dry_position() -> Vector2:
-	var x := randf_range(2.0, float(grid_width - 2))
-	var z := randf_range(2.0, float(grid_depth - 2))
+	# Flux GameRandom dedie ("arbres_geometrie") plutot que le RNG global -
+	# reproductibilite par graine isolee des autres systemes (corrige I86
+	# 2026-07-11, voir doc GameRandom.gd). Distinct du flux "arbres_especes"
+	# deja utilise par TreeSpecies.random_species()/random_fruit_species().
+	var rng: RandomNumberGenerator = GameRandom.get_rng("arbres_geometrie")
+	var x := rng.randf_range(2.0, float(grid_width - 2))
+	var z := rng.randf_range(2.0, float(grid_depth - 2))
 	var guard := 0
 	while voxel_world != null and voxel_world.is_water(int(x), int(z)) and guard < 20:
-		x = randf_range(2.0, float(grid_width - 2))
-		z = randf_range(2.0, float(grid_depth - 2))
+		x = rng.randf_range(2.0, float(grid_width - 2))
+		z = rng.randf_range(2.0, float(grid_depth - 2))
 		guard += 1
 	return Vector2(x, z)
 
@@ -427,27 +403,35 @@ func _spawn_tree(species: Dictionary) -> void:
 	# arbres ; echelle_base est un multiplicateur PAR ESPECE (1.0 si absent,
 	# voir TreeSpecies.gd) applique en plus - grandit tronc/feuilles/branches/
 	# racines proportionnellement pour cette espece uniquement.
-	var scale_jitter: float = randf_range(0.85, 1.15) * size_multiplier * species.get("echelle_base", 1.0)
-	var tint_jitter: float = randf_range(0.9, 1.1)
+	var rng: RandomNumberGenerator = GameRandom.get_rng("arbres_geometrie")
+	var scale_jitter: float = rng.randf_range(0.85, 1.15) * size_multiplier * species.get("echelle_base", 1.0)
+	var tint_jitter: float = rng.randf_range(0.9, 1.1)
 
 	var tree := Node3D.new()
 	tree.name = "Tree_%d" % get_child_count()
 	# Hauteur reelle de la colonne (sommet+1), pas ground_level fixe - sinon
 	# un arbre plante sur une colline apparaitrait enfonce dans le sol.
 	tree.position = Vector3(x, _ground_y_at(x, z), z)
-	tree.rotation.y = randf_range(0.0, TAU)
+	tree.rotation.y = rng.randf_range(0.0, TAU)
 	tree.scale = Vector3.ONE * scale_jitter
 	tree.add_to_group("trees")
 	tree.set_meta("wood_resource", species["wood_resource"])
 	tree.set_meta("species_name", species["nom"])
+	tree.set_meta("hover_kind", "gatherable")  # voir EntityDescriptions.describe_by_kind
 	add_child(tree)
 
-	# Index par niveau de sol (voir doc de _level_buckets) - couvre aussi le
-	# regrowth (_maybe_regrow_tree -> _spawn_new_tree_and_apply -> _spawn_tree).
+	# Collider de detection souris (voir Hoverable.gd) - englobe tronc +
+	# feuillage, centre a mi-hauteur de l'espece. Herite de tree.scale.
+	var hover_shape := CylinderShape3D.new()
+	hover_shape.radius = TREE_HOVER_RADIUS
+	hover_shape.height = species.get("hauteur", 3.0)
+	HoverableScript.attach(tree, hover_shape, Vector3(0, hover_shape.height * 0.5, 0))
+
+	# Index par niveau de sol via ViewLevelIndex.gd (voir doc de
+	# _level_buckets) - couvre aussi le regrowth (_maybe_regrow_tree ->
+	# _spawn_new_tree_and_apply -> _spawn_tree).
 	var _ground_lvl: int = int(tree.position.y - 1.0)
-	if not _level_buckets.has(_ground_lvl):
-		_level_buckets[_ground_lvl] = []
-	_level_buckets[_ground_lvl].append(tree)
+	ViewLevelIndexScript.register(_level_buckets, tree, _ground_lvl)
 
 	# Transform de reference pour toute la geometrie de cet arbre, lu UNE
 	# fois ici (tree est deja dans l'arbre de scene, position/rotation/scale
@@ -458,32 +442,35 @@ func _spawn_tree(species: Dictionary) -> void:
 
 	var trunk_height: float = species["hauteur"]
 	var refs: Array = []
+	var record_fn := Callable(self, "_record_part")
+	var G := ForestGeometryBuilderScript
 
-	_build_roots(refs, tree_xform, species, tint_jitter)
-	var trunk_visual_height: float = _build_trunk(refs, tree_xform, species, trunk_height, tint_jitter)
-	_build_branches(refs, tree_xform, species, trunk_height, tint_jitter)
-	# _build_foliage renvoie la liste des blobs de feuillage reellement crees
-	# (position + rayon), pour que _build_fruits puisse ancrer chaque fruit a
+	G.build_roots(refs, tree_xform, species, tint_jitter, PartType.ROOTS, record_fn)
+	var trunk_visual_height: float = G.build_trunk(refs, tree_xform, species, trunk_height, tint_jitter, PartType.TRUNK, record_fn)
+	G.build_branches(refs, tree_xform, species, trunk_height, tint_jitter, PartType.BRANCH, PartType.LEAF, record_fn)
+	# build_foliage renvoie la liste des blobs de feuillage reellement crees
+	# (position + rayon), pour que build_fruits puisse ancrer chaque fruit a
 	# la surface d'un blob existant plutot qu'a une position theorique qui
 	# pourrait tomber hors du feuillage reel (arrangement des blobs
 	# asymetrique/aleatoire).
-	var blob_data: Array = _build_foliage(refs, tree_xform, species, trunk_height, trunk_visual_height, tint_jitter)
+	var blob_data: Array = G.build_foliage(refs, tree_xform, species, trunk_height, trunk_visual_height, tint_jitter, PartType.CONE, PartType.BLOB, PartType.LEAF, record_fn)
 
 	_spawn_fruits_if_applicable(tree, species, trunk_height, blob_data)
 
 	# refs liste (type, index) pour chaque piece de CET arbre dans les
 	# MultiMesh partages (voir hide_tree_visuals/update_view_level) - aucun
-	# noeud temporaire a recolter/detruire, chaque _build_* ci-dessus a deja
-	# enregistre ses instances directement via _record_part.
+	# noeud temporaire a recolter/detruire, chaque build_* de
+	# ForestGeometryBuilder.gd a deja enregistre ses instances directement
+	# via record_fn (-> _record_part).
 	tree.set_meta("visual_refs", refs)
 
 
 ## Arbre fruitier : ajoute les fruits + rend l'arbre recoltable via l'action
 ## "Cueillir" (groupe/metadonnees partages avec BerryBush.gd, voir
 ## Dwarf.gd/_complete_task pour la logique commune). Les fruits restent des
-## noeuds individuels (voir _build_fruits) - pas touches par la conversion
-## MultiMesh, recoltes un par un a la cueillette. Ne fait rien si l'espece
-## n'est pas fruitiere (pas de cle "fruit_resource").
+## noeuds individuels (voir ForestGeometryBuilder.build_fruits) - pas touches
+## par la conversion MultiMesh, recoltes un par un a la cueillette. Ne fait
+## rien si l'espece n'est pas fruitiere (pas de cle "fruit_resource").
 func _spawn_fruits_if_applicable(tree: Node3D, species: Dictionary, trunk_height: float, blob_data: Array) -> void:
 	if not species.has("fruit_resource"):
 		return
@@ -491,247 +478,7 @@ func _spawn_fruits_if_applicable(tree: Node3D, species: Dictionary, trunk_height
 	tree.add_to_group("cueillette")
 	tree.set_meta("fruit_resource", species["fruit_resource"])
 	tree.set_meta("fruits_left", fruit_count)
-	_build_fruits(tree, species, trunk_height, fruit_count, blob_data)
-
-
-## Petite base evasee au pied du tronc (racines), pour eviter l'effet
-## "poteau plante dans le sol" d'un simple cylindre droit.
-func _build_roots(refs: Array, tree_xform: Transform3D, species: Dictionary, tint: float) -> void:
-	var mesh_height := 0.22
-	var local_xform := Transform3D(Basis(), Vector3(0, 0.11, 0))
-	var color: Color = species["racine_color"] * tint
-	_record_part(refs, tree_xform * local_xform, PartType.ROOTS, color, Vector3(1.0, mesh_height, 1.0))
-
-
-## Tronc effile (plus fin en haut qu'en bas), hauteur dependante de l'espece.
-## Pour le sapin (feuillage conique), un vrai sapin n'a qu'un petit tronc
-## visible avant que les branches/aiguilles ne commencent - le tronc visuel
-## est donc beaucoup plus court que "trunk_height" (hauteur totale de
-## l'arbre), le reste etant recouvert par le feuillage (voir
-## _build_foliage_conique, qui recoit la hauteur reelle du tronc en retour).
-## Renvoie la hauteur visuelle du tronc (= trunk_height pour les autres formes).
-func _build_trunk(refs: Array, tree_xform: Transform3D, species: Dictionary, trunk_height: float, tint: float) -> float:
-	var visual_height: float = trunk_height
-	if species.get("forme", "touffu") == "conique":
-		visual_height = max(trunk_height * 0.12, 0.18)
-
-	var local_xform := Transform3D(Basis(), Vector3(0, 0.22 + visual_height * 0.5, 0))
-	var color: Color = species["tronc_color"] * tint
-	_record_part(refs, tree_xform * local_xform, PartType.TRUNK, color, Vector3(1.0, visual_height, 1.0))
-	return visual_height
-
-
-## 3 a 6 branches partant du haut du tronc et reparties tout autour (angle Y
-## aleatoire) pour un aspect moins symetrique/artificiel. Chacune porte une
-## petite grappe de "feuilles" a son extremite (voir _build_leaf_cluster).
-## Pas de branches du tout pour le sapin (feuillage conique) - le gros cone
-## de feuillage represente deja toute la silhouette, des batons de branche
-## qui depasseraient par-dessus n'auraient pas de sens sur un vrai sapin.
-## Pivot/branche/extremite sont des Transform3D composes a la main (meme
-## hierarchie qu'une construction par noeuds) : decalage Y du pivot, puis
-## angle du pivot, puis longueur de branche, puis nombre de feuilles - cet
-## ordre de tirages aleatoires doit rester stable pour que la generation par
-## graine reste reproductible.
-func _build_branches(refs: Array, tree_xform: Transform3D, species: Dictionary, trunk_height: float, tint: float) -> void:
-	if species.get("forme", "touffu") == "conique":
-		return
-	var branch_count: int = randi_range(4, 6)
-	var trunk_top_y: float = 0.22 + trunk_height
-	var colors: Array = species["feuillage_colors"]
-	for i in range(branch_count):
-		var pivot_y: float = trunk_top_y + randf_range(-0.25, 0.15)
-		var pivot_angle: float = (TAU / float(branch_count)) * i + randf_range(-0.3, 0.3)
-		var pivot_xform: Transform3D = tree_xform * Transform3D(Basis.from_euler(Vector3(0, pivot_angle, 0)), Vector3(0, pivot_y, 0))
-
-		var branch_length: float = randf_range(0.5, 0.8)
-		var branch_xform: Transform3D = pivot_xform * Transform3D(Basis.from_euler(Vector3(deg_to_rad(65), 0, 0)), Vector3(0, branch_length * 0.5, 0.12))
-		var branch_color: Color = species["branche_color"] * tint
-		_record_part(refs, branch_xform, PartType.BRANCH, branch_color, Vector3(1.0, branch_length, 1.0))
-
-		# Ancre a l'extremite haute de la branche (en espace local de la
-		# branche) : herite automatiquement de toutes les rotations parent
-		# (pivot + branche) via la composition de Transform3D ci-dessus, pas
-		# besoin de recalculer la position monde a la main.
-		var tip_xform: Transform3D = branch_xform * Transform3D(Basis(), Vector3(0, branch_length * 0.5, 0))
-		_build_leaf_cluster(refs, tip_xform, colors, tint, randi_range(6, 9), 0.12)
-
-
-## Aiguille le bon type de feuillage selon la "forme" de l'espece.
-## Renvoie la liste des blobs de feuillage crees (Array de {"position":
-## Vector3, "radius": float}, coordonnees locales a "tree") - vide pour le
-## feuillage conique (sapin, jamais un arbre fruitier). Utilise par
-## _build_fruits pour ancrer les fruits a de vrais blobs (voir plus bas).
-func _build_foliage(refs: Array, tree_xform: Transform3D, species: Dictionary, trunk_height: float, trunk_visual_height: float, tint: float) -> Array:
-	var top_y: float = 0.22 + trunk_height
-	match species.get("forme", "touffu"):
-		"conique":
-			# Le feuillage part du sommet du (court) tronc visuel, pas du
-			# sommet de la hauteur totale de l'arbre - il occupe donc presque
-			# toute la silhouette, comme un vrai sapin.
-			_build_foliage_conique(refs, tree_xform, species, 0.22 + trunk_visual_height, top_y, tint)
-			return []
-		"fin":
-			return _build_foliage_fin(refs, tree_xform, species, top_y, tint)
-		_:
-			return _build_foliage_touffu(refs, tree_xform, species, top_y, tint)
-
-
-## Feuillage touffu (chene, arbres fruitiers) : plusieurs spheres qui se
-## chevauchent, placees de façon legerement asymetrique pour eviter la
-## "boule parfaite". Chaque blob recoit en plus une petite grappe de
-## "feuilles" (voir _build_leaf_cluster) a sa surface, pour un aspect moins
-## "boule lisse" et plus feuillu de pres.
-func _build_foliage_touffu(refs: Array, tree_xform: Transform3D, species: Dictionary, top_y: float, tint: float) -> Array:
-	# Facteur par espece (voir TreeSpecies.gd/feuillage_echelle, 1.0 par
-	# defaut donc aucun changement pour les arbres fruitiers, qui partagent
-	# cette meme fonction) applique aux rayons des blobs et a leur etalement
-	# horizontal (xz_spread) - pas a la plage verticale (y_min/y_max), qui
-	# reste fixee par rapport a "top_y" (sommet du tronc).
-	var echelle: float = species.get("feuillage_echelle", 1.0)
-	return _build_blob_foliage(refs, tree_xform, species, top_y, tint, 4, 6, 0.38 * echelle, 0.55 * echelle, 0.26 * echelle, 0.05, 0.65, 7, 10)
-
-
-## Feuillage conique (sapin) : 5-6 cones empiles qui couvrent depuis le
-## sommet du (court) tronc visuel jusqu'en haut de l'arbre (start_y ->
-## top_y), plus large a la base et etroit en pointe, comme un vrai sapin (le
-## tronc ne depasse presque pas du feuillage).
-func _build_foliage_conique(refs: Array, tree_xform: Transform3D, species: Dictionary, start_y: float, top_y: float, tint: float) -> void:
-	var colors: Array = species["feuillage_colors"]
-	var levels: int = randi_range(5, 6)
-	var span: float = max(top_y - start_y, 0.3)
-	var level_height: float = span / float(levels) * 1.4  # chevauchement pour eviter les trous
-	var y := start_y
-	for i in range(levels):
-		var t: float = float(i) / float(max(levels - 1, 1))  # 0 en bas, 1 en haut
-		var bottom_radius: float = lerp(0.48, 0.10, t)
-		var local_xform := Transform3D(Basis(), Vector3(0, y + level_height * 0.5, 0))
-		var cone_color: Color = colors[i % colors.size()] * tint
-		# Maillage "unite" du cone : top_radius=0, bottom_radius=1, height=1
-		# (voir _build_shared_meshes) - le rayon reel varie par niveau
-		# (bottom_radius), donc l'echelle XZ suit ce rayon directement.
-		_record_part(refs, tree_xform * local_xform, PartType.CONE, cone_color, Vector3(bottom_radius, level_height, bottom_radius))
-		y += span / float(levels)
-
-
-## Feuillage fin/eparse (bouleau) : quelques petites touffes legeres, moins
-## denses que le chene, coherent avec un arbre plus elance. Meme ajout de
-## grappes de "feuilles" que le feuillage touffu.
-func _build_foliage_fin(refs: Array, tree_xform: Transform3D, species: Dictionary, top_y: float, tint: float) -> Array:
-	return _build_blob_foliage(refs, tree_xform, species, top_y, tint, 3, 5, 0.26, 0.38, 0.22, 0.0, 0.55, 6, 8)
-
-
-## Logique commune a _build_foliage_touffu (chene/arbres fruitiers) et
-## _build_foliage_fin (bouleau) - meme construction (blobs spheriques +
-## grappes de feuilles a leur surface), seuls les nombres/tailles/plages
-## different par espece. "blob_data" renvoie une position LOCALE a l'arbre
-## (utilisee par _build_fruits).
-func _build_blob_foliage(refs: Array, tree_xform: Transform3D, species: Dictionary, top_y: float, tint: float,
-		cluster_count_min: int, cluster_count_max: int,
-		radius_min: float, radius_max: float,
-		xz_spread: float, y_min: float, y_max: float,
-		leaf_count_min: int, leaf_count_max: int) -> Array:
-	var colors: Array = species["feuillage_colors"]
-	var cluster_count: int = randi_range(cluster_count_min, cluster_count_max)
-	var blob_data: Array = []
-	for i in range(cluster_count):
-		var radius: float = randf_range(radius_min, radius_max)
-		var blob_local_pos := Vector3(
-			randf_range(-xz_spread, xz_spread),
-			top_y + randf_range(y_min, y_max),
-			randf_range(-xz_spread, xz_spread)
-		)
-		var blob_xform: Transform3D = tree_xform * Transform3D(Basis(), blob_local_pos)
-		var blob_color: Color = colors[randi_range(0, colors.size() - 1)] * tint
-		_record_part(refs, blob_xform, PartType.BLOB, blob_color, Vector3.ONE * radius)
-		_build_leaf_cluster(refs, blob_xform, colors, tint, randi_range(leaf_count_min, leaf_count_max), radius * 0.8)
-		blob_data.append({"position": blob_local_pos, "radius": radius})
-	return blob_data
-
-
-## Fruits de l'arbre (arbres fruitiers uniquement, voir _spawn_tree) -
-## petites spheres colorees dispersees pres du feuillage, nommees "Fruit_%d"
-## (0..fruit_count-1) pour pouvoir en retirer une a la fois a la cueillette
-## (voir Dwarf.gd/_complete_task, meme convention que BerryBush.gd/Berry_%d).
-## PAS convertis en MultiMesh (contrairement a tout le reste de l'arbre) :
-## ils doivent pouvoir disparaitre un par un a la cueillette, ce qu'un
-## MultiMesh partage ne permet pas facilement ; leur nombre reste de toute
-## facon tres faible (5-6 par arbre fruitier).
-## Chaque fruit est ancre a la surface d'un blob de feuillage REELLEMENT
-## cree (choisi parmi "blob_data", position/rayon renvoyes par
-## _build_foliage), avec une petite marge (0.85-1.05x le rayon) pour rester
-## visible en depassant un peu - une couronne theorique a distance fixe
-## autour du tronc ne suivrait pas la forme reelle du feuillage (amas de
-## blobs places de facon asymetrique/aleatoire), laissant certains fruits
-## flotter dans le vide et d'autres caches derriere le feuillage.
-func _build_fruits(tree: Node3D, species: Dictionary, trunk_height: float, fruit_count: int, blob_data: Array) -> void:
-	var top_y: float = 0.22 + trunk_height
-	var mat := _flat_material(species["fruit_color"])
-	var fruit_radius: float = species.get("fruit_radius", 0.13)
-	# Le choix d'un blob au hasard PAR fruit (randi_range) pourrait, avec
-	# seulement 4-6 blobs, en tirer certains 4-5 fois et d'autres jamais -
-	# tous les fruits se retrouveraient alors regroupes sur 1-2 blobs
-	# voisins, donc du meme cote de l'arbre. Repartition en "tourniquet"
-	# (chaque blob melange puis pris a son tour) garantit que TOUS les blobs
-	# recoivent un nombre de fruits equilibre, quel que soit fruit_count.
-	var blobs_shuffled: Array = blob_data.duplicate()
-	blobs_shuffled.shuffle()
-	for i in range(fruit_count):
-		var fruit := MeshInstance3D.new()
-		fruit.name = "Fruit_%d" % i
-		var mesh := SphereMesh.new()
-		mesh.radius = fruit_radius
-		mesh.height = fruit_radius * 2.0
-		# Segments reduits (voir TREE_SPHERE_RADIAL_SEGMENTS/_RINGS plus haut) -
-		# ces fruits sont individuels (pas de MultiMesh possible ici, voir
-		# commentaire au-dessus de cette fonction), donc chacun est deja un
-		# MeshInstance3D/draw call a part entiere ; inutile d'ajouter des
-		# milliers de triangles superflus par-dessus.
-		mesh.radial_segments = TREE_SPHERE_RADIAL_SEGMENTS
-		mesh.rings = TREE_SPHERE_RINGS
-		fruit.mesh = mesh
-		if blobs_shuffled.is_empty():
-			# Filet de securite si jamais aucun blob n'a ete cree (ne devrait
-			# pas arriver pour un arbre fruitier, "touffu" par construction).
-			var angle := randf_range(0.0, TAU)
-			fruit.position = Vector3(
-				cos(angle) * 0.5,
-				top_y + randf_range(-0.05, 0.65),
-				sin(angle) * 0.5
-			)
-		else:
-			var blob: Dictionary = blobs_shuffled[i % blobs_shuffled.size()]
-			var blob_pos: Vector3 = blob["position"]
-			var blob_radius: float = blob["radius"]
-			# Elevation sur toute la sphere du blob (-90..+90 degres), pas
-			# seulement le dessous, pour repartir les fruits tout autour de
-			# chaque blob plutot que biaises vers le bas.
-			var az := randf_range(0.0, TAU)
-			var elev := randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
-			var dir := Vector3(cos(elev) * cos(az), sin(elev), cos(elev) * sin(az))
-			var dist := blob_radius * randf_range(0.85, 1.05)
-			fruit.position = blob_pos + dir * dist
-		fruit.set_surface_override_material(0, mat)
-		tree.add_child(fruit)
-
-
-## Petite grappe de "feuilles" (plaques plates tres fines, sans image/
-## texture) autour d'un point donne - utilise aux extremites des branches et
-## sur le feuillage touffu/fin, pour un aspect plus detaille que de simples
-## boules de couleur. Taille/position/rotation sont calculees dans un ordre
-## fixe (mesh.size, puis position, puis rotation, puis couleur) qui doit
-## rester stable pour la generation par graine.
-func _build_leaf_cluster(refs: Array, parent_xform: Transform3D, colors: Array, tint: float, count: int, spread: float) -> void:
-	for i in range(count):
-		var leaf_size := Vector3(randf_range(0.05, 0.08), 0.01, randf_range(0.03, 0.05))
-		var leaf_pos := Vector3(
-			randf_range(-spread, spread),
-			randf_range(-spread, spread),
-			randf_range(-spread, spread)
-		)
-		var leaf_rot := Vector3(randf_range(-0.5, 0.5), randf_range(0.0, TAU), randf_range(-0.5, 0.5))
-		var leaf_color: Color = colors[randi_range(0, colors.size() - 1)] * tint
-		var leaf_local := Transform3D(Basis.from_euler(leaf_rot), leaf_pos)
-		_record_part(refs, parent_xform * leaf_local, PartType.LEAF, leaf_color, leaf_size)
+	ForestGeometryBuilderScript.build_fruits(tree, species, trunk_height, fruit_count, blob_data, TREE_SPHERE_RADIAL_SEGMENTS, TREE_SPHERE_RINGS)
 
 
 ## Enregistre une piece d'arbre directement dans le MultiMeshInstance3D
@@ -776,25 +523,6 @@ func _apply_pending_instances() -> void:
 		for i in range(xforms.size()):
 			mmi.multimesh.set_instance_transform(i, xforms[i])
 			mmi.multimesh.set_instance_color(i, colors[i])
-
-
-## Materiau plat (visuellement "flat" = pas de texture/reflet), coherent
-## avec le style du reste du jeu (terrain, decorations de sol : voir
-## VoxelWorld._make_material). Eclairage reel (pas SHADING_MODE_UNSHADED)
-## pour que les arbres reagissent au cycle jour/nuit (DayNightCycle.gd) ;
-## roughness=1/metallic=0 garde l'aspect plat/mat, sans reflet.
-## Depuis le passage a des MultiMesh partages, ce materiau n'est plus
-## utilise QUE par _build_fruits (les fruits restent de vrais noeuds) -
-## toutes les autres pieces (racines/tronc/branches/cones/blobs/feuilles)
-## n'ont plus jamais de noeud ni de materiau propre ; leur couleur reelle
-## vient directement de la couleur par instance du MultiMesh partage (voir
-## _record_part/part_color).
-func _flat_material(color: Color) -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 1.0
-	mat.metallic = 0.0
-	return mat
 
 
 ## Reteinte tout le feuillage (CONE/BLOB/LEAF) selon la saison donnee -
@@ -916,39 +644,30 @@ func _apply_tree_visibility(tree: Node3D, hidden: bool, zero_xform: Transform3D)
 	for child in tree.get_children():
 		if (child.name as String).begins_with("Fruit_"):
 			child.visible = not hidden and not _winter_fruits_hidden
+	# Le collider de survol (voir Hoverable.gd) doit suivre la meme regle que
+	# le visuel MultiMesh ci-dessus - sinon un arbre cache par la coupe
+	# resterait detectable par le survol/ciblage.
+	HoverableScript.set_enabled(tree, not hidden)
 
 
 ## Scan complet (tous les arbres du groupe "trees") - utilise uniquement pour
-## le tout premier appel de update_view_level (voir sa doc).
+## le tout premier appel de update_view_level (voir sa doc). Regle de seuil
+## et parcours factorises dans ViewLevelIndex.gd (voir sa doc) - seule la
+## bascule visuelle (_apply_tree_visibility) reste specifique a ce fichier.
 func _apply_view_level_full(level: int) -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
-	for tree in get_tree().get_nodes_in_group("trees"):
-		var ground_block_y: float = tree.position.y - 1.0
-		# >= et non > (Francois 2026-07-08) : depuis que la couche-frontiere
-		# n'affiche plus le vrai sol (herbe) mais un capuchon sombre (voir
-		# VoxelMeshBuilder._add_boundary_cube_faces), un arbre dont le sol est
-		# EXACTEMENT au niveau de vue doit lui aussi disparaitre - son "sol"
-		# n'est plus represente comme praticable a ce niveau precis.
-		var hidden: bool = ground_block_y >= float(level)
-		_apply_tree_visibility(tree, hidden, zero_xform)
+	var trees: Array = get_tree().get_nodes_in_group("trees")
+	var ground_y_fn := func(tree): return int(tree.position.y - 1.0)
+	var apply_fn := func(tree, hidden): _apply_tree_visibility(tree, hidden, zero_xform)
+	ViewLevelIndexScript.full_scan(trees, level, ground_y_fn, apply_fn)
 
 
 ## Scan incremental : ne touche que les arbres dont le niveau de sol se
 ## trouve entre l'ancien et le nouveau niveau de vue (voir doc de
-## _level_buckets). Bornes [lo, hi) (et non [lo+1, hi]) : coherent avec la
-## regle ">=" ci-dessus - le niveau de sol EXACTEMENT au niveau de vue doit
-## pouvoir changer d'etat lui aussi (Francois 2026-07-08).
+## _level_buckets et de ViewLevelIndex.delta_scan).
 func _apply_view_level_delta(old_level: int, new_level: int) -> void:
-	if old_level == new_level:
-		return
-	var lo: int = min(old_level, new_level)
-	var hi: int = max(old_level, new_level)
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
-	for lvl in range(lo, hi):
-		if not _level_buckets.has(lvl):
-			continue
-		for tree in _level_buckets[lvl]:
-			if not is_instance_valid(tree):
-				continue
-			var hidden: bool = float(lvl) >= float(new_level)
+	var apply_fn := func(tree, hidden):
+		if is_instance_valid(tree):
 			_apply_tree_visibility(tree, hidden, zero_xform)
+	ViewLevelIndexScript.delta_scan(_level_buckets, old_level, new_level, apply_fn)

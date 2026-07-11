@@ -42,6 +42,7 @@ const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 ## BerryBushes -> GroundDecoration), donc le bon endroit pour afficher la
 ## duree totale.
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+const ViewLevelIndexScript := preload("res://scripts/systemes/ViewLevelIndex.gd")
 ## Pour afficher aussi le temps ecoule depuis le tout debut de la scene
 ## (voir DayNightCycle.scene_start_ms), pas seulement depuis le debut de
 ## VoxelWorld - utile pour situer la generation du monde dans le temps de
@@ -101,6 +102,17 @@ var _level_buckets: Dictionary = {}  # PartType -> Dictionary[int, Array[int]]
 ## suivants passent par _apply_view_level_delta.
 var _view_level_initialized: bool = false
 
+## Index par position au sol - Vector2i(x,z) -> Array de [part_type, index]
+## (perf 2026-07-11, I87 : remove_decoration_at() faisait un scan lineaire de
+## TOUTES les instances de decoration a CHAQUE bloc mine, potentiellement
+## plusieurs dizaines de milliers sur une carte 250x250). Rempli une fois
+## pour toutes dans _harvest_and_clear au moment de la creation (au plus une
+## decoration par case, voir _ready - donc au plus une entree par cle, mais
+## avec plusieurs pieces : une touffe d'herbe a 3-5 brins, une fleur a
+## tige+bouton). remove_decoration_at() n'a donc plus qu'a lire cette entree
+## directement au lieu de parcourir tout le monde.
+var _position_buckets: Dictionary = {}  # Vector2i(x,z) -> Array[[part_type, index]]
+
 # Comme toute la decoration est generee UNE fois au demarrage (jamais de
 # vraie regeneration dynamique), l'effet saisonnier est obtenu en taguant
 # CHAQUE decoration (au moment de sa creation, une fois pour toutes ses
@@ -149,14 +161,15 @@ func _ready() -> void:
 		generation_done = true
 		generation_finished.emit()
 		return
-	# Le generateur aleatoire global est deja correctement initialise a ce
-	# point (VoxelWorld._ready(), declare avant ce script dans Main.tscn, a
-	# deja fixe sa graine) - pas de randomize() ici, ce qui rend la position
-	# des decorations de sol reproductible par graine.
-	if OS.is_debug_build():
-		print("[Perf] GroundDecoration (decos sol) : debut a %.1f s depuis le debut de la scene" % ((Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0))
+	# Flux GameRandom dedie ("decoration_sol") plutot que le RNG global -
+	# reproductibilite par graine ISOLEE des autres systemes (revue de code
+	# M90) : l'ancien commentaire supposait la reproductibilite via l'ordre
+	# des noeuds dans Main.tscn (RNG global deja seed par VoxelWorld._ready()),
+	# ce qui restait fragile a tout reordonnancement/ajout d'un autre systeme
+	# tirant sur le meme RNG global avant celui-ci.
 	_build_shared_meshes()
 	var climate: Dictionary = ClimateDefs.get_climate(climate_id)
+	var rng: RandomNumberGenerator = GameRandom.get_rng("decoration_sol")
 	# Cette double boucle scanne grid_width x grid_depth cases dans un seul
 	# appel synchrone de _ready() - le scan lui-meme (RNG + lecture de
 	# tableau par case) est tres rapide, donc on ne rend la main au moteur
@@ -165,7 +178,7 @@ func _ready() -> void:
 	var spawned := 0
 	for x in range(grid_width):
 		for z in range(grid_depth):
-			if randf() > decoration_chance:
+			if rng.randf() > decoration_chance:
 				continue
 			if not voxel_world.is_dirt_top(x, z):
 				continue
@@ -175,23 +188,6 @@ func _ready() -> void:
 			if spawned % BATCH_SIZE == 0:
 				await get_tree().process_frame
 	_apply_pending_instances()
-
-	# Duree totale de generation du monde (depuis le tout debut de
-	# VoxelWorld._ready() jusqu'a la fin de ce script, le dernier "lourd" a
-	# s'executer). Note : Forest.gd/BerryBushes.gd generent aussi par
-	# paquets (await process_frame) en parallele de ce script - ce chrono
-	# mesure donc la fin du scan de CE script, pas forcement le moment exact
-	# ou Forest/BerryBushes ont eux aussi fini.
-	if OS.is_debug_build():
-		var elapsed_ms: int = Time.get_ticks_msec() - VoxelWorldScript.world_gen_start_ms
-		print("[Perf] GroundDecoration (decos sol) : fin, monde (%dx%dx%d) genere en %.1f s (depuis le debut de VoxelWorld)" % [grid_width, grid_depth, VoxelWorldScript.HEIGHT, elapsed_ms / 1000.0])
-		# Deuxieme mesure, depuis le tout debut de la scene (voir
-		# DayNightCycle.scene_start_ms) - permet de voir combien de temps
-		# s'est deja ecoule quand la generation du monde se termine, par
-		# rapport au temps total affiche par CharacterSheetUI.gd a la toute
-		# fin.
-		var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
-		print("[Perf] GroundDecoration (decos sol) : %.1f s depuis le debut de la scene" % (elapsed_since_scene_start_ms / 1000.0))
 	generation_done = true
 	generation_finished.emit()
 
@@ -270,7 +266,7 @@ func _make_box_mesh(size: Vector3) -> BoxMesh:
 ## Choisit un type de decoration au hasard (davantage d'herbe que de fleurs,
 ## et un peu de cailloux) et le fait apparaitre a la position donnee
 func _spawn_decoration(x: int, y: int, z: int, climate: Dictionary) -> void:
-	var roll := randf()
+	var roll := GameRandom.get_rng("decoration_sol").randf()
 	if roll < 0.45:
 		_spawn_grass_tuft(x, y, z, climate)
 	elif roll < 0.85:
@@ -282,38 +278,44 @@ func _spawn_decoration(x: int, y: int, z: int, climate: Dictionary) -> void:
 ## Petite touffe de 3 a 5 brins d'herbe fins, teintee avec une variation
 ## aleatoire de la couleur de base du climat
 func _spawn_grass_tuft(x: int, y: int, z: int, climate: Dictionary) -> void:
+	# Flux GameRandom dedie ("decoration_sol") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M90).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("decoration_sol")
 	var tuft := Node3D.new()
-	tuft.position = Vector3(x + randf_range(0.2, 0.8), y, z + randf_range(0.2, 0.8))
-	tuft.rotation.y = randf_range(0.0, TAU)
+	tuft.position = Vector3(x + rng.randf_range(0.2, 0.8), y, z + rng.randf_range(0.2, 0.8))
+	tuft.rotation.y = rng.randf_range(0.0, TAU)
 	add_child(tuft)
 
 	var variations: Array = climate.get("herbe_variations", [climate.get("herbe_base", Color.GREEN)])
-	var blade_count: int = randi_range(3, 5)
+	var blade_count: int = rng.randi_range(3, 5)
 	for i in range(blade_count):
 		var blade := MeshInstance3D.new()
 		var mesh := CylinderMesh.new()
 		mesh.top_radius = 0.01
 		mesh.bottom_radius = 0.03
-		mesh.height = randf_range(0.12, 0.22)
+		mesh.height = rng.randf_range(0.12, 0.22)
 		mesh.radial_segments = DECORATION_RADIAL_SEGMENTS
 		blade.mesh = mesh
-		blade.position = Vector3(randf_range(-0.08, 0.08), mesh.height * 0.5, randf_range(-0.08, 0.08))
-		blade.rotation.z = randf_range(-0.3, 0.3)
-		var color: Color = variations[randi_range(0, variations.size() - 1)]
+		blade.position = Vector3(rng.randf_range(-0.08, 0.08), mesh.height * 0.5, rng.randf_range(-0.08, 0.08))
+		blade.rotation.z = rng.randf_range(-0.3, 0.3)
+		var color: Color = variations[rng.randi_range(0, variations.size() - 1)]
 		_tag_part(blade, PartType.GRASS_BLADE, color, Vector3(1.0, mesh.height, 1.0))
 		tuft.add_child(blade)
 
 	# Tire UNE fois par touffe (pas par brin) pour que toute la touffe
 	# apparaisse/disparaisse ensemble en ete.
-	_harvest_and_clear(tuft, float(y) - 1.0, false, randf() < ETE_MASQUE_FRACTION)
+	_harvest_and_clear(tuft, float(y) - 1.0, x, z, false, rng.randf() < ETE_MASQUE_FRACTION)
 
 
 ## Petite fleur (tige + bouton), couleur choisie au hasard parmi les
 ## "especes" du climat (une couleur = une espece, approche volontairement
 ## simple pour l'instant)
 func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
+	# Flux GameRandom dedie ("decoration_sol") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M90).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("decoration_sol")
 	var flower := Node3D.new()
-	flower.position = Vector3(x + randf_range(0.25, 0.75), y, z + randf_range(0.25, 0.75))
+	flower.position = Vector3(x + rng.randf_range(0.25, 0.75), y, z + rng.randf_range(0.25, 0.75))
 	add_child(flower)
 
 	var stem := MeshInstance3D.new()
@@ -337,36 +339,39 @@ func _spawn_flower(x: int, y: int, z: int, climate: Dictionary) -> void:
 	bloom.mesh = bloom_mesh
 	bloom.position.y = 0.2
 	var fleurs: Array = climate.get("fleurs", [Color.WHITE])
-	var bloom_color: Color = fleurs[randi_range(0, fleurs.size() - 1)]
+	var bloom_color: Color = fleurs[rng.randi_range(0, fleurs.size() - 1)]
 	_tag_part(bloom, PartType.FLOWER_BLOOM, bloom_color, Vector3.ONE * bloom_mesh.radius)
 	flower.add_child(bloom)
 
 	# ~40% des fleurs generees (tige+bouton ensemble) sont cachees sauf au
 	# printemps - voir la doc de PRINTEMPS_FLEUR_BONUS_FRACTION plus haut.
 	# Egalement soumises a "masque_en_ete" comme toute decoration.
-	var printemps_seulement: bool = randf() < PRINTEMPS_FLEUR_BONUS_FRACTION
-	_harvest_and_clear(flower, float(y) - 1.0, printemps_seulement, randf() < ETE_MASQUE_FRACTION)
+	var printemps_seulement: bool = rng.randf() < PRINTEMPS_FLEUR_BONUS_FRACTION
+	_harvest_and_clear(flower, float(y) - 1.0, x, z, printemps_seulement, rng.randf() < ETE_MASQUE_FRACTION)
 
 
 ## Petit caillou gris, taille/teinte/rotation legerement aleatoires
 func _spawn_pebble(x: int, y: int, z: int) -> void:
+	# Flux GameRandom dedie ("decoration_sol") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M90).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("decoration_sol")
 	var pebble := Node3D.new()
 	pebble.position = Vector3(x, y, z)
 	add_child(pebble)
 
 	var mesh_part := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
-	var size: float = randf_range(0.06, 0.14)
-	mesh.size = Vector3(size, size * 0.6, size * randf_range(0.8, 1.2))
+	var size: float = rng.randf_range(0.06, 0.14)
+	mesh.size = Vector3(size, size * 0.6, size * rng.randf_range(0.8, 1.2))
 	mesh_part.mesh = mesh
-	mesh_part.position = Vector3(randf_range(0.2, 0.8), size * 0.3, randf_range(0.2, 0.8))
-	mesh_part.rotation.y = randf_range(0.0, TAU)
-	var shade: float = randf_range(0.45, 0.62)
+	mesh_part.position = Vector3(rng.randf_range(0.2, 0.8), size * 0.3, rng.randf_range(0.2, 0.8))
+	mesh_part.rotation.y = rng.randf_range(0.0, TAU)
+	var shade: float = rng.randf_range(0.45, 0.62)
 	var color := Color(shade, shade, shade * 1.02)
 	_tag_part(mesh_part, PartType.PEBBLE, color, mesh.size)
 	pebble.add_child(mesh_part)
 
-	_harvest_and_clear(pebble, float(y) - 1.0, false, randf() < ETE_MASQUE_FRACTION)
+	_harvest_and_clear(pebble, float(y) - 1.0, x, z, false, rng.randf() < ETE_MASQUE_FRACTION)
 
 
 ## Marque une MeshInstance3D temporaire comme "piece a recolter" (voir
@@ -382,9 +387,10 @@ func _tag_part(node: MeshInstance3D, part_type: int, color: Color, part_scale: V
 ## MultiMeshInstance3D partage correspondant, puis supprime "root" entier
 ## (pas besoin de garder de noeud racine ici, contrairement aux arbres - une
 ## decoration n'a ni groupe ni metadonnee ni logique de suppression future).
-func _harvest_and_clear(root: Node3D, ground_block_y: float, printemps_seulement: bool = false, masque_en_ete: bool = false) -> void:
+func _harvest_and_clear(root: Node3D, ground_block_y: float, bx: int, bz: int, printemps_seulement: bool = false, masque_en_ete: bool = false) -> void:
 	var parts: Array = []
 	_collect_tagged_parts(root, parts)
+	var col := Vector2i(bx, bz)
 	for node in parts:
 		var part_type: int = node.get_meta("part_type")
 		var color: Color = node.get_meta("part_color")
@@ -402,13 +408,18 @@ func _harvest_and_clear(root: Node3D, ground_block_y: float, printemps_seulement
 		# individuelle).
 		_pending_printemps_seulement[part_type].append(printemps_seulement)
 		_pending_masque_en_ete[part_type].append(masque_en_ete)
-		# Index par niveau de sol (voir doc de _level_buckets) - l'index de
-		# cette instance vient d'etre ajoute juste au-dessus (size() - 1).
+		var new_index: int = _pending_ground_y[part_type].size() - 1
+		# Index par niveau de sol via ViewLevelIndex.gd (voir doc de
+		# _level_buckets) - l'index de cette instance vient d'etre ajoute
+		# juste au-dessus (size() - 1).
 		var lvl: int = int(ground_block_y)
-		var buckets: Dictionary = _level_buckets[part_type]
-		if not buckets.has(lvl):
-			buckets[lvl] = []
-		buckets[lvl].append(_pending_ground_y[part_type].size() - 1)
+		ViewLevelIndexScript.register(_level_buckets[part_type], new_index, lvl)
+		# Index par position au sol (voir doc de _position_buckets, perf
+		# 2026-07-11, I87) - une seule case (bx,bz) par decoration, mais
+		# potentiellement plusieurs pieces (brins d'herbe, tige+bouton).
+		if not _position_buckets.has(col):
+			_position_buckets[col] = []
+		_position_buckets[col].append([part_type, new_index])
 	root.queue_free()
 
 
@@ -479,7 +490,9 @@ func apply_season(season_id: String) -> void:
 func _is_instance_hidden(part_type: int, i: int) -> bool:
 	if _removed_instances[part_type][i]:
 		return true
-	if _pending_ground_y[part_type][i] >= float(_view_level):
+	# Regle de seuil factorisee dans ViewLevelIndex.gd (voir sa doc) - une
+	# decoration dont le sol est EXACTEMENT au niveau de vue reste visible.
+	if ViewLevelIndexScript.is_hidden(int(_pending_ground_y[part_type][i]), _view_level):
 		return true
 	if _pending_printemps_seulement[part_type][i] and _season_id != "printemps":
 		return true
@@ -504,51 +517,49 @@ func _refresh_all_visibility() -> void:
 
 
 ## Version incrementale de _refresh_all_visibility, utilisee pour tout appel
-## de update_view_level APRES le premier (voir sa doc, perf 2026-07-08). Le
-## statut cache/visible d'une instance de niveau de sol L ne peut changer que
-## si L se trouve entre l'ancien et le nouveau niveau de vue, borne haute
-## exclue (min(old,new) <= L < max(old,new)) - regle "hidden = L >= niveau
-## de vue" (voir _is_instance_hidden) : le niveau haut lui-meme reste cache
-## des deux cotes, donc pas besoin de le repasser. On ne parcourt donc que
-## les buckets de _level_buckets dans cet intervalle, au lieu de toutes les
-## instances.
+## de update_view_level APRES le premier (voir sa doc, perf 2026-07-08).
+## Plage/parcours factorises dans ViewLevelIndex.delta_scan (voir sa doc) -
+## le "hidden" qu'elle calcule est ignore ici et recalcule via
+## _is_instance_hidden, qui combine 3 raisons de masquage (mine/niveau de
+## vue/saison), pas seulement le niveau de vue.
 func _apply_view_level_delta(old_level: int, new_level: int) -> void:
-	if old_level == new_level:
-		return
-	var lo: int = min(old_level, new_level)
-	var hi: int = max(old_level, new_level)
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
 	for part_type in _mmi.keys():
 		var buckets: Dictionary = _level_buckets[part_type]
 		var mmi: MultiMeshInstance3D = _mmi[part_type]
 		var xforms: Array = _pending_xforms[part_type]
-		for lvl in range(lo, hi):
-			if not buckets.has(lvl):
-				continue
-			for i in buckets[lvl]:
-				if _is_instance_hidden(part_type, i):
-					mmi.multimesh.set_instance_transform(i, zero_xform)
-				else:
-					mmi.multimesh.set_instance_transform(i, xforms[i])
+		var apply_fn := func(i, _hidden):
+			if _is_instance_hidden(part_type, i):
+				mmi.multimesh.set_instance_transform(i, zero_xform)
+			else:
+				mmi.multimesh.set_instance_transform(i, xforms[i])
+		ViewLevelIndexScript.delta_scan(buckets, old_level, new_level, apply_fn)
 
 
 ## Appelee par Dwarf.gd/_complete_task ("miner") juste apres
 ## VoxelWorld.remove_block. Contrairement aux arbres/buissons, une
 ## decoration n'a pas de noeud propre a liberer : on retrouve la/les
-## instance(s) concernee(s) par leur position au sol (floor(origin.x/z),
-## meme convention que le placement en grille, voir
-## _spawn_grass_tuft/_spawn_flower/_spawn_pebble) et on les met a l'echelle
-## zero de façon PERMANENTE (voir _removed_instances/update_view_level).
+## instance(s) concernee(s) via l'index _position_buckets (perf 2026-07-11,
+## I87 : avant, scan lineaire de TOUTES les instances de la carte a CHAQUE
+## bloc mine) et on les met a l'echelle zero de façon PERMANENTE (voir
+## _removed_instances/update_view_level). L'index est construit a la
+## creation avec les memes coordonnees entieres (x,z) que
+## _spawn_grass_tuft/_spawn_flower/_spawn_pebble, donc equivalent exact de
+## l'ancienne comparaison floor(origin.x/z).
 func remove_decoration_at(bx: int, bz: int) -> void:
+	var col := Vector2i(bx, bz)
+	if not _position_buckets.has(col):
+		return
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
-	for part_type in _mmi.keys():
-		var mmi: MultiMeshInstance3D = _mmi[part_type]
-		var xforms: Array = _pending_xforms[part_type]
+	for entry in _position_buckets[col]:
+		var part_type: int = entry[0]
+		var i: int = entry[1]
 		var removed: Array = _removed_instances[part_type]
-		for i in range(xforms.size()):
-			if removed[i]:
-				continue
-			var origin: Vector3 = xforms[i].origin
-			if int(floor(origin.x)) == bx and int(floor(origin.z)) == bz:
-				mmi.multimesh.set_instance_transform(i, zero_xform)
-				removed[i] = true
+		if removed[i]:
+			continue
+		var mmi: MultiMeshInstance3D = _mmi[part_type]
+		mmi.multimesh.set_instance_transform(i, zero_xform)
+		removed[i] = true
+	# Cette case ne contiendra plus jamais de decoration a retirer (une seule
+	# decoration possible par case, voir _ready) - purge l'index.
+	_position_buckets.erase(col)

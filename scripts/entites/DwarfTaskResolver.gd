@@ -8,6 +8,8 @@ extends RefCounted
 const SkillDefs := preload("res://scripts/data/creatures/nains/caracteristiques/SkillDefinitions.gd")
 const DwarfSkillsScript := preload("res://scripts/entites/DwarfSkills.gd")
 const DwarfResourcePileScript := preload("res://scripts/entites/DwarfResourcePile.gd")
+const VoxelMeshBuilderScript := preload("res://scripts/monde/voxel/VoxelMeshBuilder.gd")
+const GravityScript := preload("res://scripts/systemes/Gravity.gd")
 
 
 ## Point d'entree, une fonction par type de tache appelee via un match
@@ -33,6 +35,10 @@ static func complete_task(dwarf: Node3D) -> void:
 			complete_detruire_task(dwarf)
 		"escalier":
 			complete_escalier_task(dwarf)
+		_:
+			# Type de tache inconnu (faute de frappe/tache mal formee) -
+			# signale au lieu d'ignorer silencieusement (revue de code M86).
+			push_warning("DwarfTaskResolver.complete_task : type de tache inconnu '%s'" % current_task.get("type", ""))
 
 	if skill_id != "":
 		var skills: DwarfSkillsScript = dwarf.get("skills")
@@ -68,7 +74,20 @@ static func complete_miner_task(dwarf: Node3D, skill_id: String) -> void:
 	# miner que "by" est bien ce sommet, sinon on effacerait a tort la
 	# decoration de surface en minant une poche plus bas.
 	var was_top: bool = (by == voxel_world.get_top_block_y(bx, bz))
+	# "trou" classique (jamais un couloir, voir TaskQueue.add_mine_task) : la
+	# vraie surface (SOL) juste au-dessus du bloc mine doit disparaitre AVEC
+	# lui, sinon elle reste "flottante" au-dessus du trou fraichement ouvert
+	# (Francois 2026-07-10, regression du fix "la surface est un objet
+	# reel"). AVANT remove_block, pour que son rebuild_mesh() reflete deja
+	# l'effacement en un seul passage.
+	if current_task.get("clear_sol_above", false):
+		voxel_world.clear_sol(Vector3i(bx, by + 1, bz))
 	var resource_name: String = voxel_world.remove_block(bx, by, bz)
+	# Gravite (Francois 2026-07-10, "un objet tombe jusqu'au premier SOL
+	# disponible") : si ce minage vient de retirer le support d'un tas deja
+	# pose plus bas dans le meme trou (ex: on re-creuse au fond d'un trou deja
+	# creuse), ce tas doit tomber encore - voir Gravity.gd.
+	GravityScript.apply_at_column(dwarf.get_tree(), voxel_world, bx, bz)
 	if was_top:
 		var ground_decoration: Node3D = dwarf.get("ground_decoration")
 		if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
@@ -80,7 +99,13 @@ static func complete_miner_task(dwarf: Node3D, skill_id: String) -> void:
 		# un "trou" creuse depuis la surface), dwarf.global_position resterait
 		# au niveau du DESSUS du trou, pas dedans (bug remonte par Francois
 		# 2026-07-08, meme symptome que l'escalier : tas en apesanteur).
-		var pile_pos := Vector3(bx + 0.5, float(by), bz + 0.5)
+		# +SOL_THICKNESS (Francois 2026-07-10, "la terre n'apparait plus lors
+		# de creuser") : depuis le rendu CUBE+SOL a 2 boites de la
+		# couche-frontiere, une boite SOL opaque occupe desormais
+		# [Y, Y+SOL_THICKNESS] - un tas depose a Y pile aurait ete englouti
+		# dedans (invisible, cache par la boite). Le tas doit reposer SUR le
+		# SOL, pas dedans.
+		var pile_pos := Vector3(bx + 0.5, float(by) + VoxelMeshBuilderScript.SOL_THICKNESS, bz + 0.5)
 		DwarfResourcePileScript.collect_resource(dwarf, resource_name, pile_pos)
 		var skills: DwarfSkillsScript = dwarf.get("skills")
 		var skill_levels: Dictionary = dwarf.get("skill_levels")
@@ -100,6 +125,8 @@ static func complete_escalier_task(dwarf: Node3D) -> void:
 	var bz: int = current_task["bz"]
 	var bottom_y: int = current_task["bottom_y"]
 	var resources: Dictionary = voxel_world.dig_stairs(bx, bz, current_task["top_y"], bottom_y)
+	# Gravite : meme raison que complete_miner_task ci-dessus.
+	GravityScript.apply_at_column(dwarf.get_tree(), voxel_world, bx, bz)
 	var ground_decoration: Node3D = dwarf.get("ground_decoration")
 	if ground_decoration and ground_decoration.has_method("remove_decoration_at"):
 		ground_decoration.remove_decoration_at(bx, bz)
@@ -109,7 +136,9 @@ static func complete_escalier_task(dwarf: Node3D) -> void:
 	# dwarf.global_position (repli par defaut de collect_resource) resterait
 	# fige au sommet, au-dessus du trou nouvellement creuse (bug remonte par
 	# Francois 2026-07-08, capture d'ecran : tas flottant en l'air).
-	var pile_pos := Vector3(bx + 0.5, float(bottom_y), bz + 0.5)
+	# +SOL_THICKNESS : meme raison que complete_miner_task ci-dessus (tas
+	# englouti dans la boite SOL opaque de la couche-frontiere sinon).
+	var pile_pos := Vector3(bx + 0.5, float(bottom_y) + VoxelMeshBuilderScript.SOL_THICKNESS, bz + 0.5)
 	for resource_name in resources:
 		var count: int = resources[resource_name]
 		for i in range(count):
@@ -128,6 +157,9 @@ static func complete_detruire_task(dwarf: Node3D) -> void:
 	var resource_name: String = voxel_world.remove_block(
 		current_task["bx"], current_task["by"], current_task["bz"]
 	)
+	# Gravite : un mur detruit peut aussi retirer le support d'un tas pose
+	# dessus (meme raison que complete_miner_task).
+	GravityScript.apply_at_column(dwarf.get_tree(), voxel_world, current_task["bx"], current_task["bz"])
 	if resource_name != "":
 		DwarfResourcePileScript.collect_resource(dwarf, resource_name)
 

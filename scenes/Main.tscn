@@ -79,12 +79,12 @@ script = ExtResource("12")
 unique_name_in_owner = true
 script = ExtResource("13")
 
-[node name="CloudSystem" type="Node3D" parent="."]
-script = ExtResource("17")
-
 [node name="VoxelWorld" type="Node3D" parent="."]
 unique_name_in_owner = true
 script = ExtResource("2")
+
+[node name="CloudSystem" type="Node3D" parent="."]
+script = ExtResource("17")
 
 [node name="WaterfallShapes" type="Node3D" parent="."]
 unique_name_in_owner = true

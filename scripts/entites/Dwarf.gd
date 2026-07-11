@@ -233,8 +233,6 @@ func _ready() -> void:
 	add_to_group("dwarves")
 	if dwarf_name == "":
 		dwarf_name = NainNames.random_name()
-	if OS.is_debug_build():
-		print("[Spawn nain] %s a (%.1f, %.1f), dans l'eau ? %s" % [dwarf_name, spawn_x, spawn_z, voxel_world.is_water(int(spawn_x), int(spawn_z)) if voxel_world != null else "voxel_world null"])
 	# Generation deleguee a DwarfSkills.gd, Dwarf.gd assigne juste le
 	# resultat a ses propres champs.
 	var chars: Dictionary = skills.generate_characteristics()
@@ -247,12 +245,7 @@ func _ready() -> void:
 	var sk: Dictionary = skills.generate_skills()
 	skill_levels = sk["levels"]
 	skill_xp = sk["xp"]
-	var t0: int = Time.get_ticks_msec()
 	_build_appearance()
-	var build_ms: int = Time.get_ticks_msec() - t0
-	var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
-	if OS.is_debug_build():
-		print("[Perf] Nain '%s' : modele 3D construit en %.2f s (temps ecoule depuis debut de scene : %.1f s)" % [dwarf_name, build_ms / 1000.0, elapsed_since_scene_start_ms / 1000.0])
 	_pick_new_target()
 
 
@@ -531,11 +524,20 @@ func _pick_new_target() -> void:
 	# souterraine juste avant.
 	current_waypoint_mode = "surface"
 	var center: Vector2 = voxel_world.colony_spawn_center if voxel_world != null else Vector2(grid_width / 2.0, grid_depth / 2.0)
-	var x := clampf(center.x + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_width - 1))
-	var z := clampf(center.y + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_depth - 1))
-	var guard := 0
-	while voxel_world.water_depth_at(int(x), int(z)) > 1 and guard < 20:
-		x = clampf(center.x + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_width - 1))
-		z = clampf(center.y + randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_depth - 1))
-		guard += 1
+	# Flux GameRandom dedie ("nains_deplacement") plutot que le RNG global -
+	# reproductibilite par graine isolee des autres systemes (revue de code
+	# M82/M84, meme flux que DwarfMovement.find_dry_target).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_deplacement")
+	var x := clampf(center.x + rng.randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_width - 1))
+	var z := clampf(center.y + rng.randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_depth - 1))
+	# Garde de nullite (revue de code M65/M83) : le calcul de "center"
+	# ci-dessus tolere deja un voxel_world absent (repli sur le centre de
+	# carte), mais la boucle d'evitement d'eau appelle voxel_world directement
+	# - sans cette garde, un voxel_world absent ferait planter cette boucle.
+	if voxel_world != null:
+		var guard := 0
+		while voxel_world.water_depth_at(int(x), int(z)) > 1 and guard < 20:
+			x = clampf(center.x + rng.randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_width - 1))
+			z = clampf(center.y + rng.randf_range(-IDLE_WANDER_RADIUS, IDLE_WANDER_RADIUS), 1.0, float(grid_depth - 1))
+			guard += 1
 	target_position = Vector3(x, ground_level, z)

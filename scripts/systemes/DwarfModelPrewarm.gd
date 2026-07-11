@@ -34,7 +34,6 @@ func _ready() -> void:
 	# prechauffage.
 	if get_index() != 0:
 		push_warning("DwarfModelPrewarm.gd n'est pas le premier noeud de sa scene (index %d) - le prechauffage doit avoir lieu AVANT VoxelWorld pour etre efficace, voir commentaire en tete de fichier." % get_index())
-	var t0: int = Time.get_ticks_msec()
 	var dummy := Node3D.new()
 	dummy.set_script(DwarfModel3DScript)
 	add_child(dummy)
@@ -50,11 +49,4 @@ func _ready() -> void:
 		dummy._rebuild()
 	else:
 		push_warning("DwarfModelPrewarm.gd : DwarfModel3D.gd n'a plus de methode _rebuild() - le prechauffage risque d'etre incomplet.")
-	var elapsed_ms: int = Time.get_ticks_msec() - t0
-	# Instrumentation de perf conditionnee a OS.is_debug_build() - diagnostic
-	# actif (declencheur exact du cout de ~6s toujours incertain, voir
-	# commentaires ci-dessus), mais ne doit pas s'afficher dans un export
-	# final.
-	if OS.is_debug_build():
-		print("[Perf] Prechauffage du modele de nain 3D termine en %.2f s (avant la generation du monde)" % (elapsed_ms / 1000.0))
 	dummy.queue_free()

@@ -9,6 +9,8 @@ extends RefCounted
 ## sont pas visibles via get(), elles doivent donc vivre la ou elles sont
 ## utilisees).
 
+const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+
 ## Facteurs de vitesse = 1/cout - regles de pathing validees avec Francois le
 ## 2026-07-08 (voir memoire "Regles de pathing des nains") : plat=1, eau=3,
 ## denivele sans escalier=2, escalier=1.5.
@@ -194,20 +196,62 @@ static func compute_task_waypoints(dwarf: Node3D, task: Dictionary) -> Array:
 	var bz: int = task["bz"]
 	var target_level: int = task["by"]
 	var current_level: int = int(round(dwarf.global_position.y))
-	if absi(current_level - target_level) <= 1:
+	if absi(current_level - target_level) > 1:
+		var stair: Dictionary = voxel_world.find_connecting_stair(bx, bz, target_level)
+		if not stair.is_empty():
+			var col: Vector2i = stair["column"]
+			var stair_top_pos := Vector3(col.x + 0.5, float(stair["top"]), col.y + 0.5)
+			var stair_bottom_pos := Vector3(col.x + 0.5, float(stair["bottom"]), col.y + 0.5)
+			var target_pos := Vector3(bx + 0.5, float(target_level), bz + 0.5)
+			return [
+				{"position": stair_top_pos, "mode": "surface"},
+				{"position": stair_bottom_pos, "mode": "stair_descent"},
+				{"position": target_pos, "mode": "underground"},
+			]
 		return []
-	var stair: Dictionary = voxel_world.find_connecting_stair(bx, bz, target_level)
-	if stair.is_empty():
-		return []
-	var col: Vector2i = stair["column"]
-	var stair_top_pos := Vector3(col.x + 0.5, float(stair["top"]), col.y + 0.5)
-	var stair_bottom_pos := Vector3(col.x + 0.5, float(stair["bottom"]), col.y + 0.5)
-	var target_pos := Vector3(bx + 0.5, float(target_level), bz + 0.5)
-	return [
-		{"position": stair_top_pos, "mode": "surface"},
-		{"position": stair_bottom_pos, "mode": "stair_descent"},
-		{"position": target_pos, "mode": "underground"},
+	# Couloir (la case visee n'est PAS le vrai sommet de sa colonne, voir
+	# VoxelWorld.can_reach_block) : passer d'abord par la case DEJA OUVERTE
+	# qui donne acces, jamais foncer en ligne droite vers la cible - sinon le
+	# trajet traverse le terrain intact au-dessus (le SOL de surface, encore
+	# plein tout du long) et ne plonge qu'au tout dernier instant, donnant
+	# l'impression fausse de creuser depuis le ciel (Francois 2026-07-10,
+	# bug remonte : "il creuse a travers le SOL de la surface, ce qui est
+	# interdit"). Un "trou" classique (cible = vrai sommet de colonne) n'a
+	# jamais besoin de ce detour : il se creuse toujours depuis la surface.
+	if target_level != voxel_world.get_top_block_y(bx, bz):
+		var entry: Vector3i = _find_entry_neighbor(voxel_world, bx, target_level, bz)
+		var target_cell := Vector3i(bx, target_level, bz)
+		if entry != target_cell:
+			var entry_pos := Vector3(entry.x + 0.5, float(entry.y), entry.z + 0.5)
+			var target_pos2 := Vector3(bx + 0.5, float(target_level), bz + 0.5)
+			return [
+				{"position": entry_pos, "mode": "surface"},
+				{"position": target_pos2, "mode": "underground"},
+			]
+	return []
+
+
+## Cherche, parmi les 6 voisins de la case a miner (bx,by,bz), une case DEJA
+## OUVERTE et accessible (meme regle que VoxelWorld.can_reach_block : un SOL
+## bloque l'acces par le dessus) - c'est par LA qu'un nain doit passer pour
+## miner un couloir. Renvoie Vector3i(bx,by,bz) lui-meme si aucune case
+## d'entree n'est trouvee (repli - ne devrait pas arriver en pratique, la
+## tache n'aurait pas du etre assignee sinon, voir can_reach_block).
+static func _find_entry_neighbor(voxel_world: Node3D, bx: int, by: int, bz: int) -> Vector3i:
+	var target := Vector3i(bx, by, bz)
+	var dirs := [
+		Vector3i(1, 0, 0), Vector3i(-1, 0, 0),
+		Vector3i(0, 0, 1), Vector3i(0, 0, -1),
+		Vector3i(0, -1, 0), Vector3i(0, 1, 0),
 	]
+	for dir in dirs:
+		var n: Vector3i = target + dir
+		if not voxel_world.reachable.has(n):
+			continue
+		if dir == Vector3i(0, 1, 0) and voxel_world.get_sol(n) != VoxelWorldScript.BlockType.EMPTY:
+			continue
+		return n
+	return target
 
 
 ## Cellule de grille (voir _trees_grid/TREE_GRID_CELL_SIZE) contenant une
@@ -291,10 +335,14 @@ static func find_dry_target(dwarf: Node3D) -> Vector3:
 	var grid_width: int = dwarf.get("grid_width")
 	var grid_depth: int = dwarf.get("grid_depth")
 	var voxel_world: Node3D = dwarf.get("voxel_world")
+	# Flux GameRandom dedie ("nains_deplacement") plutot que le RNG global -
+	# reproductibilite par graine, meme flux que Dwarf._pick_new_target
+	# (revue de code M84).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("nains_deplacement")
 	var guard := 0
 	while guard < 20:
-		var x := randf_range(1.0, float(grid_width - 1))
-		var z := randf_range(1.0, float(grid_depth - 1))
+		var x := rng.randf_range(1.0, float(grid_width - 1))
+		var z := rng.randf_range(1.0, float(grid_depth - 1))
 		if not voxel_world.is_water(int(x), int(z)):
 			return Vector3(x, ground_y_at(dwarf, x, z), z)
 		guard += 1

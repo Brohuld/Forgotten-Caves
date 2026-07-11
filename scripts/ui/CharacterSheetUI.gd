@@ -28,6 +28,9 @@ const PortraitRendererScript := preload("res://scripts/ui/PortraitRenderer.gd")
 ## couteuse du chargement) donc le bon endroit pour afficher le temps total
 ## ecoule depuis le tout debut de la scene.
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
+## _task_description delegue a hover_task_description (meme logique, voir
+## revue de code M77) - evite la duplication du if/elif entre les deux scripts.
+const ActionInspectorScript := preload("res://scripts/systemes/ActionInspector.gd")
 
 const ICON_SIZE := 72
 const ICON_MARGIN := 16
@@ -72,28 +75,12 @@ func _ready() -> void:
 	# Mesure a l'ENTREE de ce script (donc APRES la generation du monde ET
 	# apres la creation des nains eux-memes, qui ont deja du construire leur
 	# propre modele 3D pour exister dans le groupe "dwarves" - voir Dwarf.gd)
-	# - permet d'isoler le cout de la boucle ci-dessous (_create_entry, qui
-	# construit un DEUXIEME modele 3D par nain pour le portrait, voir
-	# PortraitRenderer.gd) du reste du chargement. Les print() de perf de
-	# cette fonction sont conditionnes a OS.is_debug_build() : diagnostic
-	# garde au cas ou un ecart de chargement resurgirait, mais ne doit pas
-	# s'afficher dans un export final.
-	var elapsed_before_portraits_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
-	if OS.is_debug_build():
-		print("[Perf] Debut de CharacterSheetUI (nains deja crees), temps ecoule : %.1f s" % (elapsed_before_portraits_ms / 1000.0))
-
 	var dwarves: Array = get_tree().get_nodes_in_group("dwarves")
-	dwarves.sort_custom(func(a, b): return a.name < b.name)
+	# Tri par dwarf_name (nom affiche au joueur) plutot que le nom de noeud
+	# Godot (souvent juste "Dwarf2"), voir revue de code M78.
+	dwarves.sort_custom(func(a, b): return a.dwarf_name < b.dwarf_name)
 	for i in range(dwarves.size()):
 		_create_entry(dwarves[i], i)
-
-	# Dernier script a finir son _ready() (voir ordre des noeuds dans
-	# Main.tscn) - affiche le temps total ecoule depuis le debut de la scene,
-	# pour comparer avec les mesures de GroundDecoration.gd et diagnostiquer
-	# si besoin l'ecart entre la generation du monde et le lancement complet.
-	var elapsed_since_scene_start_ms: int = Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms
-	if OS.is_debug_build():
-		print("[Perf] Chargement complet (fiches + portraits 3D) termine, temps total depuis le debut de la scene : %.1f s" % (elapsed_since_scene_start_ms / 1000.0))
 
 
 ## Construit l'anneau de selection d'UN nain et l'ajoute au parent 3D (Main),
@@ -564,18 +551,6 @@ func _process(_delta: float) -> void:
 
 
 func _task_description(dwarf) -> String:
-	if dwarf.is_working:
-		return String(dwarf.current_task.get("type", "?")).capitalize()
-	elif dwarf.is_resting:
-		return "Repos"
-	elif dwarf.is_eating:
-		# Le nain mange directement depuis l'inventaire (pas de trajet
-		# jusqu'a un buisson, voir Dwarf.gd/_try_start_eating) - un seul etat
-		# "Manger" suffit, sans deplacement associe.
-		return "Manger"
-	elif dwarf.is_drinking:
-		# Meme principe que "Manger" ci-dessus, pour la soif.
-		return "Boire"
-	elif not dwarf.current_task.is_empty():
-		return String(dwarf.current_task.get("type", "?")).capitalize()
-	return "Errance"
+	# Logique identique a ActionInspector.hover_task_description - deleguee
+	# pour ne pas dupliquer le if/elif (voir revue de code M77).
+	return ActionInspectorScript.hover_task_description(dwarf)

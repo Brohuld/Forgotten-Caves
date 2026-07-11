@@ -94,7 +94,7 @@ const LIGHT_COLOR := [
 const LIGHT_ENERGY := [0.68, 0.89, 0.58, 0.06]
 ## La lumiere ambiante (WorldEnvironment.environment.ambient_light_energy)
 ## varie avec les memes phases que LIGHT_ENERGY, pour une nuit vraiment
-## sombre (voir aussi VoxelWorld._make_material / Forest._flat_material, qui
+## sombre (voir aussi VoxelWorld._make_material / ForestGeometryBuilder.flat_material, qui
 ## doivent rester en mode d'ombrage normal - pas SHADING_MODE_UNSHADED - pour
 ## que l'assombrissement nocturne s'applique). L'ambiant est la source
 ## dominante de luminosite en journee (superieure a LIGHT_ENERGY) precisement

@@ -11,9 +11,30 @@ const VeinMaterials := preload("res://scripts/data/materiaux/types/VeinMaterials
 const TreeSpecies := preload("res://scripts/data/materiaux/types/bois/TreeSpecies.gd")
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const NightDarkenScript := preload("res://scripts/systemes/NightDarken.gd")
+const HoverableScript := preload("res://scripts/systemes/Hoverable.gd")
+const ViewLevelIndexScript := preload("res://scripts/systemes/ViewLevelIndex.gd")
 
 const PILE_MERGE_RADIUS := 1.2
 const PILE_MAX_SCALE := 1.8
+
+## Rayon/hauteur du collider de detection souris (voir Hoverable.gd) - petit
+## et centre au sol, un tas n'a pas de volume vertical notable. Herite
+## automatiquement de pile.scale (grossit avec le compte, voir
+## add_to_resource_pile) puisque le collider est un enfant direct du tas.
+const PILE_HOVER_RADIUS := 0.5
+const PILE_HOVER_HEIGHT := 0.6
+
+
+## Attache le collider de detection souris (voir Hoverable.gd) + la
+## metadonnee "hover_kind" (voir EntityDescriptions.describe_by_kind) -
+## factorise car appele aux deux points de creation d'un tas
+## (add_to_resource_pile et spawn_starting_wood_stock).
+static func _attach_hover_collider(pile: Node3D) -> void:
+	pile.set_meta("hover_kind", "pile")
+	var shape := CylinderShape3D.new()
+	shape.radius = PILE_HOVER_RADIUS
+	shape.height = PILE_HOVER_HEIGHT
+	HoverableScript.attach(pile, shape, Vector3(0, PILE_HOVER_HEIGHT * 0.5, 0))
 
 ## Stock de bois de depart au lancement d'une partie, pour pouvoir tester la
 ## construction sans attendre d'avoir coupe des arbres. Rayon reduit pour
@@ -46,8 +67,6 @@ static func collect_resource(dwarf: Node3D, resource_name: String, pos_override 
 	inventory.add_resource(resource_name, 1)
 	var pos: Vector3 = pos_override if pos_override != null else dwarf.global_position
 	add_to_resource_pile(dwarf, resource_name, pos)
-	if OS.is_debug_build():
-		print("Recolte : +1 %s (total %d)" % [resource_name, inventory.get_count(resource_name)])
 
 
 ## Cherche un tas existant du meme type de ressource a proximite ; l'agrandit
@@ -65,7 +84,7 @@ static func add_to_resource_pile(dwarf: Node3D, resource_name: String, pos: Vect
 	pile.set_meta("resource_name", resource_name)
 	pile.set_meta("count", 1)
 	# Niveau du bloc de terrain sous le tas, pour le masquage par niveau de
-	# vue (voir update_view_level plus bas, meme regle >= que Forest.gd/
+	# vue (voir update_view_level plus bas, meme regle que Forest.gd/
 	# BerryBushes.gd/GroundDecoration.gd). "voxel_world" expose sur le nain
 	# (Dwarf.gd) - repli sur pos.y - 1.0 (convention "position = sommet du
 	# bloc + 1", voir spawn_starting_wood_stock) si introuvable.
@@ -73,7 +92,13 @@ static func add_to_resource_pile(dwarf: Node3D, resource_name: String, pos: Vect
 	var ground_block_y: int = voxel_world.get_top_block_y(int(pos.x), int(pos.z)) if voxel_world != null else int(pos.y - 1.0)
 	pile.set_meta("ground_block_y", ground_block_y)
 	dwarf.get_parent().add_child(pile)
-	build_pile_visual(pile, resource_name)
+	# "dwarf" plutot que "pile" pour resoudre %DayNightCycle (corrige I85
+	# 2026-07-11, voir doc de build_pile_visual) - ici "pile" est deja dans
+	# l'arbre (add_child direct, pas differe), donc pas strictement necessaire
+	# pour CET appel, mais reste coherent avec l'autre appelant
+	# (spawn_starting_wood_stock) qui, lui, en a besoin.
+	build_pile_visual(pile, resource_name, dwarf.get_node_or_null("%DayNightCycle"))
+	_attach_hover_collider(pile)
 
 
 static func find_nearby_pile(dwarf: Node3D, resource_name: String, pos: Vector3) -> Node3D:
@@ -85,20 +110,22 @@ static func find_nearby_pile(dwarf: Node3D, resource_name: String, pos: Vector3)
 	return null
 
 
-## Masque/affiche tous les tas au sol selon le niveau de vue courant - meme
-## regle que Forest.gd/BerryBushes.gd/GroundDecoration.gd
-## (_is_instance_hidden) : un tas est cache des que le niveau de son bloc de
-## terrain (meta "ground_block_y", pose a la creation) atteint le niveau de
-## vue (>=), pas seulement quand on le depasse (le "dessus" a ce niveau est
-## desormais un capuchon non-marchable, plus le vrai sol, voir
-## VoxelMeshBuilder._add_boundary_cube_faces). Simple Node3D individuels (pas
-## de MultiMesh ici) : on bascule juste "visible", pas besoin de l'astuce
-## d'echelle quasi-nulle utilisee ailleurs. Appele par
-## CameraRig._update_view_level().
+## Masque/affiche tous les tas au sol selon le niveau de vue courant, via
+## ViewLevelIndex.gd (regle de seuil generique, voir sa doc) - meme regle que
+## Forest.gd/BerryBushes.gd/GroundDecoration.gd. Simple Node3D individuels
+## (pas de MultiMesh ici, pas assez nombreux pour justifier l'indexation par
+## bucket/scan incremental) : un scan complet a chaque cran de molette
+## suffit. Appele par CameraRig._update_view_level().
 static func update_view_level(tree: SceneTree, view_level: int) -> void:
-	for pile in tree.get_nodes_in_group("resource_piles"):
-		var ground_block_y: int = int(pile.get_meta("ground_block_y", -999))
-		pile.visible = ground_block_y < view_level
+	var piles: Array = tree.get_nodes_in_group("resource_piles")
+	var ground_y_fn := func(pile): return int(pile.get_meta("ground_block_y", -999))
+	# Le collider de survol (voir Hoverable.gd) doit suivre la meme regle que
+	# "visible" - sinon un tas cache par la coupe resterait detectable par
+	# le survol/ciblage.
+	var apply_fn := func(pile, hidden):
+		pile.visible = not hidden
+		HoverableScript.set_enabled(pile, not hidden)
+	ViewLevelIndexScript.full_scan(piles, view_level, ground_y_fn, apply_fn)
 
 
 ## Cree STARTING_WOOD_PILE_COUNT tas de bois de STARTING_WOOD_PILE_SIZE
@@ -147,10 +174,17 @@ static func spawn_starting_wood_stock(parent: Node3D, voxel_world: Node3D, inven
 		# "Parent node is busy setting up children". call_deferred() reporte
 		# l'ajout au prochain traitement d'image, une fois l'arbre stable.
 		parent.add_child.call_deferred(pile)
-		build_pile_visual(pile, resource_name)
+		# "parent" (deja dans l'arbre, voir commentaire ci-dessus) plutot que
+		# "pile" pour resoudre %DayNightCycle (corrige I85 2026-07-11) : "pile"
+		# n'est PAS encore dans l'arbre a cet instant (ajout differe juste
+		# au-dessus), donc pile.get_node_or_null("%DayNightCycle") renvoyait
+		# toujours null ici, et NightDarkenScript.night_factor(null) son repli
+		# documente 0.0 - les tas de bois de depart n'etaient donc JAMAIS
+		# assombris la nuit, silencieusement, quelle que soit l'heure de depart
+		# de la partie.
+		build_pile_visual(pile, resource_name, parent.get_node_or_null("%DayNightCycle"))
+		_attach_hover_collider(pile)
 		inventory.add_resource(resource_name, STARTING_WOOD_PILE_SIZE)
-		if OS.is_debug_build():
-			print("[Stock depart] pile %d/%d creee : %s x%d a (%.1f, %.1f, %.1f), dans l'eau ? %s" % [i + 1, STARTING_WOOD_PILE_COUNT, resource_name, STARTING_WOOD_PILE_SIZE, x, y, z, voxel_world.is_water(int(x), int(z))])
 		# Le compteur GENERIQUE "bois" (seul lu par la construction et le
 		# StatsLabel, voir ActionController._update_stats_label) doit aussi
 		# etre alimente en plus du compteur par essence ci-dessus.
@@ -160,14 +194,21 @@ static func spawn_starting_wood_stock(parent: Node3D, voxel_world: Node3D, inven
 
 ## Petit tas de 3-4 morceaux colores pose au sol a l'endroit de la recolte -
 ## visuel construit une seule fois a la creation du tas.
-static func build_pile_visual(pile: Node3D, resource_name: String) -> void:
+## "day_night_cycle" recu en parametre plutot que resolu ici via
+## pile.get_node_or_null("%DayNightCycle") (corrige I85 2026-07-11) : au
+## moment de cet appel, "pile" n'est pas toujours deja dans l'arbre de scene
+## (voir spawn_starting_wood_stock, qui differe son add_child) - une
+## resolution de nom unique depuis "pile" y renvoyait donc toujours null.
+## Chaque appelant fournit desormais un noeud deja garanti dans l'arbre a cet
+## instant (dwarf/parent selon le cas).
+static func build_pile_visual(pile: Node3D, resource_name: String, day_night_cycle: Node = null) -> void:
 	var color := resource_color(resource_name)
 	# Assombrissement nocturne applique une seule fois a la construction
 	# (avant la branche bois, qui retourne tot, pour couvrir aussi
 	# build_wood_bundle_visual) - ce tas ne continuera pas a s'assombrir/
 	# eclaircir tout seul apres coup, contrairement aux nuages qui ont leur
 	# propre _process() (voir limite documentee en tete de NightDarken.gd).
-	var night_factor: float = NightDarkenScript.night_factor(pile.get_node_or_null("%DayNightCycle"))
+	var night_factor: float = NightDarkenScript.night_factor(day_night_cycle)
 	color = NightDarkenScript.apply(color, night_factor, NIGHT_TINT, NIGHT_DARKEN_STRENGTH)
 	if resource_name.begins_with("bois"):
 		build_wood_bundle_visual(pile, color)

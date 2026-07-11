@@ -20,6 +20,14 @@ extends Node3D
 const BerryTypes := preload("res://scripts/data/materiaux/types/baies/BerryTypes.gd")
 const DayNightCycleScript := preload("res://scripts/systemes/DayNightCycle.gd")
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
+const HoverableScript := preload("res://scripts/systemes/Hoverable.gd")
+const ViewLevelIndexScript := preload("res://scripts/systemes/ViewLevelIndex.gd")
+
+## Rayon/hauteur du collider de detection souris (voir Hoverable.gd) - un peu
+## plus large que BUSH_BODY_RADIUS pour couvrir aussi les baies visibles en
+## surface. Herite de bush.scale (size_multiplier, voir _spawn_bush).
+const BUSH_HOVER_RADIUS := 0.6
+const BUSH_HOVER_HEIGHT := 1.0
 
 @onready var voxel_world: Node3D = %VoxelWorld
 
@@ -112,8 +120,6 @@ signal generation_finished
 var generation_done: bool = false
 
 func _ready() -> void:
-	if OS.is_debug_build():
-		print("[Perf] BerryBushes (buissons) : debut a %.1f s depuis le debut de la scene" % ((Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0))
 	_build_shared_meshes()
 	var tile_count: float = float(grid_width * grid_depth)
 	var bush_count: int = int(round(bush_density_per_1000_tiles * tile_count / 1000.0))
@@ -122,8 +128,6 @@ func _ready() -> void:
 		if (i + 1) % BATCH_SIZE == 0:
 			await get_tree().process_frame
 	_apply_pending_instances()
-	if OS.is_debug_build():
-		print("[Perf] BerryBushes (buissons) : fin (%d buissons) a %.1f s depuis le debut de la scene" % [bush_count, (Time.get_ticks_msec() - DayNightCycleScript.scene_start_ms) / 1000.0])
 	generation_done = true
 	generation_finished.emit()
 
@@ -162,7 +166,10 @@ func _regrow_one_berry() -> void:
 			candidates.append(bush)
 	if candidates.is_empty():
 		return
-	var bush: Node3D = candidates[randi() % candidates.size()]
+	# Flux GameRandom dedie ("baies_geometrie") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M88), meme flux que
+	# _place_berry/_pick_dry_position/_build_plant_visual ci-dessous.
+	var bush: Node3D = candidates[GameRandom.get_rng("baies_geometrie").randi() % candidates.size()]
 	var new_index: int = int(bush.get_meta("fruits_left"))
 	bush.set_meta("fruits_left", new_index + 1)
 	_build_one_berry(bush, new_index)
@@ -198,19 +205,22 @@ func _place_berry(bush: Node3D, index: int, categorie: String, berry_type: Dicti
 	# Forest.gd.
 	berry_mesh.radial_segments = BERRY_SPHERE_RADIAL_SEGMENTS
 	berry_mesh.rings = BERRY_SPHERE_RINGS
+	# Flux GameRandom dedie ("baies_geometrie") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M88).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("baies_geometrie")
 	var pos: Vector3
 	if categorie == "plante":
 		berry_mesh.radius = 0.10
 		berry_mesh.height = 0.20
-		var angle: float = index * TAU / float(BERRIES_PER_BUSH) + randf_range(-0.3, 0.3)
-		var dist: float = randf_range(0.10, 0.24)
+		var angle: float = index * TAU / float(BERRIES_PER_BUSH) + rng.randf_range(-0.3, 0.3)
+		var dist: float = rng.randf_range(0.10, 0.24)
 		pos = Vector3(cos(angle) * dist, 0.20, sin(angle) * dist)
 	else:
 		berry_mesh.radius = 0.055
 		berry_mesh.height = 0.11
-		var angle2: float = index * TAU / float(BUISSON_BERRIES_COUNT) + randf_range(-0.15, 0.15)
-		var elev2: float = randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
-		var dist2: float = BUSH_BODY_RADIUS * randf_range(1.05, 1.2)
+		var angle2: float = index * TAU / float(BUISSON_BERRIES_COUNT) + rng.randf_range(-0.15, 0.15)
+		var elev2: float = rng.randf_range(deg_to_rad(-90.0), deg_to_rad(90.0))
+		var dist2: float = BUSH_BODY_RADIUS * rng.randf_range(1.05, 1.2)
 		pos = Vector3(
 			cos(elev2) * cos(angle2) * dist2,
 			BUSH_BODY_CENTER_Y + sin(elev2) * dist2,
@@ -270,12 +280,15 @@ func _make_box_mesh(size: Vector3) -> BoxMesh:
 
 ## Tire une position au hasard en rejetant l'eau (voir VoxelWorld.is_water).
 func _pick_dry_position() -> Vector2:
-	var x := randf_range(2.0, float(grid_width - 2))
-	var z := randf_range(2.0, float(grid_depth - 2))
+	# Flux GameRandom dedie ("baies_geometrie") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M88).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("baies_geometrie")
+	var x := rng.randf_range(2.0, float(grid_width - 2))
+	var z := rng.randf_range(2.0, float(grid_depth - 2))
 	var guard := 0
 	while voxel_world != null and voxel_world.is_water(int(x), int(z)) and guard < 20:
-		x = randf_range(2.0, float(grid_width - 2))
-		z = randf_range(2.0, float(grid_depth - 2))
+		x = rng.randf_range(2.0, float(grid_width - 2))
+		z = rng.randf_range(2.0, float(grid_depth - 2))
 		guard += 1
 	return Vector2(x, z)
 
@@ -305,17 +318,16 @@ func _spawn_bush() -> void:
 	bush.add_to_group("cueillette")
 	bush.add_to_group("bushes")  # groupe dedie pour update_view_level (distinct de "cueillette", partage avec les arbres fruitiers)
 
-	# Index par niveau de sol (voir doc de _level_buckets).
+	# Index par niveau de sol via ViewLevelIndex.gd (voir doc de _level_buckets).
 	var _ground_lvl: int = int(bush.position.y - 1.0)
-	if not _level_buckets.has(_ground_lvl):
-		_level_buckets[_ground_lvl] = []
-	_level_buckets[_ground_lvl].append(bush)
+	ViewLevelIndexScript.register(_level_buckets, bush, _ground_lvl)
 
 	var categorie: String = berry_type.get("categorie", "buisson")
 	bush.set_meta("fruit_resource", berry_type["id"])
 	bush.set_meta("fruits_left", _berries_count_for(categorie))
 	bush.set_meta("species_name", berry_type["nom"])
 	bush.set_meta("categorie", categorie)  # necessaire pour reconstruire une baie au bon endroit quand elle repousse (voir _build_one_berry)
+	bush.set_meta("hover_kind", "gatherable")  # voir EntityDescriptions.describe_by_kind
 	bush.scale = Vector3.ONE * size_multiplier  # meme mecanisme que Forest.gd/tree.scale, ancre au sol
 	add_child(bush)
 
@@ -327,6 +339,15 @@ func _spawn_bush() -> void:
 	# Recolte le corps/les feuilles temporaires dans les MultiMesh partages,
 	# et les supprime - seules les baies ("Fruit_%d") restent enfants de "bush".
 	_harvest_and_clear(bush)
+
+	# Collider de detection souris (voir Hoverable.gd) - DOIT venir APRES
+	# _harvest_and_clear() : celle-ci supprime tout enfant de "bush" dont le
+	# nom ne commence pas par "Fruit_" - attache avant, le collider etait
+	# detruit aussitot.
+	var hover_shape := CylinderShape3D.new()
+	hover_shape.radius = BUSH_HOVER_RADIUS
+	hover_shape.height = BUSH_HOVER_HEIGHT
+	HoverableScript.attach(bush, hover_shape, Vector3(0, BUSH_HOVER_HEIGHT * 0.5, 0))
 
 
 ## Visuel "buisson" (myrtille/groseille/cassis) : boule de feuillage + baies
@@ -356,17 +377,20 @@ func _build_bush_visual(bush: Node3D, berry_type: Dictionary) -> void:
 ## du sol qu'un buisson.
 func _build_plant_visual(bush: Node3D, berry_type: Dictionary) -> void:
 	var leaf_color := Color(0.20, 0.42, 0.16)
-	var leaf_count := randi_range(6, 9)
+	# Flux GameRandom dedie ("baies_geometrie") plutot que le RNG global -
+	# reproductibilite par graine (revue de code M88).
+	var rng: RandomNumberGenerator = GameRandom.get_rng("baies_geometrie")
+	var leaf_count := rng.randi_range(6, 9)
 	for i in range(leaf_count):
 		var leaf := MeshInstance3D.new()
 		var mesh := BoxMesh.new()
-		mesh.size = Vector3(randf_range(0.12, 0.18), 0.015, randf_range(0.07, 0.11))
+		mesh.size = Vector3(rng.randf_range(0.12, 0.18), 0.015, rng.randf_range(0.07, 0.11))
 		leaf.mesh = mesh
-		var angle := randf_range(0.0, TAU)
-		var dist := randf_range(0.05, 0.22)
-		leaf.position = Vector3(cos(angle) * dist, 0.06 + randf_range(0.0, 0.05), sin(angle) * dist)
-		leaf.rotation.y = angle + randf_range(-0.4, 0.4)
-		leaf.rotation.x = randf_range(-0.15, 0.15)
+		var angle := rng.randf_range(0.0, TAU)
+		var dist := rng.randf_range(0.05, 0.22)
+		leaf.position = Vector3(cos(angle) * dist, 0.06 + rng.randf_range(0.0, 0.05), sin(angle) * dist)
+		leaf.rotation.y = angle + rng.randf_range(-0.4, 0.4)
+		leaf.rotation.x = rng.randf_range(-0.15, 0.15)
 		var leaf_mat := StandardMaterial3D.new()
 		leaf_mat.albedo_color = leaf_color
 		leaf_mat.roughness = 1.0
@@ -504,38 +528,28 @@ func _apply_bush_visibility(bush: Node3D, hidden: bool, zero_xform: Transform3D)
 			# "and not _winter_active" evite de reafficher des baies deja
 			# cachees par l'hiver quand update_view_level() est rappele.
 			child.visible = not hidden and not _winter_active
+	# Le collider de survol (voir Hoverable.gd) doit suivre la meme regle que
+	# le visuel MultiMesh ci-dessus - sinon un buisson/plante cache par la
+	# coupe resterait detectable par le survol/ciblage.
+	HoverableScript.set_enabled(bush, not hidden)
 
 
 ## Scan complet (tout le groupe "bushes") - utilise uniquement pour le tout
 ## premier appel de update_view_level (voir sa doc).
 func _apply_view_level_full(level: int) -> void:
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
-	for bush in get_tree().get_nodes_in_group("bushes"):
-		var ground_block_y: float = bush.position.y - 1.0
-		# >= et non > (Francois 2026-07-08) : depuis que la couche-frontiere
-		# n'affiche plus le vrai sol (herbe) mais un capuchon sombre (voir
-		# VoxelMeshBuilder._add_boundary_cube_faces), un buisson dont le sol
-		# est EXACTEMENT au niveau de vue doit lui aussi disparaitre - son
-		# "sol" n'est plus represente comme praticable a ce niveau precis.
-		var hidden: bool = ground_block_y >= float(level)
-		_apply_bush_visibility(bush, hidden, zero_xform)
+	var bushes: Array = get_tree().get_nodes_in_group("bushes")
+	var ground_y_fn := func(bush): return int(bush.position.y - 1.0)
+	var apply_fn := func(bush, hidden): _apply_bush_visibility(bush, hidden, zero_xform)
+	ViewLevelIndexScript.full_scan(bushes, level, ground_y_fn, apply_fn)
 
 
 ## Scan incremental : ne touche que les buissons dont le niveau de sol se
 ## trouve entre l'ancien et le nouveau niveau de vue (voir doc de
-## _level_buckets). Bornes [lo, hi) (et non [lo+1, hi]) : coherent avec la
-## regle ">=" ci-dessus (Francois 2026-07-08).
+## _level_buckets et de ViewLevelIndex.delta_scan).
 func _apply_view_level_delta(old_level: int, new_level: int) -> void:
-	if old_level == new_level:
-		return
-	var lo: int = min(old_level, new_level)
-	var hi: int = max(old_level, new_level)
 	var zero_xform := Transform3D(Basis().scaled(Vector3.ONE * HIDDEN_INSTANCE_SCALE), Vector3.ZERO)
-	for lvl in range(lo, hi):
-		if not _level_buckets.has(lvl):
-			continue
-		for bush in _level_buckets[lvl]:
-			if not is_instance_valid(bush):
-				continue
-			var hidden: bool = float(lvl) >= float(new_level)
+	var apply_fn := func(bush, hidden):
+		if is_instance_valid(bush):
 			_apply_bush_visibility(bush, hidden, zero_xform)
+	ViewLevelIndexScript.delta_scan(_level_buckets, old_level, new_level, apply_fn)

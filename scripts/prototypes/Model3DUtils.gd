@@ -9,7 +9,7 @@ extends RefCounted
 
 
 ## Materiau plat non eclaire, coherent avec le style du reste du jeu
-## (terrain, arbres, decorations, outils - voir Forest.gd/_flat_material).
+## (terrain, arbres, decorations, outils - voir ForestGeometryBuilder.flat_material).
 ## "double_sided" desactive le retrait des faces arriere - utilise pour des
 ## meshes dont le sens des triangles n'est pas garanti face par face.
 static func flat_material(color: Color, double_sided: bool = false) -> StandardMaterial3D:

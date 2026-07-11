@@ -25,9 +25,17 @@ GameRandom="*res://scripts/systemes/GameRandom.gd"
 
 [display]
 
+; Resolution calee sur l'ecran de developpement (revue de code M79/M108,
+; 2026-07-11) - aucun mode "stretch" configure pour l'instant. Documente
+; seulement pour le moment (decision Francois) : a verifier/adapter le jour
+; d'un portage Mac/iPad/iPhone avec d'autres resolutions/ratios.
 window/size/viewport_width=4160
 window/size/viewport_height=2340
 
 [gui]
 
 theme/custom="res://themes/DefaultTheme.tres"
+
+[layer_names]
+
+3d_physics/layer_3="Survolable (souris) - voir Hoverable.gd"

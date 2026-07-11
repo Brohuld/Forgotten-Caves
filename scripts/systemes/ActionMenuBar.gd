@@ -13,6 +13,14 @@ extends RefCounted
 ## les boutons crees - c'est l'appelant (ActionController.gd) qui connecte les
 ## signaux et garde la logique de mode/selection, ce fichier ne fait QUE
 ## construire l'UI.
+##
+## PORTABILITE (note ouverte, revue de code M100, 2026-07-11) : chaque entree
+## a un raccourci clavier physique ("shortcut"), sans equivalent tactile
+## dedie - les boutons eux-memes restent tactiles (vrais Button Godot,
+## tapables normalement), seuls les raccourcis lettre necessitent un clavier.
+## Volontairement documente ici sans action pour l'instant (decision
+## Francois 2026-07-11) - a traiter dans un futur chantier iPad/iPhone si/
+## quand il devient prioritaire (voir aussi CameraRig.gd).
 
 const IconRendererScript := preload("res://scripts/systemes/IconRenderer.gd")
 

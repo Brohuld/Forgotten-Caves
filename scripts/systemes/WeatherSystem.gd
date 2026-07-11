@@ -113,7 +113,10 @@ const SEASON_WEATHER_POOLS := {
 
 
 func _ready() -> void:
-	_time_left = randf_range(min_weather_duration, max_weather_duration)
+	# Flux GameRandom dedie ("meteo") plutot que le RNG global -
+	# reproductibilite par graine isolee des autres systemes (corrige I81
+	# 2026-07-11, voir doc GameRandom.gd).
+	_time_left = GameRandom.get_rng("meteo").randf_range(min_weather_duration, max_weather_duration)
 	_rain_particles = _build_particles(false)
 	_snow_particles = _build_particles(true)
 	add_child(_rain_particles)
@@ -154,14 +157,30 @@ func _pick_new_weather() -> void:
 	# ClimateDefs.season_id_or_default.
 	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var choices: Array = SEASON_WEATHER_POOLS.get(season_id, SEASON_WEATHER_POOLS["ete"])
-	current_weather = choices[randi() % choices.size()]
-	_time_left = randf_range(min_weather_duration, max_weather_duration)
+	var rng: RandomNumberGenerator = GameRandom.get_rng("meteo")
+	current_weather = choices[rng.randi() % choices.size()]
+	_time_left = rng.randf_range(min_weather_duration, max_weather_duration)
 	_apply_particles()
 
 
 func _apply_particles() -> void:
 	_rain_particles.emitting = current_weather == Weather.PLUIE
 	_snow_particles.emitting = current_weather == Weather.NEIGE
+
+
+## Force la meteo visible a "Neige" pour une duree donnee - utilise par
+## TemperatureSystem.gd pendant une vague de froid (Francois 2026-07-11 :
+## "temps=neige, sol gele=VRAI" pour toute la duree de l'episode). Nom
+## explicite plutot qu'un parametre Weather generique, pour que
+## TemperatureSystem.gd n'ait pas besoin de resoudre l'enum Weather (meme
+## raison que is_snowing()/current_weather_label ci-dessous). Le tirage
+## aleatoire normal (_pick_new_weather) reprend son cours des que _time_left
+## retombe a 0, sans synchronisation supplementaire - l'appelant passe la
+## meme duree que celle de l'episode.
+func force_snow(duration: float) -> void:
+	current_weather = Weather.NEIGE
+	_time_left = duration
+	_apply_particles()
 
 
 ## Petits accesseurs typés (bool/String/Color), pour que d'autres scripts

@@ -12,6 +12,16 @@ extends Node3D
 ## sans ca, changer de niveau ne ferait que deplacer la camera en Y, sans
 ## rien cacher du terrain (inutile pour "voir" un niveau souterrain, puisque
 ## tout est plein autour).
+##
+## PORTABILITE (note ouverte, revue de code I76, 2026-07-11) : tous les
+## controles ci-dessus dependent d'un clavier physique et/ou d'une molette de
+## souris (ZQSD, +/-, molette simple/Ctrl+molette, clic molette+glisser).
+## Aucun equivalent tactile n'existe pour l'instant (pincement, glisser a
+## deux doigts...) pour le changement de niveau de vue ou le zoom sur
+## iPad/iPhone. Volontairement documente ici sans implementation de geste
+## tactile pour l'instant (decision Francois 2026-07-11) - a traiter dans un
+## chantier dedie au support tactile iPad/iPhone si/quand il devient
+## prioritaire.
 
 const VoxelWorldScript := preload("res://scripts/monde/VoxelWorld.gd")
 ## Pour son update_view_level() statique (voir _update_view_level plus bas) -
@@ -32,12 +42,10 @@ const DwarfResourcePileScript := preload("res://scripts/entites/DwarfResourcePil
 ## Lit directement VoxelWorld.HEIGHT (source unique) au lieu d'un nombre
 ## duplique en dur derriere un @export.
 const grid_height := VoxelWorldScript.HEIGHT
-## Doit correspondre a VoxelWorld.VIEW_LEVEL_MARGIN_ABOVE - permet de monter
-## au-dessus du niveau 0 (relief).
-@export var view_level_margin_above: int = 15
-## Doit correspondre a VoxelWorld.hill_amplitude pour que la camera demarre
-## assez haut pour voir le sommet des collines.
-@export var hill_amplitude: float = 3.0
+## Meme principe que grid_height ci-dessus (revue de code M102) : lu
+## directement depuis la const de VoxelWorld.gd au lieu d'un @export duplique
+## qui pouvait se desynchroniser silencieusement.
+const view_level_margin_above := VoxelWorldScript.VIEW_LEVEL_MARGIN_ABOVE
 
 var current_level: int = 49  # sommet de la carte (grid_height - 1), ajuste en _ready()
 var camera_distance: float = 16.0
@@ -84,6 +92,13 @@ func _ready() -> void:
 	# Demarre au-dessus du sommet des collines les plus hautes, sinon la vue
 	# par defaut cache leur sommet (meme logique que VoxelWorld._ready, qui
 	# calcule son view_level de la meme facon).
+	# hill_amplitude lu directement sur voxel_world (revue de code M102) au
+	# lieu d'un @export duplique ici - VoxelWorld est avant CameraRig dans
+	# Main.tscn (voir _center_on_colony_spawn juste en dessous), donc sa
+	# valeur (potentiellement modifiee dans l'inspecteur) est deja fiable ici.
+	var hill_amplitude: float = 3.0
+	if voxel_world != null:
+		hill_amplitude = float(voxel_world.get("hill_amplitude"))
 	current_level = grid_height - 1 + int(ceil(hill_amplitude))
 	global_position.y = float(current_level)
 	_center_on_colony_spawn()

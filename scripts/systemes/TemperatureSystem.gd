@@ -13,12 +13,24 @@ extends Node
 ## - Le gel/la neige sont des etats GLOBAUX (toute la carte), pas par case -
 ##   un vrai systeme par-case serait bien plus lourd (et couteux en perf, vu
 ##   la taille de la carte).
-## - "Neige au sol" = un voile blanc qui recouvre progressivement la couleur
-##   du dessus terre/pierre (voir VoxelWorld.snow_coverage), pas un vrai bloc
+## - "Neige au sol" = 2 couleurs discretes herbe/pierre (voir
+##   VoxelBlockAppearance.grass_color_for/stone_color_for), pas un vrai bloc
 ##   de neige separe.
 ## - "Gel de l'eau" = un etat bool global (VoxelWorld.is_frozen) qui change la
 ##   couleur de l'eau (glace) et bloque le bouton Puiser (voir
 ##   ActionValidator.valid_puiser_rect_cells).
+##
+## Etat gel/neige DETERMINISTE depuis 2026-07-11 (voir _is_ground_frozen) -
+## remplace l'ancien seuil continu "temperature <= 0", qui faisait geler/
+## degeler le sol 2 fois par jour (cycle jour/nuit traversant 0 en hiver) et
+## causait un rebuild_mesh complet a chaque franchissement - un freeze
+## periodique tres frequent (voir memoire project_forgotten_caves_
+## periodic_freeze_snow_fix). Francois 2026-07-11 : "en climat tempere, le
+## sol gele en hiver, directement" - le gel/la neige suivent maintenant
+## uniquement la saison et les episodes (vague de froid), jamais la
+## temperature fine calculee frame par frame. current_temperature() reste
+## inchangee (encore utilisee pour l'affichage et le confort des nains, voir
+## Dwarf.temperature_status/ActionController).
 
 const ClimateDefs := preload("res://scripts/data/climats/ClimateDefinitions.gd")
 ## Voir SeasonSystem.gd/WeatherSystem.gd - meme pattern pour lire
@@ -56,20 +68,11 @@ const EPISODE_CHANCE_PER_CHECK := 0.12  # tire a chaque fin de "cooldown" entre 
 @export var episode_duration_min: float = 60.0
 @export var episode_duration_max: float = 150.0
 
-## Vitesse d'accumulation/fonte de la neige (par seconde, 0..1)
-const SNOW_ACCUMULATION_RATE := 0.05
-const SNOW_MELT_RATE := 0.04
-## On ne redeclenche un rebuild_mesh (couteux) que quand la neige a change
-## d'au moins ce pas, pas a chaque frame (voir _process/VoxelWorld.set_climate_state)
-const SNOW_STEP := 0.1
-
 var current_episode: String = ""  # "" = aucun episode en cours
 var _episode_time_left: float = 0.0
 var _episode_check_timer: float = 0.0
-var snow_coverage: float = 0.0  # 0..1, lu par VoxelWorld pour le voile de neige
 
-var _last_applied_frozen: bool = false
-var _last_applied_snow_step: int = -1
+var _last_applied_frozen: int = -1  # -1 = aucun appel encore fait (voir _apply_to_voxel_world)
 
 ## Evite de spammer la console a chaque frame si _voxel_world/_season_system/
 ## _weather_system/_day_night restent null (noeud manquant/renomme) - un seul
@@ -83,7 +86,10 @@ var _warned_missing_refs: bool = false
 
 
 func _ready() -> void:
-	_episode_check_timer = randf_range(episode_check_interval_min, episode_check_interval_max)
+	# Flux GameRandom dedie ("temperature") plutot que le RNG global -
+	# reproductibilite par graine isolee des autres systemes (corrige I80
+	# 2026-07-11, voir doc GameRandom.gd).
+	_episode_check_timer = GameRandom.get_rng("temperature").randf_range(episode_check_interval_min, episode_check_interval_max)
 
 
 func _process(delta: float) -> void:
@@ -95,43 +101,46 @@ func _process(delta: float) -> void:
 		_episode_time_left -= scaled_delta
 		if _episode_time_left <= 0.0:
 			current_episode = ""
-			_episode_check_timer = randf_range(episode_check_interval_min, episode_check_interval_max)
+			_episode_check_timer = GameRandom.get_rng("temperature").randf_range(episode_check_interval_min, episode_check_interval_max)
 	else:
 		_episode_check_timer -= scaled_delta
 		if _episode_check_timer <= 0.0:
 			_maybe_start_episode()
 
-	var temp: float = current_temperature()
-	var frozen: bool = temp <= 0.0
-	var snowing: bool = frozen and _weather_system != null and _weather_system.is_snowing()
-	if snowing:
-		snow_coverage = minf(snow_coverage + SNOW_ACCUMULATION_RATE * scaled_delta, 1.0)
-	elif not frozen:
-		snow_coverage = maxf(snow_coverage - SNOW_MELT_RATE * scaled_delta, 0.0)
-	# Sinon (gele mais pas de chute en cours) : la neige au sol reste telle
-	# quelle, ni accumulation ni fonte.
+	_apply_to_voxel_world(_is_ground_frozen())
 
-	_apply_to_voxel_world(frozen)
+
+## Vrai si le sol/l'eau doivent etre geles (et donc l'herbe/pierre "gelees",
+## voir VoxelBlockAppearance) - deterministe, ne depend plus de
+## current_temperature() frame par frame (voir doc de tete du fichier).
+## Gele en hiver, ou pendant une vague de froid (n'importe quelle saison
+## eligible, voir EPISODE_SEASONS) - jamais entre les deux.
+func _is_ground_frozen() -> bool:
+	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
+	return season_id == "hiver" or current_episode == EPISODE_COLD_WAVE
 
 
 ## N'appelle VoxelWorld.set_climate_state (qui reconstruit le mesh) que quand
-## l'etat gele change, ou que la neige a franchi un palier de SNOW_STEP - un
-## rebuild_mesh a chaque frame serait beaucoup trop couteux sur une grande
-## carte.
+## l'etat gele change reellement - has_snow suit exactement la meme valeur
+## que frozen (Francois 2026-07-11 : "des le debut de l'hiver" plutot qu'une
+## accumulation progressive, voir memoire freeze periodique).
 func _apply_to_voxel_world(frozen: bool) -> void:
 	if _voxel_world == null:
 		return
-	var snow_step: int = int(round(snow_coverage / SNOW_STEP))
-	if frozen == _last_applied_frozen and snow_step == _last_applied_snow_step:
+	if int(frozen) == _last_applied_frozen:
 		return
-	_last_applied_frozen = frozen
-	_last_applied_snow_step = snow_step
-	_voxel_world.set_climate_state(frozen, float(snow_step) * SNOW_STEP)
+	_last_applied_frozen = int(frozen)
+	if OS.is_debug_build():
+		print("[Perf] set_climate_state declenche : frozen=%s" % frozen)
+	_voxel_world.set_climate_state(frozen, frozen)
 
 
 func _maybe_start_episode() -> void:
-	_episode_check_timer = randf_range(episode_check_interval_min, episode_check_interval_max)
-	if randf() > EPISODE_CHANCE_PER_CHECK:
+	# Flux GameRandom dedie ("temperature") pour tous les tirages de cette
+	# fonction - voir doc de _ready().
+	var rng: RandomNumberGenerator = GameRandom.get_rng("temperature")
+	_episode_check_timer = rng.randf_range(episode_check_interval_min, episode_check_interval_max)
+	if rng.randf() > EPISODE_CHANCE_PER_CHECK:
 		return
 	# Repli factorise via ClimateDefs.season_id_or_default (motif duplique
 	# aussi dans DayNightCycle.gd/WeatherSystem.gd).
@@ -142,13 +151,21 @@ func _maybe_start_episode() -> void:
 			candidates.append(episode_id)
 	if candidates.is_empty():
 		return
-	current_episode = candidates[randi() % candidates.size()]
-	_episode_time_left = randf_range(episode_duration_min, episode_duration_max)
+	current_episode = candidates[rng.randi() % candidates.size()]
+	_episode_time_left = rng.randf_range(episode_duration_min, episode_duration_max)
+	# Vague de froid : force la meteo visible a "Neige" pour toute la duree de
+	# l'episode (Francois 2026-07-11 : "temps=neige, sol gele=VRAI") - voir
+	# WeatherSystem.force_snow, un nom explicite pour ne pas avoir a resoudre
+	# l'enum Weather depuis ce fichier (meme raison que is_snowing()).
+	if current_episode == EPISODE_COLD_WAVE and _weather_system != null:
+		_weather_system.force_snow(_episode_time_left)
 
 
 ## Temperature actuelle (degres C) : base de saison + oscillation jour/nuit
 ## (creux vers minuit, pic vers midi, voir DayNightCycle.time_of_day) +
-## delta d'episode eventuel (vague de froid/canicule).
+## delta d'episode eventuel (vague de froid/canicule). Purement informatif
+## depuis 2026-07-11 (affichage ClimateUI, confort Dwarf.temperature_status)
+## - ne pilote plus le gel/la neige (voir _is_ground_frozen).
 func current_temperature() -> float:
 	var season_id: String = ClimateDefs.season_id_or_default(_season_system)
 	var base: float = BASE_TEMP_PAR_SAISON.get(season_id, 15.0)
@@ -162,7 +179,7 @@ func current_temperature() -> float:
 
 
 func is_frozen() -> bool:
-	return current_temperature() <= 0.0
+	return _is_ground_frozen()
 
 
 ## Libelle affichable de l'episode en cours ("" si aucun) - utilise par
